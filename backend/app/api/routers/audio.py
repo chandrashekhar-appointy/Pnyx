@@ -960,16 +960,29 @@ async def websocket_streaming_audio(
                         meeting_context=ai_context,
                     )
                     await ai_engine.load_runtime_config()
+                    # Recovery: Restore previous state if resuming session
+                    state_restored = await ai_engine.load_host_state(session_id)
                     policy_source = await _apply_host_skill_precedence(
                         ai_engine,
                         user_email=user_email,
                         meeting_id=active_meeting_id,
                     )
                     session_ai_participants[session_id] = ai_engine
+                    
+                    # Push initial state to client if restored
+                    if state_restored:
+                        initial_state = ai_engine.get_host_state_snapshot()
+                        if initial_state:
+                            await _publish_ai_host_state_delta_payload(
+                                state_delta=initial_state,
+                                ai_stats=ai_engine.get_stats_snapshot()
+                            )
+
                     logger.info(
-                        "[AIParticipant] Engine initialized session=%s meeting=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
+                        "[AIParticipant] Engine initialized session=%s meeting=%s restored=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
                         session_id,
                         active_meeting_id,
+                        state_restored,
                         ai_engine.enabled,
                         ai_engine.model_name,
                         ai_engine.analysis_interval_seconds,
@@ -1004,16 +1017,29 @@ async def websocket_streaming_audio(
                 meeting_context=ai_context,
             )
             await ai_engine.load_runtime_config()
+            # Recovery: Restore previous state if resuming session
+            state_restored = await ai_engine.load_host_state(session_id)
             policy_source = await _apply_host_skill_precedence(
                 ai_engine,
                 user_email=user_email,
                 meeting_id=active_meeting_id,
             )
             session_ai_participants[session_id] = ai_engine
+            
+            # Push initial state to client if restored
+            if state_restored:
+                initial_state = ai_engine.get_host_state_snapshot()
+                if initial_state:
+                    await _publish_ai_host_state_delta_payload(
+                        state_delta=initial_state,
+                        ai_stats=ai_engine.get_stats_snapshot()
+                    )
+
             logger.info(
-                "[AIParticipant] Engine initialized session=%s meeting=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
+                "[AIParticipant] Engine initialized session=%s meeting=%s restored=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
                 session_id,
                 active_meeting_id,
+                state_restored,
                 ai_engine.enabled,
                 ai_engine.model_name,
                 ai_engine.analysis_interval_seconds,
@@ -1630,10 +1656,7 @@ async def websocket_streaming_audio(
                                     session_id,
                                     {
                                         "ai_host": ai_stats,
-                                        "ai_host_pinned_items": (
-                                            ai_stats.get("host_state", {}).get("pinned_items")
-                                            or []
-                                        ),
+                                        "ai_host_state": ai_engine.get_host_state_snapshot(),
                                     },
                                 )
                             except Exception:
@@ -1662,7 +1685,10 @@ async def websocket_streaming_audio(
                             try:
                                 await state_service.db.merge_recording_session_metadata(
                                     session_id,
-                                    {"ai_host": ai_stats},
+                                    {
+                                        "ai_host": ai_stats,
+                                        "ai_host_state": ai_engine.get_host_state_snapshot(),
+                                    },
                                 )
                             except Exception:
                                 pass
@@ -1693,7 +1719,10 @@ async def websocket_streaming_audio(
                             try:
                                 await state_service.db.merge_recording_session_metadata(
                                     session_id,
-                                    {"ai_host": ai_stats},
+                                    {
+                                        "ai_host": ai_stats,
+                                        "ai_host_state": ai_engine.get_host_state_snapshot(),
+                                    },
                                 )
                             except Exception:
                                 pass

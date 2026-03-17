@@ -941,6 +941,35 @@ export default function Home() {
     return 'Facilitator';
   }, [effectiveHostStyle, effectiveHostStyleMarkdown]);
 
+  const hostStateSuggestedItems = useMemo(() => {
+    const raw = (hostStateDelta as Record<string, unknown> | null)?.suggested_items;
+    if (!Array.isArray(raw)) return [] as AIHostSuggestion[];
+    return raw.filter((item): item is AIHostSuggestion => {
+      if (!item || typeof item !== 'object') return false;
+      const suggestion = item as Partial<AIHostSuggestion>;
+      return (
+        typeof suggestion.id === 'string' &&
+        typeof suggestion.title === 'string' &&
+        typeof suggestion.content === 'string'
+      );
+    });
+  }, [hostStateDelta]);
+
+  useEffect(() => {
+    if (!hostStateSuggestedItems.length) return;
+    setHostSuggestionQueue((prev) => {
+      const merged = new Map<string, AIHostSuggestion>();
+      prev.forEach((item) => merged.set(item.id, item));
+      hostStateSuggestedItems.forEach((item) => {
+        const isPinned = pinnedHostSuggestions.some(p => p.id === item.id);
+        if (!isPinned) {
+          merged.set(item.id, { ...item, status: 'suggested' });
+        }
+      });
+      return Array.from(merged.values()).slice(0, 30);
+    });
+  }, [hostStateSuggestedItems, pinnedHostSuggestions]);
+
   const hostStatePinnedItems = useMemo(() => {
     const raw = (hostStateDelta as Record<string, unknown> | null)?.pinned_items;
     if (!Array.isArray(raw)) return [] as AIHostSuggestion[];
@@ -1005,8 +1034,12 @@ export default function Home() {
 
   const decisionsForPanel = useMemo(() => {
     const merged = new Map<string, AIHostSuggestion>();
-    hostStatePinnedItems.forEach((item) => merged.set(item.id, { ...item, status: 'pinned' }));
-    pinnedHostSuggestions.forEach((item) => merged.set(item.id, { ...item, status: 'pinned' }));
+    // Only include core decision types in the Decisions panel
+    [...hostStatePinnedItems, ...pinnedHostSuggestions].forEach((item) => {
+      if (item.event_type === 'decision_candidate') {
+        merged.set(item.id, { ...item, status: 'pinned' });
+      }
+    });
     return Array.from(merged.values()).slice(0, 8);
   }, [hostStatePinnedItems, pinnedHostSuggestions]);
 
@@ -1015,7 +1048,13 @@ export default function Home() {
       .filter((item) => item.event_type === 'open_discussion')
       .map((item) => item.content.trim())
       .filter((item) => item.length > 0);
-    const merged = [...unresolvedDiscussionItems];
+    
+    // Also include pinned discussions
+    const fromPinned = [...hostStatePinnedItems, ...pinnedHostSuggestions]
+      .filter((item) => item.event_type === 'open_discussion')
+      .map((item) => item.content.trim());
+
+    const merged = Array.from(new Set([...unresolvedDiscussionItems, ...fromPinned]));
 
     // Include active host intervention if it's an open discussion
     if (activeHostIntervention && activeHostIntervention.event_type === 'open_discussion') {
@@ -1027,17 +1066,29 @@ export default function Home() {
       if (!merged.includes(item)) merged.push(item);
     });
     return merged.slice(0, 8);
-  }, [hostSuggestionQueue, unresolvedDiscussionItems, activeHostIntervention]);
+  }, [hostSuggestionQueue, unresolvedDiscussionItems, activeHostIntervention, hostStatePinnedItems, pinnedHostSuggestions]);
 
   const isInsightIntervention = activeHostIntervention &&
     !CORE_EVENT_TYPES.has(activeHostIntervention.event_type) ? activeHostIntervention : null;
 
-  const participantActionsForPanel = useMemo(
-    () => hostSuggestionQueue
-      .filter((item) => !CORE_EVENT_TYPES.has(item.event_type))
-      .slice(0, 8),
-    [hostSuggestionQueue]
-  );
+  const participantActionsForPanel = useMemo(() => {
+    const merged = new Map<string, AIHostSuggestion>();
+    
+    // Include both suggested and pinned non-core items
+    hostSuggestionQueue.forEach((item) => {
+      if (!CORE_EVENT_TYPES.has(item.event_type)) {
+        merged.set(item.id, { ...item, status: 'suggested' });
+      }
+    });
+    
+    [...hostStatePinnedItems, ...pinnedHostSuggestions].forEach((item) => {
+      if (!CORE_EVENT_TYPES.has(item.event_type)) {
+        merged.set(item.id, { ...item, status: 'pinned' });
+      }
+    });
+
+    return Array.from(merged.values()).slice(0, 8);
+  }, [hostSuggestionQueue, hostStatePinnedItems, pinnedHostSuggestions]);
 
   const liveMeetingSummary = useMemo(() => {
     const backendSummary = (hostStateDelta as Record<string, unknown> | null)?.meeting_summary as string | undefined;
@@ -2540,22 +2591,24 @@ export default function Home() {
                                       </span>
                                     </div>
                                     <p className="mt-1 text-xs text-gray-700">{item.content}</p>
-                                    <div className="mt-2 flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => pinHostSuggestion(item.id)}
-                                        className="rounded-md border border-indigo-300 bg-indigo-100 px-3 py-1.5 text-[11px] font-semibold text-indigo-800 shadow-sm transition-colors hover:bg-indigo-200"
-                                      >
-                                        Yes, Pin to meeting
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => dismissHostSuggestion(item.id)}
-                                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                                      >
-                                        Dismiss
-                                      </button>
-                                    </div>
+                                    {item.status === 'suggested' && (
+                                      <div className="mt-2 flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => pinHostSuggestion(item.id)}
+                                          className="rounded-md border border-indigo-300 bg-indigo-100 px-3 py-1.5 text-[11px] font-semibold text-indigo-800 shadow-sm transition-colors hover:bg-indigo-200"
+                                        >
+                                          Yes, Pin to meeting
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => dismissHostSuggestion(item.id)}
+                                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                                        >
+                                          Dismiss
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </motion.div>

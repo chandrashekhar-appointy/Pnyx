@@ -12,6 +12,15 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.gemini import GeminiModel
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.groq import GroqModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.groq import GroqProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.google_gla import GoogleGLAProvider
 
 try:
     from ..schemas.ai_participant import (
@@ -364,6 +373,7 @@ class AIParticipantEngine:
             source="system",
         )
         self._host_policy_source = "system"
+        self._temp_suggestions: List[HostSuggestion] = []
 
         self._stats: Dict[str, Any] = {
             "analysis_attempts": 0,
@@ -389,6 +399,173 @@ class AIParticipantEngine:
             "host_suggestions_suppressed": 0,
             "host_policy_source": self._host_policy_source,
         }
+
+        # Initialize the Observer Agent
+        self.agent = Agent(
+            "gemini-1.5-flash",  # Placeholder, will be overriden in runtime
+            deps_type=AIParticipantEngine,
+            system_prompt=(
+                "You are a meeting observer. Use tools to register decisions, discussions, and summary updates.\n"
+                "CRITICAL: When calling `update_summary`, you MUST use rich Markdown formatting:\n"
+                "- Use `###` headings for sections (Overview, Decisions, etc.)\n"
+                "- Use `**` for bold emphasis\n"
+                "- Use `- ` for bullet points\n"
+                "Your goal is to make the meeting summary visually structured and professional."
+            )
+        )
+
+        @self.agent.tool
+        async def add_decision(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
+            """Record a commitment or decision agreed upon by participants."""
+            engine = ctx.deps
+            normalized_content = " ".join(content.strip().lower().split())
+            
+            # Check for duplicates in pinned or suggested items
+            for item in engine._host_state.pinned_items + engine._host_state.suggested_items:
+                if normalized_content in " ".join(item.content.strip().lower().split()):
+                    return "SKIP: This decision is already recorded."
+
+            # We use the engine's existing building logic
+            event = {
+                "event_type": "decision_candidate",
+                "title": title,
+                "content": content,
+                "confidence": confidence,
+                "priority": priority
+            }
+            suggestion = engine._build_host_suggestion(event)
+            if suggestion:
+                engine._temp_suggestions.append(suggestion)
+                return f"SUCCESS: Recorded decision: {title}"
+            return "FAILURE: Decision did not meet confidence threshold."
+
+        @self.agent.tool
+        async def add_discussion(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
+            """Record an unresolved question or active debate."""
+            engine = ctx.deps
+            normalized_content = " ".join(content.strip().lower().split())
+            
+            for item in engine._host_state.pinned_items + engine._host_state.suggested_items:
+                if normalized_content in " ".join(item.content.strip().lower().split()):
+                    return "SKIP: This discussion/topic is already recorded."
+
+            event = {
+                "event_type": "open_discussion",
+                "title": title,
+                "content": content,
+                "confidence": confidence,
+                "priority": priority
+            }
+            suggestion = engine._build_host_suggestion(event)
+            if suggestion:
+                engine._temp_suggestions.append(suggestion)
+                return f"SUCCESS: Recorded discussion: {title}"
+            return "FAILURE: Discussion did not meet confidence threshold."
+
+        @self.agent.tool
+        async def update_summary(ctx: RunContext[AIParticipantEngine], summary_markdown: str) -> str:
+            """
+            Update the cumulative meeting summary.
+            IMPORTANT: Use rich Markdown with:
+            - `### Overview` (Level 3 headings for sections)
+            - `### Decisions`
+            - `### Next Steps`
+            - `**Bold**` for emphasis
+            - `- ` Bullet points for lists
+            - Do NOT use `#` or `##` as they are too large for the side panel.
+            """
+            engine = ctx.deps
+            summary_markdown = summary_markdown.strip()
+            if not summary_markdown or len(summary_markdown) < 20:
+                return "FAILURE: Summary too short or empty."
+            
+            engine._host_state.meeting_summary = summary_markdown
+            return "SUCCESS: Summary updated with rich formatting."
+
+        @self.agent.tool
+        async def add_action_item(ctx: RunContext[AIParticipantEngine], owner: str, task: str, due_date: Optional[str] = None) -> str:
+            """Record a specific task assigned to a participant (Participant Action)."""
+            engine = ctx.deps
+            normalized_task = " ".join(task.strip().lower().split())
+            
+            # Check for duplicates in suggested items (action items are often stored as follow-ups)
+            for item in engine._host_state.suggested_items:
+                if normalized_task in " ".join(item.content.strip().lower().split()):
+                    return f"SKIP: Action item '{task}' is already recorded."
+
+            event = {
+                "event_type": "follow_up_needed",
+                "title": f"Action for {owner}",
+                "content": f"**Task**: {task}\n**Due**: {due_date or 'TBD'}",
+                "confidence": 0.9,
+                "priority": "high",
+                "metadata": {"owner": owner, "due_date": due_date}
+            }
+            suggestion = engine._build_host_suggestion(event)
+            if suggestion:
+                suggestion.status = "pinned"
+                engine._host_state.pinned_items.insert(0, suggestion)
+                engine._host_state.updated_at = datetime.utcnow().isoformat()
+                return f"SUCCESS: Recorded action item for {owner}: {task}"
+            return "FAILURE: Action item did not meet requirements."
+
+        @self.agent.tool
+        async def add_insight(ctx: RunContext[AIParticipantEngine], title: str, content: str, insight_type: str = "general", confidence: float = 0.8) -> str:
+            """
+            Record a strategic observation, risk, or participation insight.
+            Use this for 'Guardrails' like agenda drift or engagement drops.
+            """
+            engine = ctx.deps
+            normalized_content = " ".join(content.strip().lower().split())
+            
+            # Insights are more ephemeral, so we check recently suggested/pinned
+            for item in engine._host_state.suggested_items:
+                if normalized_content in " ".join(item.content.strip().lower().split()):
+                    return "SKIP: This insight was recently shared."
+
+            # Use the specified type or default
+            event_type = engine._normalize_host_event_type(insight_type) or "ai_insight"
+            
+            event = {
+                "event_type": event_type,
+                "title": title,
+                "content": content,
+                "confidence": confidence,
+                "priority": "medium"
+            }
+            suggestion = engine._build_host_suggestion(event)
+            if suggestion:
+                suggestion.status = "pinned"
+                engine._host_state.pinned_items.insert(0, suggestion)
+                engine._host_state.updated_at = datetime.utcnow().isoformat()
+                return f"SUCCESS: Recorded insight: {title}"
+            return "FAILURE: Insight did not meet confidence threshold."
+
+    async def _get_pydantic_ai_model(self):
+        """Helper to return a pydantic-ai model instance based on current config."""
+        await self.load_runtime_config()
+        api_key = await self._get_provider_api_key()
+        if not api_key:
+            return None # Fallback to default or error
+
+        try:
+            if self.provider == "gemini":
+                return GeminiModel(self.model_name, provider=GoogleGLAProvider(api_key=api_key))
+            elif self.provider == "openai":
+                return OpenAIModel(self.model_name, provider=OpenAIProvider(api_key=api_key))
+            elif self.provider == "anthropic":
+                return AnthropicModel(self.model_name, provider=AnthropicProvider(api_key=api_key))
+            elif self.provider == "groq":
+                return GroqModel(self.model_name, provider=GroqProvider(api_key=api_key))
+            elif self.provider == "openrouter":
+                return OpenAIModel(
+                    self.model_name, 
+                    provider=OpenAIProvider(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+                )
+        except Exception as e:
+            logger.error(f"[AIParticipant] Failed to initialize pydantic-ai model: {e}")
+            return None
+        return None
 
     async def load_runtime_config(self) -> None:
         if self._runtime_config_loaded:
@@ -435,6 +612,53 @@ class AIParticipantEngine:
         self._stats["provider"] = self.provider
         self._stats["last_model_used"] = self.model_name
         self._runtime_config_loaded = True
+
+    async def load_host_state(self, session_id: str) -> bool:
+        """Restore meeting host state from database metadata."""
+        try:
+            session = await self.db.get_recording_session(session_id)
+            if not session or not session.get("metadata"):
+                return False
+
+            metadata = session["metadata"]
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    return False
+            
+            if not isinstance(metadata, dict):
+                return False
+
+            state_data = metadata.get("ai_host_state")
+            if not state_data:
+                return False
+
+            # Hydrate MeetingHostState
+            if isinstance(state_data, str):
+                try:
+                    state_data = json.loads(state_data)
+                except Exception:
+                    return False
+            
+            if not isinstance(state_data, dict):
+                return False
+
+            # Safety: Ensure meeting_id matches to prevent cross-session leaks if IDs were recycled
+            self._host_state = MeetingHostState.model_validate(state_data)
+            self._host_state.meeting_id = self.meeting_context.meeting_id
+            
+            logger.info(
+                "[AIParticipant] State restored for session=%s summary_len=%s pinned=%s suggestions=%s",
+                session_id,
+                len(self._host_state.meeting_summary or ""),
+                len(self._host_state.pinned_items),
+                len(self._host_state.suggested_items),
+            )
+            return True
+        except Exception as e:
+            logger.error("[AIParticipant] Failed to load host state: %s", e)
+            return False
 
     async def ingest_transcript(
         self,
@@ -541,16 +765,20 @@ class AIParticipantEngine:
             self._stats["analysis_attempts"] += 1
             self._stats["last_analysis_at"] = datetime.utcnow().isoformat()
 
-            events = await self._reason_host_events()
-            if not events:
-                self._stats["assessment_none"] += 1
-                payload["state_delta"] = self.get_host_state_snapshot()
-                return payload
+            # The new agentic path handles summary updates and collects suggestions via tools
+            self._temp_suggestions = []
+            await self._reason_host_events()
+            
+            if not self._temp_suggestions and not (self._host_state.meeting_summary or "").strip():
+                # If agent did nothing, try heuristic fallback
+                await self._build_fallback_host_events(
+                    transcript_window=self.buffer.get_text(),
+                    reason="agent_noop",
+                )
 
-            for event in events:
-                suggestion = self._build_host_suggestion(event)
-                if not suggestion:
-                    self._stats["host_suggestions_suppressed"] += 1
+            for suggestion in self._temp_suggestions:
+                # Deduplicate again just in case tools missed it or for race conditions
+                if any(s.id == suggestion.id for s in self._host_state.suggested_items):
                     continue
 
                 self._host_state.suggested_items.insert(0, suggestion)
@@ -611,107 +839,41 @@ class AIParticipantEngine:
             return None
 
     async def _reason_host_events(self) -> List[Dict[str, Any]]:
-        await self.load_runtime_config()
-        api_key = await self._get_provider_api_key()
-        if not api_key:
+        model = await self._get_pydantic_ai_model()
+        if not model:
             logger.warning(
-                "[AIParticipant] Missing provider API key for provider=%s model=%s; using heuristic fallback",
+                "[AIParticipant] Missing provider API key or model for provider=%s; using heuristic fallback",
                 self.provider,
-                self.model_name,
             )
             return self._build_fallback_host_events(
                 transcript_window=self.buffer.get_text(),
-                reason="missing_api_key",
+                reason="missing_api_key_or_model",
             )
 
         transcript_window = self.buffer.get_text()
         if not transcript_window:
             return []
 
-        prompt = self._build_host_prompt(transcript_window)
-        raw_text, used_model = await self._call_llm_json(prompt)
-        if raw_text is None:
-            logger.warning(
-                "[AIParticipant] Empty LLM response provider=%s model=%s; using heuristic fallback",
-                self.provider,
-                used_model,
+        try:
+            self._stats["llm_calls"] += 1
+            # Run the agentic observer
+            # It will call tools like add_decision and update_summary
+            result = await self.agent.run(
+                self._build_host_prompt(transcript_window),
+                deps=self,
+                model=model
             )
+            logger.info(f"[AIParticipant] Agent run complete. Tool calls: {len(result.all_model_requests())}")
+            # The tools have updated self._temp_suggestions, we don't need to return list of dicts anymore
+            # but for internal consistency we return it.
+            return [{"collected": True}] if self._temp_suggestions else []
+        except Exception as e:
+            self._stats["llm_failures"] += 1
+            logger.error(f"[AIParticipant] Agent failed during host reasoning: {e}", exc_info=True)
             return self._build_fallback_host_events(
                 transcript_window=transcript_window,
-                reason="llm_failure",
+                reason="agent_error",
             )
-
-        self._stats["last_model_used"] = used_model
-        parsed = self._extract_json(raw_text)
-        if not parsed:
-            self._stats["parse_failures"] += 1
-            logger.warning(
-                "[AIParticipant] Invalid JSON response provider=%s model=%s; using heuristic fallback",
-                self.provider,
-                used_model,
-            )
-            return self._build_fallback_host_events(
-                transcript_window=transcript_window,
-                reason="parse_failure",
-            )
-
-        # Update the rolling meeting summary from the model directly into host state
-        summary_text = str(parsed.get("meeting_summary") or "").strip()
-        if summary_text and summary_text.lower() not in ("null", "none"):
-            self._host_state.meeting_summary = summary_text
-
-        events = parsed.get("events") if isinstance(parsed, dict) else None
-        if not isinstance(events, list):
-            return self._build_fallback_host_events(
-                transcript_window=transcript_window,
-                reason="missing_events",
-            )
-
-        normalized_events: List[Dict[str, Any]] = []
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            event_type = self._normalize_host_event_type(event.get("event_type"))
-            if not event_type:
-                continue
-
-            title = " ".join(str(event.get("title") or "").split()).strip()
-            content = " ".join(str(event.get("content") or "").split()).strip()
-            if not content:
-                continue
-
-            confidence = event.get("confidence", 0.0)
-            try:
-                confidence = float(confidence)
-            except Exception:
-                confidence = 0.0
-            confidence = max(0.0, min(1.0, confidence))
-
-            priority = str(event.get("priority") or "medium").strip().lower()
-            if priority not in {"low", "medium", "high"}:
-                priority = "medium"
-
-            source_excerpt = " ".join(
-                str(event.get("source_excerpt") or "").split()
-            ).strip()
-
-            normalized_events.append(
-                {
-                    "event_type": event_type,
-                    "title": title or event_type.replace("_", " ").title(),
-                    "content": content,
-                    "confidence": confidence,
-                    "priority": priority,
-                    "source_excerpt": source_excerpt[:240] if source_excerpt else None,
-                }
-            )
-        self._refresh_host_state_from_events(normalized_events)
-        if not normalized_events and not (self._host_state.meeting_summary or "").strip():
-            return self._build_fallback_host_events(
-                transcript_window=transcript_window,
-                reason="empty_model_output",
-            )
-        return normalized_events
 
     async def _call_llm_json(self, prompt: str) -> Tuple[Optional[str], str]:
         model_candidates: List[str] = []
@@ -947,24 +1109,22 @@ Allowed custom event_type values from the active skill:
 {custom_types_block}
 
 Rules:
-- Return strict JSON object only with this shape:
-  {{"meeting_summary": "...", "events": [{{"event_type": "...", "title": "...", "content": "...", "confidence": 0.0, "priority": "low|medium|high", "source_excerpt": "..."}}]}}
-- `meeting_summary` must be valid markdown and should be more detailed than a short paragraph.
-- Prefer short markdown sections such as `### Overview`, `### Decisions`, `### Open Discussions`, and `### Next Steps` when the transcript supports them.
+- You are an active observer. DO NOT return a JSON object. Instead, use the provided tools to share insights and update the summary.
+- Update the meeting summary frequently using the `update_summary` tool.
+- **CRITICAL**: In `update_summary`, use rich Markdown (Level 3 Headings `###`, Bold `**bold**`, and Lists `- `) so the UI looks structured and professional.
+- Use Level 3 headings (`### Overview`, `### Decisions`, `### Open Discussions`, `### Next Steps`) for sections. Do NOT use `#` or `##`.
 - Use concise bullet points under those sections. Omit empty sections instead of inventing content.
 - Include key decisions, unresolved discussions, risks, and concrete next steps when present.
-- Treat the rolling meeting summary above as cumulative context from earlier parts of the meeting. Update it incrementally using the latest transcript window instead of rewriting from scratch every time.
+- Treat the rolling meeting summary above as cumulative context from earlier parts of the meeting. Update it incrementally using the latest transcript window.
 - Preserve still-relevant earlier decisions and open discussions unless the newest transcript clearly changes them.
-- If no event is needed, return {{"events": []}}.
+- If no action is needed, simply finish your turn without calling any tools.
 - Do NOT suggest events for topics or decisions that are already in the "Already Pinned Decisions/Topics" list.
-- ONLY output a `decision_candidate` if an explicit choice, commitment, or action has been agreed upon by participants.
-- ONLY output an `open_discussion` when the transcript shows an unresolved question, active debate, disagreement, or conflict that still needs resolution.
-- Do NOT output `open_discussion` for meta-comments about guardrails, topic drift, agenda misalignment, or whether something connects to the agenda. Those are not discussion items unless participants are actively debating them.
-- Any non-core event must use one of the allowed custom event types from the active skill.
-- Do NOT classify informational statements, general discussion, tech news summaries, or observations as decisions.
-- Keep title <= 10 words and content <= 35 words.
-- Avoid personal criticism or blame.
-- Do not hallucinate facts outside provided transcript/context.
+- ONLY call `add_decision` if an explicit commitment, AGREED-UPON choice, or final resolution has been made by participants.
+- If a direction is "unclear", "conflicted", or "unresolved", DO NOT use `add_decision`. Instead, use `add_action_item` to record it as a follow-up or `add_discussion` to mark it as unresolved.
+- Use `add_action_item` for specific tasks, unowned follow-ups, or resolving unclear points. These will be shown directly in the UI.
+- Use `add_discussion` for unresolved questions/debates that need more airtime.
+- Use `add_insight` for meta-observations (risks, participation, drift).
+- Do NOT call a tool twice if the content hasn't changed.
 
 Recent transcript window:
 {transcript_window}

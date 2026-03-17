@@ -46,9 +46,14 @@ function detectSummaryFormat(data: any): { format: SummaryFormat; data: any } {
   }
 
   // Priority 2: Markdown format
-  if (data.markdown && typeof data.markdown === 'string') {
+  const markdownContent = data.markdown || data.meeting_summary;
+  if (markdownContent && typeof markdownContent === 'string') {
     console.log('✅ FORMAT: MARKDOWN (will parse to BlockNote)');
-    return { format: 'markdown', data };
+    // Normalize to include markdown field for the rest of the component
+    return { 
+      format: 'markdown', 
+      data: { ...data, markdown: markdownContent } 
+    };
   }
 
   // Priority 3: Legacy JSON
@@ -226,7 +231,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     console.log('🎨 Rendering BLOCKNOTE format (direct)');
     return (
       <div className="flex flex-col w-full">
-        <div className="w-full">
+        <div className="w-full ai-summary-content">
           <Editor
             initialContent={data.summary_json}
             onChange={(blocks) => {
@@ -245,7 +250,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     console.log('🎨 Rendering MARKDOWN format (parsed to BlockNote)');
     return (
       <div className="flex flex-col w-full">
-        <div className="w-full">
+        <div className="w-full ai-summary-content">
           <BlockNoteView
             editor={editor}
             editable={true}

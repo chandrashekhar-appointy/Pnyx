@@ -181,4 +181,35 @@
     scrollbar-width: thin;
     scrollbar-color: #e5e7eb transparent;
   }
+
+  /* AI Summary Formatting Overrides */
+  .ai-summary-content .bn-block-content h3,
+  .ai-summary-content h3 {
+    font-size: 1.25rem !important;
+    font-weight: 700 !important;
+    color: #111827 !important;
+    margin-top: 1.5rem !important;
+    margin-bottom: 0.75rem !important;
+  }
+
+  .ai-summary-content .bn-block-content h4,
+  .ai-summary-content h4 {
+    font-size: 1.1rem !important;
+    font-weight: 600 !important;
+    color: #374151 !important;
+    margin-top: 1.25rem !important;
+    margin-bottom: 0.5rem !important;
+  }
+
+  .ai-summary-content strong,
+  .ai-summary-content b {
+    font-weight: 700 !important;
+    color: #111827 !important;
+  }
+
+  .ai-summary-content ul,
+  .ai-summary-content li {
+    list-style-type: disc !important;
+    margin-left: 1rem !important;
+  }
 }
