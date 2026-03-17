@@ -20,7 +20,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { Button } from '@/components/ui/button';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
+  AlertCircle,
   Bot,
   Calendar,
   CheckCircle2,
@@ -42,7 +45,7 @@ import { apiUrl } from '@/lib/config';
 import { authFetch, AuthError } from '@/lib/api';
 import { recoveryService, PendingMeetingData } from '@/lib/transcriptRecovery';
 import { SetupRequirements } from '@/components/SetupRequirements';
-import { CalendarMeetingPicker, CalendarEvent } from '@/components/CalendarMeetingPicker';
+import { CalendarMeetingPicker, CalendarEvent, formatCalendarEventTimeIST } from '@/components/CalendarMeetingPicker';
 import { AudioStreamClient } from '@/lib/audio-streaming/AudioStreamClient';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -181,7 +184,7 @@ export default function Home() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'gemini',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-3-pro-preview',
     whisperModel: 'large-v3'
   });
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
@@ -617,11 +620,15 @@ export default function Home() {
 
   const modelOptions: Record<ModelConfig['provider'], string[]> = {
     ollama: models.map(model => model.name),
-    claude: ['claude-3-5-sonnet-latest'],
+    claude: ['claude-opus-4-1-20250805'],
     groq: ['llama-3.3-70b-versatile'],
-    openrouter: [],
-    gemini: ['gemini-2.5-pro', 'gemini-2.5-pro', 'gemini-2.0-flash'],
-    openai: ['gpt-4o', 'gpt-4-turbo'],
+    openrouter: [
+      'anthropic/claude-opus-4.1',
+      'openai/gpt-5.4',
+      'google/gemini-3-pro-preview',
+    ],
+    gemini: ['gemini-3-pro-preview'],
+    openai: ['gpt-5.4', 'gpt-5', 'gpt-5-mini'],
   };
 
   useEffect(() => {
@@ -1647,6 +1654,37 @@ export default function Home() {
     setCurrentMeeting({ id: 'intro-call', title: newTitle });
   };
 
+  const syncMeetingTitleToBackend = useCallback(async (title: string) => {
+    const candidateMeetingId =
+      (currentMeeting?.id && !['intro-call', 'recovery'].includes(currentMeeting.id) ? currentMeeting.id : null) ||
+      currentSessionId;
+
+    if (!candidateMeetingId || !title.trim()) return;
+
+    try {
+      await authFetch('/save-meeting-title', {
+        method: 'POST',
+        body: JSON.stringify({ meeting_id: candidateMeetingId, title: title.trim() }),
+      });
+    } catch (error) {
+      console.error('Failed to sync meeting title with backend:', error);
+    }
+  }, [currentMeeting?.id, currentSessionId]);
+
+  const handleCalendarMeetingSelect = useCallback(async (event: CalendarEvent) => {
+    setSelectedCalendarEvent(event);
+    setMeetingTitle(event.meeting_title);
+    setCurrentMeeting({ id: currentMeeting?.id || 'intro-call', title: event.meeting_title });
+    setShowCalendarPicker(false);
+    await syncMeetingTitleToBackend(event.meeting_title);
+    toast.success(`Connected to ${event.meeting_title}`);
+  }, [currentMeeting?.id, syncMeetingTitleToBackend]);
+
+  const handleClearCalendarMeeting = useCallback(() => {
+    setSelectedCalendarEvent(null);
+    toast.info('Calendar meeting disconnected');
+  }, []);
+
   const getSummaryStatusMessage = (status: SummaryStatus) => {
     switch (status) {
       case 'idle':
@@ -2153,53 +2191,84 @@ export default function Home() {
               <SetupRequirements />
               <div className="flex  flex-col space-y-2">
                 {(isMeetingActive || isRecording || transcripts.length > 0) && (
-                  <div className="w-full flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[420px]" title={meetingTitle}>
-                        {meetingTitle}
-                      </h1>
-                      {isRecording && (
-                        <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
-                          Live
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowGuardrailContextDialog(true)}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 transition-colors shadow-sm"
-                        title="Meeting context"
-                      >
-                        <Settings className="h-3.5 w-3.5" />
-                        Meeting Context
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowCalendarPicker(true)}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors shadow-sm"
-                        title="Pick Calendar Meeting"
-                      >
-                        <Calendar className="h-3.5 w-3.5" />
-                        Calendar Event
-                      </button>
-                      <span className="text-xs font-medium text-gray-500">Mode</span>
-                      <select
-                        value={selectedHostStyleId}
-                        onChange={(e) => handleInlineHostModeChange(e.target.value)}
-                        className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 focus:border-gray-400 focus:outline-none"
-                        title={`Current AI Participant style: ${effectiveHostModeLabel}`}
-                      >
-                        <option value="__default__">
-                          Default ({toTitleCase(defaultHostStyleId.replace(/^.*:/, '') || 'facilitator')})
-                        </option>
-                        {activeHostStyles.map((style) => (
-                          <option key={style.id} value={style.id}>
-                            {style.name} ({style.source})
+                  <div className="w-full flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[420px]" title={meetingTitle}>
+                          {meetingTitle}
+                        </h1>
+                        {isRecording && (
+                          <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
+                            Live
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowGuardrailContextDialog(true)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 transition-colors shadow-sm"
+                          title="Meeting context"
+                        >
+                          <Settings className="h-3.5 w-3.5" />
+                          Meeting Context
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowCalendarPicker(true)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors shadow-sm"
+                          title="Pick Calendar Meeting"
+                        >
+                          <Calendar className="h-3.5 w-3.5" />
+                          Calendar Event
+                        </button>
+                        <span className="text-xs font-medium text-gray-500">Mode</span>
+                        <select
+                          value={selectedHostStyleId}
+                          onChange={(e) => handleInlineHostModeChange(e.target.value)}
+                          className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 focus:border-gray-400 focus:outline-none"
+                          title={`Current AI Participant style: ${effectiveHostModeLabel}`}
+                        >
+                          <option value="__default__">
+                            Default ({toTitleCase(defaultHostStyleId.replace(/^.*:/, '') || 'facilitator')})
                           </option>
-                        ))}
-                      </select>
+                          {activeHostStyles.map((style) => (
+                            <option key={style.id} value={style.id}>
+                              {style.name} ({style.source})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
+                    {selectedCalendarEvent && (
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-sm font-medium text-blue-800">
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span className="truncate">Connected to meeting: {selectedCalendarEvent.meeting_title}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-blue-700">
+                            {formatCalendarEventTimeIST(selectedCalendarEvent.start_time, selectedCalendarEvent.end_time)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setShowCalendarPicker(true)}
+                            className="rounded-md border border-blue-300 bg-white px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+                          >
+                            Change
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearCalendarMeeting}
+                            className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="flex justify-center items-center space-x-2">
@@ -2314,13 +2383,19 @@ export default function Home() {
               {isRecording && (
                 <>
                   <LayoutGroup id="host-intelligence-board">
-                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-                      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                          <CheckCircle2 className="h-6 w-6 text-emerald-600" />
-                          Decisions
-                        </h3>
-                        <div className="mt-3 space-y-2">
+                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
+                            <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+                            Decisions
+                          </h3>
+                          <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-right">
+                            <p className="text-lg font-semibold text-emerald-800">{decisionsForPanel.length + pendingDecisions.length}</p>
+                            <p className="text-[11px] text-emerald-700">total</p>
+                          </div>
+                        </div>
+                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
                           <AnimatePresence mode="popLayout">
                             {/* Pending Decisions mapped here */}
                             {pendingDecisions.map((item) => (
@@ -2382,45 +2457,50 @@ export default function Home() {
                             ))}
                           </AnimatePresence>
                           {decisionsForPanel.length === 0 && pendingDecisions.length === 0 && (
-                            <p className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
                               No confirmed decisions yet.
                             </p>
                           )}
                         </div>
                       </section>
 
-                      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                          <MessageCircle className="h-6 w-6 text-blue-600" />
-                          Open Discussions
-                        </h3>
-                        <div className="mt-3 space-y-2">
+                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
+                            <MessageCircle className="h-6 w-6 text-blue-600" />
+                            Open Discussions
+                          </h3>
+                          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-right">
+                            <p className="text-lg font-semibold text-blue-800">{discussionsForPanel.length}</p>
+                            <p className="text-[11px] text-blue-700">open</p>
+                          </div>
+                        </div>
+                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
                           {discussionsForPanel.map((item, index) => (
                             <div key={`${item}-${index}`} className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
                               {item}
                             </div>
                           ))}
                           {discussionsForPanel.length === 0 && (
-                            <p className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
                               No unresolved discussions right now.
                             </p>
                           )}
                         </div>
                       </section>
 
-                      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
                         <div className="flex items-center justify-between">
                           <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
                             <Sparkles className="h-6 w-6 text-gray-700" />
                             Participant Actions
                           </h3>
-                          {isInsightIntervention && (
-                            <span className="text-[11px] text-gray-500">
-                              Updated {formatGuardrailTime(isInsightIntervention.timestamp)}
-                            </span>
-                          )}
+                          <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-right">
+                            <p className="text-lg font-semibold text-indigo-800">{participantActionsForPanel.length + (isInsightIntervention ? 1 : 0)}</p>
+                            <p className="text-[11px] text-indigo-700">active</p>
+                          </div>
                         </div>
-                        <div className="mt-3 space-y-2">
+                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
                           {isInsightIntervention && (
                             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                               <div className="mb-1 flex items-center justify-between">
@@ -2482,24 +2562,99 @@ export default function Home() {
                             ))}
                           </AnimatePresence>
                           {!isInsightIntervention && participantActionsForPanel.length === 0 && (
-                            <p className="rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm text-gray-500">
+                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
                               AI Participant is monitoring and will surface actions when needed.
                             </p>
                           )}
-                          {activeGuardrailAlert && (
-                            <p className="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2 text-[11px] text-gray-600">
-                              Legacy guardrail: {getGuardrailReasonLabel(activeGuardrailAlert.reason)} - {activeGuardrailAlert.insight}
+                        </div>
+                      </section>
+
+                      <section className="xl:col-span-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <h3 className="text-2xl font-semibold text-gray-900">Meeting Summary</h3>
+                            <p className="mt-1 text-sm text-gray-500">Rolling AI participant view of the meeting so far.</p>
+                          </div>
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right">
+                            <p className="text-lg font-semibold text-slate-800">Live</p>
+                            <p className="text-[11px] text-slate-600">updated continuously</p>
+                          </div>
+                        </div>
+                        <div className="prose prose-sm mt-4 max-h-[280px] overflow-y-auto panel-scroll max-w-none text-gray-700">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {liveMeetingSummary}
+                          </ReactMarkdown>
+                        </div>
+                      </section>
+
+                      <section className="xl:col-span-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
+                              <AlertCircle className="h-6 w-6 text-rose-600" />
+                              Guardrails
+                            </h3>
+                            <p className="mt-1 text-sm text-gray-500">Alerts when the discussion drifts or decisions stay unresolved.</p>
+                          </div>
+                          <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-right">
+                            <p className="text-lg font-semibold text-rose-700">{guardrailAlertHistory.length}</p>
+                            <p className="text-[11px] text-rose-600">recent</p>
+                          </div>
+                        </div>
+                        <div className="mt-4 max-h-[280px] overflow-y-auto panel-scroll space-y-3">
+                          {activeGuardrailAlert ? (
+                            <div className="rounded-2xl border border-rose-300 bg-white px-4 py-4 shadow-sm">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${getGuardrailBadgeClasses(activeGuardrailAlert.reason)}`}>
+                                      {getGuardrailReasonLabel(activeGuardrailAlert.reason)}
+                                    </span>
+                                    {activeGuardrailAlert && (
+                                      <span className="text-[11px] text-gray-500">
+                                        Updated {formatGuardrailTime(activeGuardrailAlert.updated_at || activeGuardrailAlert.timestamp)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-3 text-base font-semibold text-rose-950">
+                                    Active guardrail
+                                  </p>
+                                  <p className="mt-1 text-sm leading-6 text-rose-900">
+                                    {activeGuardrailAlert.insight}
+                                  </p>
+                                </div>
+                                <span className="rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
+                                  {Math.round(activeGuardrailAlert.confidence * 100)}%
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
+                              No active guardrails right now.
                             </p>
+                          )}
+                          {guardrailAlertHistory.length > 1 && (
+                            <div className="space-y-2">
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Recent alerts</p>
+                              {guardrailAlertHistory.slice(1).map((item) => (
+                                <div key={item.id} className="rounded-xl border border-rose-200 bg-white px-3 py-2.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getGuardrailBadgeClasses(item.reason)}`}>
+                                      {getGuardrailReasonLabel(item.reason)}
+                                    </span>
+                                    <span className="text-[11px] text-gray-500">
+                                      {formatGuardrailTime(item.updated_at || item.timestamp)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1.5 text-xs leading-5 text-gray-700">{item.insight}</p>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       </section>
                     </div>
                   </LayoutGroup>
-
-                  <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                    <h3 className="text-2xl font-semibold text-gray-900">Meeting Summary</h3>
-                    <p className="mt-3 text-base leading-7 text-gray-700">{liveMeetingSummary}</p>
-                  </section>
                 </>
               )}
             </div>
@@ -2521,7 +2676,7 @@ export default function Home() {
 
         {(isRecording || transcripts.length > 0) && (
           <aside
-            className={`relative flex border-l border-gray-200 bg-white transition-all duration-300 ${isTranscriptPanelCollapsed ? 'w-8' : 'w-[280px] sm:w-[330px] xl:w-[380px]'
+            className={`relative flex border-l border-gray-200 bg-white transition-all duration-300 ${isTranscriptPanelCollapsed ? 'w-8' : 'w-[28%] min-w-[240px] max-w-[420px]'
               }`}
           >
             <button
@@ -3392,11 +3547,7 @@ export default function Home() {
       <CalendarMeetingPicker
         open={showCalendarPicker}
         onOpenChange={setShowCalendarPicker}
-        onSelectMeeting={(event: CalendarEvent) => {
-          setSelectedCalendarEvent(event);
-          setMeetingTitle(event.meeting_title);
-          setShowCalendarPicker(false);
-        }}
+        onSelectMeeting={handleCalendarMeetingSelect}
       />
 
       <Dialog open={showReauthModal} onOpenChange={setShowReauthModal}>

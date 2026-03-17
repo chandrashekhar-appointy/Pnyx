@@ -122,6 +122,8 @@ async def get_model_config(current_user: User = Depends(get_current_user)):
                     env_key = os.getenv("GROQ_API_KEY")
                 elif provider == "claude":
                     env_key = os.getenv("ANTHROPIC_API_KEY")
+                elif provider == "openrouter":
+                    env_key = os.getenv("OPENROUTER_API_KEY")
 
                 if env_key:
                     config["apiKey"] = mask_key("EXISTS")

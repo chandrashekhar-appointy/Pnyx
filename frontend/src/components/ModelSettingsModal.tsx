@@ -142,33 +142,14 @@ export function ModelSettingsModal({
 
   const modelOptions = {
     ollama: models.map((model) => model.name),
-    claude: ['claude-3-5-sonnet-latest', 'claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620'],
+    claude: ['claude-opus-4-1-20250805'],
     groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-    gemini: ['gemini-2.5-pro', 'gemini-2.5-pro', 'gemini-2.5-pro'],
+    gemini: ['gemini-3-pro-preview'],
     openai: [
+      'gpt-5.4',
       'gpt-5',
       'gpt-5-mini',
-      'gpt-4o',
-      'gpt-4.1',
-      'gpt-4-turbo',
-      'gpt-3.5-turbo',
-      'gpt-4o-2024-11-20',
-      'gpt-4o-2024-08-06',
-      'gpt-4o-mini-2024-07-18',
-      'gpt-4.1-2025-04-14',
-      'gpt-4.1-nano-2025-04-14',
-      'gpt-4.1-mini-2025-04-14',
-      'o4-mini-2025-04-16',
-      'o3-2025-04-16',
-      'o3-mini-2025-01-31',
-      'o1-2024-12-17',
-      'o1-mini-2024-09-12',
-      'gpt-4-turbo-2024-04-09',
-      'gpt-4-0125-Preview',
-      'gpt-4-vision-preview',
-      'gpt-4-1106-Preview',
-      'gpt-3.5-turbo-0125',
-      'gpt-3.5-turbo-1106'
+      'gpt-5'
     ],
     openrouter: openRouterModels.map((m) => m.id),
   };

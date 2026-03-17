@@ -159,10 +159,12 @@ Global rules (apply to every template):
 1) Output valid JSON only. No markdown, no prose outside JSON.
 2) MeetingName must be specific and human-friendly from content. Never use generic names like "Live Meeting", "Untitled Meeting", "General Discussion", or "Team Sync" unless no context exists.
 3) Do not repeat the same point across SessionSummary, KeyItemsDecisions, ImmediateActionItems, NextSteps, and MeetingNotes.
-4) Action items must be unique, owner-first, concrete, and include deadline when available.
-5) MeetingNotes sections should include discussion detail (context, rationale, risks, open questions), not copy top-level bullets verbatim.
-6) If data is missing, return empty blocks [] instead of invented text.
-7) Keep output concise and factual.
+4) Every explicit decision or final agreement made during the meeting must be captured in KeyItemsDecisions. Do not omit a decision if it is present in the transcript or audio.
+5) Action items must be unique, owner-first, concrete, and include deadline when available.
+6) MeetingNotes sections should include discussion detail (context, rationale, risks, open questions) that supports major decisions, not copy top-level bullets verbatim.
+7) If a decision has supporting rationale, tradeoff, owner, or timing, include those details in KeyItemsDecisions.
+8) If data is missing, return empty blocks [] instead of invented text.
+9) Keep output concise and factual.
 """
 
     templates = {
@@ -179,6 +181,7 @@ Global rules (apply to every template):
 }}
 Template-specific rules:
 - Put each decision exactly once in KeyItemsDecisions.
+- If the meeting reaches a decision, KeyItemsDecisions must not be empty.
 - Put each action exactly once in ImmediateActionItems.
 - Do not create MeetingNotes sections named exactly "Participants", "Executive Summary", "Key Decisions", "Action Items", "Next Steps", "Deadlines".
 {global_rules}
@@ -858,9 +861,10 @@ async def generate_notes_with_gemini_background(
             f"{prompt_text}\n\n"
             "Additional instructions:\n"
             "1) Audio is the primary source for decisions, commitments, action items, and meeting intent.\n"
-            "2) Transcript is secondary and should mainly assist with speaker mapping and entities (names/dates/terms).\n"
-            "3) Never invent facts not supported by transcript or audio.\n"
-            "4) Return valid JSON only, matching the required template shape.\n\n"
+            "2) Any explicit decision confirmed in the audio must be included in KeyItemsDecisions, even if the transcript is imperfect.\n"
+            "3) Transcript is secondary and should mainly assist with speaker mapping and entities (names/dates/terms).\n"
+            "4) Never invent facts not supported by transcript or audio.\n"
+            "5) Return valid JSON only, matching the required template shape.\n\n"
             f"Transcript:\n{compact_transcript}"
         )
 
@@ -900,7 +904,7 @@ async def generate_notes_with_gemini_background(
             "fallback_reason": None,
             "notes_transcript_source": transcript_source,
             "notes_agenda_used": bool(calendar_context_lines),
-            "notes_prompt_version": "v1",
+            "notes_prompt_version": "v2",
         }
 
         all_json_data = []

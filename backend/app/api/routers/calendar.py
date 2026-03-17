@@ -33,7 +33,7 @@ except (ImportError, ValueError):
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/calendar", tags=["Calendar"])
 db = DatabaseManager()
 oauth_service = GoogleCalendarOAuthService(db=db)
 reminder_email_service = CalendarReminderEmailService()

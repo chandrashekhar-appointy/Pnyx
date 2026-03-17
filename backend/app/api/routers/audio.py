@@ -959,6 +959,7 @@ async def websocket_streaming_audio(
                         user_email=user_email,
                         meeting_context=ai_context,
                     )
+                    await ai_engine.load_runtime_config()
                     policy_source = await _apply_host_skill_precedence(
                         ai_engine,
                         user_email=user_email,
@@ -1002,6 +1003,7 @@ async def websocket_streaming_audio(
                 user_email=user_email,
                 meeting_context=ai_context,
             )
+            await ai_engine.load_runtime_config()
             policy_source = await _apply_host_skill_precedence(
                 ai_engine,
                 user_email=user_email,
@@ -1262,23 +1264,6 @@ async def websocket_streaming_audio(
         await state_service.db.merge_recording_session_metadata(
             session_id, metadata_patch
         )
-
-        event_type = str(payload.get("event_type") or "").strip().lower()
-        reason_map = {
-            "decision_candidate": "no_decision",
-            "open_discussion": "unresolved_question",
-        }
-        legacy_reason = reason_map.get(event_type)
-        if legacy_reason:
-            await _publish_ai_guardrail_alert_payload(
-                alert_id=str(payload.get("id") or str(uuid.uuid4())),
-                reason=legacy_reason,
-                insight=str(payload.get("body") or payload.get("headline") or ""),
-                confidence=float(payload.get("confidence") or 0.0),
-                event_ts=event_ts,
-                updated_at=str(payload.get("timestamp") or datetime.utcnow().isoformat()),
-                ai_stats=ai_stats,
-            )
 
     async def _publish_ai_host_state_delta_payload(
         state_delta: Dict[str, Any], ai_stats: Optional[Dict[str, Any]] = None

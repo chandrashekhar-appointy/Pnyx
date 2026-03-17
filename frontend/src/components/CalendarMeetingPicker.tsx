@@ -1,9 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { format, parseISO } from 'date-fns';
 import { Calendar as CalendarIcon, Clock, Users, Loader2 } from 'lucide-react';
 import { authFetch } from '@/lib/api';
+
+const IST_TIME_ZONE = 'Asia/Kolkata';
+
+export function formatCalendarEventTimeIST(startTime: string, endTime: string): string {
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const dateFormatter = new Intl.DateTimeFormat('en-IN', {
+        timeZone: IST_TIME_ZONE,
+        day: 'numeric',
+        month: 'short',
+    });
+    const timeFormatter = new Intl.DateTimeFormat('en-IN', {
+        timeZone: IST_TIME_ZONE,
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+    });
+
+    return `${dateFormatter.format(start)}, ${timeFormatter.format(start)} - ${timeFormatter.format(end)} IST`;
+}
 
 export interface CalendarEvent {
     event_id: string;
@@ -79,8 +98,8 @@ export function CalendarMeetingPicker({ open, onOpenChange, onSelectMeeting }: C
                     ) : events.length === 0 ? (
                         <div className="text-center py-8 text-gray-500">
                             <CalendarIcon className="h-10 w-10 mx-auto text-gray-300 mb-3" />
-                            <p>No upcoming meetings found in the next 12 hours.</p>
-                            <p className="text-sm mt-1">Make sure your Google Calendar is connected.</p>
+                            <p>No upcoming meetings with participants found in the next 12 hours.</p>
+                            <p className="text-sm mt-1">Calendar labels and empty events are hidden.</p>
                         </div>
                     ) : (
                         <div className="space-y-3">
@@ -100,7 +119,7 @@ export function CalendarMeetingPicker({ open, onOpenChange, onSelectMeeting }: C
                                     <div className="flex items-center text-xs text-slate-500 mt-2 gap-4">
                                         <span className="flex items-center gap-1.5 font-medium">
                                             <Clock className="w-3.5 h-3.5" />
-                                            {format(parseISO(event.start_time), 'h:mm a')} - {format(parseISO(event.end_time), 'h:mm a')}
+                                            {formatCalendarEventTimeIST(event.start_time, event.end_time)}
                                         </span>
                                         {(event.attendees?.length > 0) && (
                                             <span className="flex items-center gap-1.5">

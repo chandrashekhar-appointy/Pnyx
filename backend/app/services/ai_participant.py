@@ -51,10 +51,27 @@ logger = logging.getLogger(__name__)
 SYSTEM_HOST_SKILLS: Dict[str, str] = load_system_skill_templates()
 CORE_EVENT_TYPES = {"decision_candidate", "open_discussion"}
 DEFAULT_PROVIDER_MODELS = {
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-3-5-sonnet-20241022",
+    "gemini": "gemini-3-pro-preview",
+    "openai": "gpt-5.4",
+    "anthropic": "claude-opus-4-1-20250805",
+    "openrouter": "anthropic/claude-3.5-sonnet",
 }
+
+
+def _clean_env_value(raw: Optional[str], default: str = "") -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return default
+    if " #" in value:
+        value = value.split(" #", 1)[0].strip()
+    return value or default
+
+
+def _normalize_provider_name(raw: Optional[str], default: str = "gemini") -> str:
+    provider = _clean_env_value(raw, default).lower()
+    if provider == "claude":
+        return "anthropic"
+    return provider
 
 
 @dataclass
@@ -283,19 +300,24 @@ class AIParticipantEngine:
         self.user_email = user_email
         self.meeting_context = meeting_context
 
-        self.enabled = os.getenv("AI_PARTICIPANT_ENABLED", "true").lower() == "true"
-        self.provider = (
-            os.getenv("AI_PARTICIPANT_PROVIDER", "gemini").strip().lower() or "gemini"
+        self.enabled = _clean_env_value(
+            os.getenv("AI_PARTICIPANT_ENABLED", "true"), "true"
+        ).lower() == "true"
+        self.provider = _normalize_provider_name(
+            os.getenv("AI_PARTICIPANT_PROVIDER", "gemini"), "gemini"
         )
-        if self.provider == "claude":
-            self.provider = "anthropic"
-        self.model_name = os.getenv(
-            "AI_PARTICIPANT_MODEL",
+        self.model_name = _clean_env_value(
+            os.getenv(
+                "AI_PARTICIPANT_MODEL",
+                DEFAULT_PROVIDER_MODELS.get(
+                    self.provider, DEFAULT_PROVIDER_MODELS["gemini"]
+                ),
+            ),
             DEFAULT_PROVIDER_MODELS.get(self.provider, DEFAULT_PROVIDER_MODELS["gemini"]),
         )
-        fallback_models = os.getenv(
+        fallback_models = _clean_env_value(os.getenv(
             "AI_PARTICIPANT_FALLBACK_MODELS", ""
-        )
+        ), "")
         self.fallback_models = [
             m.strip() for m in fallback_models.split(",") if (m or "").strip()
         ]
@@ -324,6 +346,7 @@ class AIParticipantEngine:
         self._last_analysis_at = 0.0
         self._lock = asyncio.Lock()
         self._provider_api_key: Optional[str] = None
+        self._runtime_config_loaded = False
         self._missing_key_logged = False
         self._last_alert_summary = "None"
 
@@ -366,6 +389,52 @@ class AIParticipantEngine:
             "host_suggestions_suppressed": 0,
             "host_policy_source": self._host_policy_source,
         }
+
+    async def load_runtime_config(self) -> None:
+        if self._runtime_config_loaded:
+            return
+
+        env_provider = os.getenv("AI_PARTICIPANT_PROVIDER")
+        env_model = os.getenv("AI_PARTICIPANT_MODEL")
+        if env_provider or env_model:
+            self.provider = _normalize_provider_name(env_provider, self.provider)
+            if env_model:
+                self.model_name = _clean_env_value(
+                    env_model,
+                    DEFAULT_PROVIDER_MODELS.get(
+                        self.provider, DEFAULT_PROVIDER_MODELS["gemini"]
+                    ),
+                )
+            self._stats["provider"] = self.provider
+            self._stats["last_model_used"] = self.model_name
+            self._runtime_config_loaded = True
+            return
+
+        try:
+            config = await self.db.get_model_config()
+        except Exception:
+            config = None
+
+        provider = _normalize_provider_name(
+            (config or {}).get("provider"), self.provider
+        )
+        # OpenRouter should only be used for AI insights when explicitly enabled
+        # via env. Otherwise stay on native providers/models.
+        if provider == "openrouter":
+            provider = self.provider
+        if provider not in DEFAULT_PROVIDER_MODELS:
+            provider = self.provider
+
+        model_name = _clean_env_value(
+            (config or {}).get("model"),
+            DEFAULT_PROVIDER_MODELS.get(provider, DEFAULT_PROVIDER_MODELS["gemini"]),
+        )
+
+        self.provider = provider
+        self.model_name = model_name
+        self._stats["provider"] = self.provider
+        self._stats["last_model_used"] = self.model_name
+        self._runtime_config_loaded = True
 
     async def ingest_transcript(
         self,
@@ -512,7 +581,8 @@ class AIParticipantEngine:
             return payload
 
     async def _reason_with_llm(self) -> Optional[GuardrailLLMOutput]:
-        api_key = await self._get_gemini_api_key()
+        await self.load_runtime_config()
+        api_key = await self._get_provider_api_key()
         if not api_key:
             return None
 
@@ -541,9 +611,18 @@ class AIParticipantEngine:
             return None
 
     async def _reason_host_events(self) -> List[Dict[str, Any]]:
-        api_key = await self._get_gemini_api_key()
+        await self.load_runtime_config()
+        api_key = await self._get_provider_api_key()
         if not api_key:
-            return []
+            logger.warning(
+                "[AIParticipant] Missing provider API key for provider=%s model=%s; using heuristic fallback",
+                self.provider,
+                self.model_name,
+            )
+            return self._build_fallback_host_events(
+                transcript_window=self.buffer.get_text(),
+                reason="missing_api_key",
+            )
 
         transcript_window = self.buffer.get_text()
         if not transcript_window:
@@ -552,13 +631,29 @@ class AIParticipantEngine:
         prompt = self._build_host_prompt(transcript_window)
         raw_text, used_model = await self._call_llm_json(prompt)
         if raw_text is None:
-            return []
+            logger.warning(
+                "[AIParticipant] Empty LLM response provider=%s model=%s; using heuristic fallback",
+                self.provider,
+                used_model,
+            )
+            return self._build_fallback_host_events(
+                transcript_window=transcript_window,
+                reason="llm_failure",
+            )
 
         self._stats["last_model_used"] = used_model
         parsed = self._extract_json(raw_text)
         if not parsed:
             self._stats["parse_failures"] += 1
-            return []
+            logger.warning(
+                "[AIParticipant] Invalid JSON response provider=%s model=%s; using heuristic fallback",
+                self.provider,
+                used_model,
+            )
+            return self._build_fallback_host_events(
+                transcript_window=transcript_window,
+                reason="parse_failure",
+            )
 
         # Update the rolling meeting summary from the model directly into host state
         summary_text = str(parsed.get("meeting_summary") or "").strip()
@@ -567,7 +662,10 @@ class AIParticipantEngine:
 
         events = parsed.get("events") if isinstance(parsed, dict) else None
         if not isinstance(events, list):
-            return []
+            return self._build_fallback_host_events(
+                transcript_window=transcript_window,
+                reason="missing_events",
+            )
 
         normalized_events: List[Dict[str, Any]] = []
         for event in events:
@@ -608,6 +706,11 @@ class AIParticipantEngine:
                 }
             )
         self._refresh_host_state_from_events(normalized_events)
+        if not normalized_events and not (self._host_state.meeting_summary or "").strip():
+            return self._build_fallback_host_events(
+                transcript_window=transcript_window,
+                reason="empty_model_output",
+            )
         return normalized_events
 
     async def _call_llm_json(self, prompt: str) -> Tuple[Optional[str], str]:
@@ -641,6 +744,7 @@ class AIParticipantEngine:
         return None, used_model
 
     async def _generate_llm_text(self, model: str, prompt: str) -> str:
+        await self.load_runtime_config()
         api_key = await self._get_provider_api_key()
         if not api_key:
             raise ValueError(f"{self.provider} API key not found")
@@ -682,6 +786,26 @@ class AIParticipantEngine:
                     parts.append(text)
             return "".join(parts)
 
+        if self.provider == "openrouter":
+            client = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                default_headers={
+                    "HTTP-Referer": "https://meet.quexio.com",
+                    "X-Title": "Pnyx AI Participant",
+                },
+            )
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return response.choices[0].message.content or ""
+
         raise ValueError(f"Unsupported AI participant provider: {self.provider}")
 
     async def _get_provider_api_key(self) -> Optional[str]:
@@ -690,17 +814,21 @@ class AIParticipantEngine:
 
         key = ""
         if self.provider == "gemini":
-            key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+            key = _clean_env_value(os.getenv("GEMINI_API_KEY", ""), "") or _clean_env_value(os.getenv("GOOGLE_API_KEY", ""), "")
             if not key:
                 key = (await self.db.get_api_key("gemini", user_email=self.user_email)) or ""
         elif self.provider == "openai":
-            key = os.getenv("OPENAI_API_KEY", "").strip()
+            key = _clean_env_value(os.getenv("OPENAI_API_KEY", ""), "")
             if not key:
                 key = (await self.db.get_api_key("openai", user_email=self.user_email)) or ""
         elif self.provider == "anthropic":
-            key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+            key = _clean_env_value(os.getenv("ANTHROPIC_API_KEY", ""), "")
             if not key:
                 key = (await self.db.get_api_key("claude", user_email=self.user_email)) or ""
+        elif self.provider == "openrouter":
+            key = _clean_env_value(os.getenv("OPENROUTER_API_KEY", ""), "")
+            if not key:
+                key = (await self.db.get_user_api_key(self.user_email, "openrouter")) or ""
 
         key = key.strip()
         if not key and not self._missing_key_logged:
@@ -714,6 +842,10 @@ class AIParticipantEngine:
         self._provider_api_key = key or None
         return self._provider_api_key
 
+    async def _get_gemini_api_key(self) -> Optional[str]:
+        # Backward-compat shim for older call sites and hot-reloaded containers.
+        return await self._get_provider_api_key()
+
     def _build_prompt(self, transcript_window: str) -> str:
         title = self.meeting_context.title or ""
         goal = self.meeting_context.goal or ""
@@ -721,6 +853,7 @@ class AIParticipantEngine:
         agenda_text = self.meeting_context.agenda_text or ""
         participant_names = self.meeting_context.participant_names or []
         participant_line = ", ".join(participant_names[:25]) if participant_names else "None"
+        current_summary = self._host_state.meeting_summary or "None"
 
         return f"""
 You are a silent meeting observer. Stay silent unless a guardrail condition is detected.
@@ -731,6 +864,8 @@ Meeting Context:
 - Description: {description}
 - Agenda: {agenda_text}
 - Participants: {participant_line}
+- Rolling meeting summary so far:
+{current_summary}
 - Previous alert summary: {self._last_alert_summary}
 
 Guardrail reasons:
@@ -789,7 +924,8 @@ Meeting Context:
 - Agenda: {agenda_text}
 - Participants: {participant_line}
 - Role Mode: {role}
-- Current Summary: {self._host_state.meeting_summary or "None"}
+- Rolling meeting summary so far:
+{self._host_state.meeting_summary or "None"}
 - Already Pinned Decisions/Topics: {pinned_line}
 - Skill Name: {skill_name}
 - Skill Description: {skill_description}
@@ -813,11 +949,17 @@ Allowed custom event_type values from the active skill:
 Rules:
 - Return strict JSON object only with this shape:
   {{"meeting_summary": "...", "events": [{{"event_type": "...", "title": "...", "content": "...", "confidence": 0.0, "priority": "low|medium|high", "source_excerpt": "..."}}]}}
-- `meeting_summary` should be a rolling 2-3 sentence paragraph summarizing the entire meeting up to this point. Include key details from the past 20-30 minutes if applicable.
+- `meeting_summary` must be valid markdown and should be more detailed than a short paragraph.
+- Prefer short markdown sections such as `### Overview`, `### Decisions`, `### Open Discussions`, and `### Next Steps` when the transcript supports them.
+- Use concise bullet points under those sections. Omit empty sections instead of inventing content.
+- Include key decisions, unresolved discussions, risks, and concrete next steps when present.
+- Treat the rolling meeting summary above as cumulative context from earlier parts of the meeting. Update it incrementally using the latest transcript window instead of rewriting from scratch every time.
+- Preserve still-relevant earlier decisions and open discussions unless the newest transcript clearly changes them.
 - If no event is needed, return {{"events": []}}.
 - Do NOT suggest events for topics or decisions that are already in the "Already Pinned Decisions/Topics" list.
 - ONLY output a `decision_candidate` if an explicit choice, commitment, or action has been agreed upon by participants.
 - ONLY output an `open_discussion` when the transcript shows an unresolved question, active debate, disagreement, or conflict that still needs resolution.
+- Do NOT output `open_discussion` for meta-comments about guardrails, topic drift, agenda misalignment, or whether something connects to the agenda. Those are not discussion items unless participants are actively debating them.
 - Any non-core event must use one of the allowed custom event types from the active skill.
 - Do NOT classify informational statements, general discussion, tech news summaries, or observations as decisions.
 - Keep title <= 10 words and content <= 35 words.
@@ -844,6 +986,8 @@ Recent transcript window:
         title = " ".join(str(event.get("title") or "").split()).strip()
         content = " ".join(str(event.get("content") or "").split()).strip()
         if not content:
+            return None
+        if self._should_suppress_meta_open_discussion(event_type, title, content):
             return None
 
         return HostSuggestion(
@@ -932,6 +1076,121 @@ Recent transcript window:
         if normalized in CORE_EVENT_TYPES or normalized in allowed_custom:
             return normalized
         return None
+
+    @staticmethod
+    def _should_suppress_meta_open_discussion(
+        event_type: str, title: str, content: str
+    ) -> bool:
+        if event_type != "open_discussion":
+            return False
+        text = " ".join(f"{title} {content}".lower().split())
+        blocked_markers = [
+            "guard rail",
+            "guardrail",
+            "topic drift",
+            "agenda misalignment",
+            "does not clearly connect to the stated",
+            "does not clearly connect to the agenda",
+            "trigger discussion surfaced",
+        ]
+        return any(marker in text for marker in blocked_markers)
+
+    def _build_fallback_host_events(
+        self,
+        transcript_window: str,
+        reason: str,
+    ) -> List[Dict[str, Any]]:
+        summary_text = self._fallback_meeting_summary(transcript_window)
+        if summary_text:
+            self._host_state.meeting_summary = summary_text
+
+        events = self._fallback_core_events(transcript_window)
+        self._refresh_host_state_from_events(events)
+        self._host_state.updated_at = datetime.utcnow().isoformat()
+        self._stats["last_fallback_reason"] = reason
+        logger.info(
+            "[AIParticipant] Heuristic fallback applied reason=%s summary=%s events=%s",
+            reason,
+            bool(summary_text),
+            len(events),
+        )
+        return events
+
+    def _fallback_meeting_summary(self, transcript_window: str) -> str:
+        lines = [
+            " ".join(line.split()).strip()
+            for line in str(transcript_window or "").splitlines()
+            if " ".join(line.split()).strip()
+        ]
+        if not lines:
+            return ""
+
+        trimmed_lines = lines[-6:]
+        stripped_segments: List[str] = []
+        for line in trimmed_lines:
+            clean = re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).strip()
+            if clean:
+                stripped_segments.append(clean.rstrip("."))
+
+        if not stripped_segments:
+            return ""
+
+        bullets = [f"- {segment}." for segment in stripped_segments[:4]]
+        return "### Discussion Snapshot\n" + "\n".join(bullets)
+
+    def _fallback_core_events(self, transcript_window: str) -> List[Dict[str, Any]]:
+        text = "\n".join(
+            re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).strip()
+            for line in str(transcript_window or "").splitlines()
+            if re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).strip()
+        )
+        normalized_text = " ".join(text.split())
+        if not normalized_text:
+            return []
+
+        events: List[Dict[str, Any]] = []
+
+        decision_match = re.search(
+            r"(decision|decided|final|agreed|ठीक है तो decision|यह तो decision|तो decision|we will|हम .* करेंगे|की जगह .* बनाएंगे)(.{0,180})",
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+        if decision_match:
+            snippet = " ".join(decision_match.group(0).split()).strip(" .,:;")
+            events.append(
+                {
+                    "event_type": "decision_candidate",
+                    "title": "Possible Decision",
+                    "content": snippet[:180],
+                    "confidence": 0.74,
+                    "priority": "medium",
+                    "source_excerpt": snippet[:180],
+                }
+            )
+
+        discussion_match = re.search(
+            r"(problem|issue|दिक्कत|कैसे|how|check करना है|देखना है|समझना है|let's see|question)(.{0,180})",
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+        if discussion_match:
+            snippet = " ".join(discussion_match.group(0).split()).strip(" .,:;")
+            if snippet and all(
+                snippet != str(existing.get("content") or "")
+                for existing in events
+            ):
+                events.append(
+                    {
+                        "event_type": "open_discussion",
+                        "title": "Open Discussion",
+                        "content": snippet[:180],
+                        "confidence": 0.7,
+                        "priority": "medium",
+                        "source_excerpt": snippet[:180],
+                    }
+                )
+
+        return events[:2]
 
     def _refresh_host_state_from_events(self, events: List[Dict[str, Any]]) -> None:
         current_topic = ""

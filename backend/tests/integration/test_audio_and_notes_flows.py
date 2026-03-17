@@ -152,3 +152,10 @@ async def test_generate_notes_kicks_off_background_task(async_client, monkeypatc
     result = response.json()
     assert result["status"] == "processing"
     assert result["meeting_id"] == meeting_id
+
+
+def test_notes_prompt_requires_decisions_and_preserves_audio_priority():
+    prompt = transcripts_router.get_template_prompt("standard_meeting")
+
+    assert "Every explicit decision or final agreement made during the meeting must be captured in KeyItemsDecisions." in prompt
+    assert "If the meeting reaches a decision, KeyItemsDecisions must not be empty." in prompt

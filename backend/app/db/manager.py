@@ -2,10 +2,11 @@ import asyncpg
 import json
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List
 import logging
 from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
 
 # Import from core.encryption
 try:
@@ -19,6 +20,7 @@ except ImportError:
         from core.encryption import encrypt_key, decrypt_key
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class DatabaseManager:
@@ -1783,26 +1785,39 @@ class DatabaseManager:
         self, meeting_id: str, user_email: str, provider: str = "google"
     ) -> Optional[Dict]:
         async with self._get_connection() as conn:
-            meeting = await conn.fetchrow(
+            session = await conn.fetchrow(
                 """
-                SELECT title, created_at
-                FROM meetings
-                WHERE id = $1
+                SELECT metadata
+                FROM recording_sessions
+                WHERE meeting_id = $1
+                  AND user_email = $2
+                ORDER BY updated_at DESC, started_at DESC
+                LIMIT 1
             """,
                 meeting_id,
+                user_email,
             )
-            if not meeting:
+
+            if not session:
                 return None
 
-            meeting_title = meeting["title"] or ""
+            metadata = session["metadata"]
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
 
-            # If the meeting has the default placeholder title, it means the user
-            # started an ad-hoc meeting without explicitly setting a context.
-            # Do not attempt to guess the calendar event based on title or time.
-            if meeting_title.strip() in ("Untitled Meeting", "New Meeting", ""):
+            manual_context = metadata.get("ai_manual_context") or {}
+            if not isinstance(manual_context, dict):
                 return None
 
-            # Primary match: similar title + close start time window.
+            calendar_event_id = str(manual_context.get("calendar_event_id") or "").strip()
+            if not calendar_event_id:
+                return None
+
             row = await conn.fetchrow(
                 """
                 SELECT event_id, meeting_title, meeting_link, agenda_description,
@@ -1810,23 +1825,13 @@ class DatabaseManager:
                 FROM calendar_events
                 WHERE user_email = $1
                   AND provider = $2
-                  AND (
-                      LOWER(meeting_title) = LOWER($3)
-                      OR LOWER(meeting_title) LIKE LOWER($3) || '%'
-                      OR LOWER($3) LIKE LOWER(meeting_title) || '%'
-                  )
-                  AND start_time BETWEEN ($4::timestamp - INTERVAL '12 hours') AND ($4::timestamp + INTERVAL '12 hours')
-                ORDER BY ABS(EXTRACT(EPOCH FROM (start_time - $4))) ASC
+                  AND event_id = $3
                 LIMIT 1
             """,
                 user_email,
                 provider,
-                meeting["title"] or "",
-                meeting["created_at"],
+                calendar_event_id,
             )
-
-            # Fallback removed to prevent auto-associating ad hoc meetings
-            # with calendar events just based on time.
             if not row:
                 return None
 
@@ -1888,6 +1893,26 @@ class DatabaseManager:
         self, user_email: str, provider: str = "google", hours: int = 12
     ) -> List[Dict]:
         """Fetch all calendar events for a user within a time window from now."""
+        def _to_ist_iso(value):
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone(IST).isoformat()
+            return value
+
+        def _has_real_participants(attendees: List[Dict]) -> bool:
+            for attendee in attendees or []:
+                if isinstance(attendee, dict):
+                    email = str(attendee.get("email") or "").strip()
+                    name = str(attendee.get("name") or "").strip()
+                    if email or name:
+                        return True
+                elif str(attendee or "").strip():
+                    return True
+            return False
+
         async with self._get_connection() as conn:
             rows = await conn.fetch(
                 """
@@ -1898,7 +1923,7 @@ class DatabaseManager:
                   AND provider = $2
                   AND start_time BETWEEN (NOW() - make_interval(hours := $3)) AND (NOW() + make_interval(hours := $3))
                 ORDER BY ABS(EXTRACT(EPOCH FROM (start_time - NOW()))) ASC
-                MAX 100
+                LIMIT 100
             """,
                 user_email,
                 provider,
@@ -1913,6 +1938,8 @@ class DatabaseManager:
                     if isinstance(attendees_raw, str)
                     else attendees_raw
                 )
+                if not _has_real_participants(attendees):
+                    continue
                 upcoming_events.append(
                     {
                         "event_id": row["event_id"],
@@ -1920,8 +1947,8 @@ class DatabaseManager:
                         "meeting_link": row["meeting_link"],
                         "agenda_description": row["agenda_description"],
                         "attendees": attendees,
-                        "start_time": row["start_time"],
-                        "end_time": row["end_time"],
+                        "start_time": _to_ist_iso(row["start_time"]),
+                        "end_time": _to_ist_iso(row["end_time"]),
                     }
                 )
 
