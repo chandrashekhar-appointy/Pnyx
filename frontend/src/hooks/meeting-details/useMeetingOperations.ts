@@ -19,6 +19,9 @@ export function useMeetingOperations({
     try {
       const response = await authFetch(`/meetings/${meeting.id}/recording-url`);
       if (!response.ok) {
+        if (response.status === 409) {
+          throw new Error('Recording is still being finalized');
+        }
         throw new Error('No recording available');
       }
       

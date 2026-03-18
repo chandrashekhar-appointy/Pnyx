@@ -35,7 +35,7 @@ try:
     from ...services.audio.manager import StreamingTranscriptionManager
     from ...services.audio.groq_client import GroqTranscriptionClient
     from ...services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
-    from ...services.audio.recorder import get_or_create_recorder, stop_recorder
+    from ...services.audio.recorder import get_or_create_recorder, stop_recorder, flush_recorder
     from ...services.audio.post_recording import get_post_recording_service
     from ...services.audio.pipeline_state import get_audio_pipeline_state_service
     from ...services.storage import StorageService
@@ -50,7 +50,7 @@ except (ImportError, ValueError):
     from services.audio.manager import StreamingTranscriptionManager
     from services.audio.groq_client import GroqTranscriptionClient
     from services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
-    from services.audio.recorder import get_or_create_recorder, stop_recorder
+    from services.audio.recorder import get_or_create_recorder, stop_recorder, flush_recorder
     from services.audio.post_recording import get_post_recording_service
     from services.audio.pipeline_state import get_audio_pipeline_state_service
     from services.storage import StorageService
@@ -1988,6 +1988,19 @@ async def websocket_streaming_audio(
         if session_id in active_connections:
             active_connections[session_id] -= 1
             if active_connections[session_id] <= 0:
+                persisted_stop_requested = False
+                try:
+                    persisted_session = await db.get_recording_session(session_id)
+                    persisted_stop_requested = bool(
+                        persisted_session
+                        and (
+                            persisted_session.get("status") == "stopping_requested"
+                            or persisted_session.get("stop_requested_at")
+                        )
+                    )
+                except Exception:
+                    persisted_stop_requested = False
+
                 try:
                     stats = await db.get_recording_chunk_stats(session_id)
                     await db.update_recording_session_counters(
@@ -1997,7 +2010,20 @@ async def websocket_streaming_audio(
                     )
                 except Exception:
                     pass
-                if explicit_stop:
+                should_finalize_now = explicit_stop or persisted_stop_requested
+                logger.info(
+                    "[Streaming] Teardown decision session=%s explicit_stop=%s persisted_stop=%s active_connections=%s",
+                    session_id,
+                    explicit_stop,
+                    persisted_stop_requested,
+                    active_connections.get(session_id, 0),
+                )
+                if should_finalize_now:
+                    if persisted_stop_requested and not explicit_stop:
+                        logger.info(
+                            "[Streaming] Session %s honoring persisted stop request during teardown.",
+                            session_id,
+                        )
                     if AUDIO_CELERY_ENABLED:
                         await _finalize_session(
                             session_id, flush=True, process_audio=False
@@ -2013,6 +2039,11 @@ async def websocket_streaming_audio(
                                 )
                             await state_service.transition(session_id, "finalizing")
                             task_id = enqueue_finalize_session_task(session_id)
+                            logger.info(
+                                "[Streaming] Enqueued finalize task for %s: %s",
+                                session_id,
+                                task_id,
+                            )
                             await state_service.db.merge_recording_session_metadata(
                                 session_id,
                                 {
@@ -2031,6 +2062,34 @@ async def websocket_streaming_audio(
                             session_id, flush=True, process_audio=True
                         )
                 else:
+                    try:
+                        flushed_chunk = await flush_recorder(
+                            session_context.get(session_id, {}).get("recorder_key")
+                            or session_id
+                        )
+                        if flushed_chunk:
+                            chunk_index = flushed_chunk.get("chunk_index")
+                            storage_path = flushed_chunk.get("storage_path")
+                            size_bytes = int(flushed_chunk.get("size_bytes") or 0)
+                            if chunk_index is not None and storage_path:
+                                await db.upsert_recording_chunk(
+                                    session_id=session_id,
+                                    chunk_index=int(chunk_index),
+                                    byte_size=size_bytes,
+                                    storage_path=storage_path,
+                                    upload_status="uploaded",
+                                )
+                                logger.info(
+                                    "[Streaming] Flushed partial recorder buffer for session=%s chunk=%s before resume grace",
+                                    session_id,
+                                    chunk_index,
+                                )
+                    except Exception as flush_err:
+                        logger.warning(
+                            "[Streaming] Failed flushing recorder buffer for %s before resume grace: %s",
+                            session_id,
+                            flush_err,
+                        )
                     logger.info(
                         f"[Streaming] Session {session_id} disconnected; waiting {RESUME_GRACE_SECONDS}s for resume before finalize."
                     )
@@ -2134,6 +2193,7 @@ async def get_meeting_recording_url(
         raise HTTPException(status_code=403, detail="Permission denied")
 
     try:
+        latest_session = await db.get_latest_recording_session_for_meeting(meeting_id)
         preferred_paths = [
             (f"{meeting_id}/recording.wav", "audio/wav"),
             (f"{meeting_id}/recording.opus", "audio/ogg"),
@@ -2182,6 +2242,21 @@ async def get_meeting_recording_url(
                     }
 
         if not selected_path:
+            if latest_session and latest_session.get("status") in {
+                "recording",
+                "stopping_requested",
+                "uploading_chunks",
+                "finalizing",
+                "postprocessing",
+            }:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Recording is still being finalized",
+                        "session_status": latest_session.get("status"),
+                        "session_id": latest_session.get("session_id"),
+                    },
+                )
             raise HTTPException(status_code=404, detail="Recording not found")
 
         download_filename = f"recording-{meeting_id}.{selected_format}"
@@ -2242,6 +2317,44 @@ async def get_pipeline_session_status(
         "error_message": session.get("error_message"),
         "metadata": session.get("metadata") or {},
         "chunk_stats": chunk_stats,
+        "updated_at": session.get("updated_at"),
+    }
+
+
+@router.get("/sessions/{session_id}/recording-integrity")
+async def get_recording_integrity_status(
+    session_id: str, current_user: User = Depends(get_current_user)
+):
+    if not _is_safe_identifier(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+
+    session = await db.get_recording_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.get("user_email") != current_user.email:
+        meeting_id = session.get("meeting_id")
+        if not meeting_id or not await rbac.can(current_user, "view", meeting_id):
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+    metadata = session.get("metadata") or {}
+    integrity = metadata.get("recording_integrity") or {}
+    repair_result = metadata.get("repair_result")
+    repair_health = metadata.get("repair_health")
+    chunk_stats = await db.get_recording_chunk_stats(session_id)
+
+    return {
+        "session_id": session_id,
+        "meeting_id": session.get("meeting_id"),
+        "status": session.get("status"),
+        "expected_chunk_count": session.get("expected_chunk_count", 0),
+        "finalized_chunk_count": session.get("finalized_chunk_count", 0),
+        "dropped_chunk_count": session.get("dropped_chunk_count", 0),
+        "chunk_stats": chunk_stats,
+        "integrity": integrity,
+        "repair_attempted": bool(metadata.get("repair_attempted")),
+        "repair_health": repair_health,
+        "repair_result": repair_result,
         "updated_at": session.get("updated_at"),
     }
 
@@ -2376,6 +2489,98 @@ async def get_streaming_slo_report(
             "slo_max_seconds": STREAMING_SLO_MAX_SECONDS,
         },
         "sessions": summaries,
+    }
+
+
+@router.get("/recordings/integrity-report")
+async def get_recording_integrity_report(
+    lookback_hours: int = 24,
+    limit: int = 200,
+    only_issues: bool = True,
+    current_user: User = Depends(get_current_user),
+):
+    is_admin = current_user.email == "gagan@appointy.com"
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    lookback_hours = max(1, min(168, int(lookback_hours)))
+    limit = max(10, min(1000, int(limit)))
+    started_after = datetime.utcnow() - timedelta(hours=lookback_hours)
+    sessions = await db.list_recording_sessions_since(
+        started_after=started_after,
+        limit=limit,
+    )
+
+    report_items: List[Dict[str, Any]] = []
+    for session in sessions:
+        metadata = session.get("metadata") or {}
+        integrity = metadata.get("recording_integrity") or {}
+        health = integrity.get("health") or {}
+        issue_flags = {
+            "finalize_failed": integrity.get("finalize_status")
+            not in (None, "completed", "already_running"),
+            "missing_artifact": bool(health) and not health.get("verified", True),
+            "suspiciously_short": bool(health.get("suspiciously_short")),
+            "repair_attempted": bool(metadata.get("repair_attempted")),
+            "dropped_chunks": int(session.get("dropped_chunk_count") or 0) > 0,
+        }
+        has_issue = any(issue_flags.values())
+        if only_issues and not has_issue:
+            continue
+
+        report_items.append(
+            {
+                "session_id": session.get("session_id"),
+                "meeting_id": session.get("meeting_id"),
+                "user_email": session.get("user_email"),
+                "status": session.get("status"),
+                "started_at": (
+                    session.get("started_at").isoformat()
+                    if session.get("started_at")
+                    else None
+                ),
+                "finalized_at": (
+                    session.get("finalized_at").isoformat()
+                    if session.get("finalized_at")
+                    else None
+                ),
+                "expected_chunk_count": session.get("expected_chunk_count", 0),
+                "finalized_chunk_count": session.get("finalized_chunk_count", 0),
+                "dropped_chunk_count": session.get("dropped_chunk_count", 0),
+                "integrity": integrity,
+                "issue_flags": issue_flags,
+            }
+        )
+
+    return {
+        "scope": {
+            "lookback_hours": lookback_hours,
+            "started_after": started_after.isoformat(),
+            "limit": limit,
+            "only_issues": only_issues,
+        },
+        "summary": {
+            "sessions_considered": len(sessions),
+            "sessions_returned": len(report_items),
+            "issue_counts": {
+                "finalize_failed": sum(
+                    1 for item in report_items if item["issue_flags"]["finalize_failed"]
+                ),
+                "missing_artifact": sum(
+                    1 for item in report_items if item["issue_flags"]["missing_artifact"]
+                ),
+                "suspiciously_short": sum(
+                    1 for item in report_items if item["issue_flags"]["suspiciously_short"]
+                ),
+                "repair_attempted": sum(
+                    1 for item in report_items if item["issue_flags"]["repair_attempted"]
+                ),
+                "dropped_chunks": sum(
+                    1 for item in report_items if item["issue_flags"]["dropped_chunks"]
+                ),
+            },
+        },
+        "sessions": report_items,
     }
 
 

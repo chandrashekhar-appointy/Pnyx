@@ -54,7 +54,19 @@ class AudioRecorder:
         self.storage_path = Path(storage_path) / meeting_id
         self.storage_type = os.getenv("STORAGE_TYPE", "local").lower()
         self.chunk_prefix = os.getenv("AUDIO_CHUNK_PREFIX", "pcm_chunks")
-        self.chunk_duration_seconds = chunk_duration_seconds
+        configured_chunk_duration = float(
+            os.getenv("AUDIO_CHUNK_DURATION_SECONDS", str(chunk_duration_seconds))
+        )
+        self.chunk_duration_seconds = max(2.0, configured_chunk_duration)
+        configured_flush_interval = float(
+            os.getenv(
+                "AUDIO_BUFFER_FLUSH_INTERVAL_SECONDS",
+                str(min(5.0, self.chunk_duration_seconds)),
+            )
+        )
+        self.flush_interval_seconds = max(
+            1.0, min(configured_flush_interval, self.chunk_duration_seconds)
+        )
         self.parallel_encoding_enabled = (
             os.getenv("AUDIO_PARALLEL_ENCODING_ENABLED", "true").lower() == "true"
         )
@@ -144,6 +156,7 @@ class AudioRecorder:
             logger.info(f"🎙️ Audio recording started for meeting {self.meeting_id}")
             logger.info(f"   Storage path: {self.storage_path}")
             logger.info(f"   Chunk duration: {self.chunk_duration_seconds}s")
+            logger.info(f"   Flush interval: {self.flush_interval_seconds}s")
             logger.info(f"   Next chunk index: {self.chunk_index}")
 
             return True
@@ -252,13 +265,23 @@ class AudioRecorder:
             self.current_chunk_buffer.extend(audio_data)
 
             # Check if we should save the chunk
-            if len(self.current_chunk_buffer) >= self.target_chunk_bytes:
+            current_time = time.time()
+            elapsed = (
+                current_time - self.chunk_start_time
+                if self.chunk_start_time is not None
+                else 0.0
+            )
+            should_flush = len(self.current_chunk_buffer) >= self.target_chunk_bytes
+            should_flush = should_flush or (
+                len(self.current_chunk_buffer) > 0
+                and elapsed >= self.flush_interval_seconds
+            )
+            if should_flush:
                 # IMPORTANT: Swap buffer immediately to prevent data loss during 'await'
                 data_to_save = bytes(self.current_chunk_buffer)
                 self.current_chunk_buffer = bytearray()
 
                 # Update chunk start time for calculations before background save
-                current_time = time.time()
                 old_chunk_start = self.chunk_start_time
                 self.chunk_start_time = current_time
 
@@ -350,6 +373,20 @@ class AudioRecorder:
         self.current_chunk_buffer = bytearray()
         return await self._actually_save_chunk(data, self.chunk_start_time, time.time())
 
+    async def flush_current_chunk(self) -> Optional[Dict]:
+        """
+        Persist any buffered audio without stopping the recorder.
+        Used on disconnect/resume boundaries to reduce in-memory loss.
+        """
+        if not self.is_recording or not self.current_chunk_buffer:
+            return None
+
+        before_count = len(self.chunks_metadata)
+        saved_path = await self._save_current_chunk()
+        if not saved_path or len(self.chunks_metadata) <= before_count:
+            return None
+        return self.chunks_metadata[-1]
+
     async def stop(self) -> Dict:
         """
         Finalize recording session.
@@ -438,12 +475,15 @@ class AudioRecorder:
         try:
             ext = "opus" if self.archive_format == "opus" else "m4a"
             if self.storage_type == "gcp":
-                output_dir = Path(tempfile.gettempdir()) / "meeting-archives"
+                output_dir = Path(tempfile.gettempdir()) / "meeting-archives" / self.meeting_id
             else:
                 output_dir = self.storage_path
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            self.encoder_output_path = output_dir / f"recording.{ext}"
+            # Use a unique archive path per recorder instance to prevent concurrent
+            # or resumed sessions from overwriting one another in /tmp.
+            archive_basename = f"recording-{uuid.uuid4().hex}.{ext}"
+            self.encoder_output_path = output_dir / archive_basename
 
             if ext == "opus":
                 cmd = [
@@ -570,7 +610,7 @@ class AudioRecorder:
             )
             if uploaded:
                 logger.info(
-                    f"⬆️ Uploaded compressed archive for {self.meeting_id}: {destination}"
+                    f"⬆️ Uploaded compressed archive for {self.meeting_id}: {destination} from {self.encoder_output_path}"
                 )
         except Exception as e:
             logger.warning(
@@ -586,6 +626,11 @@ class AudioRecorder:
                     and self.encoder_output_path.exists()
                 ):
                     self.encoder_output_path.unlink()
+                    parent_dir = self.encoder_output_path.parent
+                    try:
+                        parent_dir.rmdir()
+                    except OSError:
+                        pass
             except Exception:
                 pass
             self.encoder_process = None
@@ -801,6 +846,16 @@ async def get_or_create_recorder(
         active_recorders[meeting_id] = recorder
 
     return active_recorders[meeting_id]
+
+
+async def flush_recorder(meeting_id: str) -> Optional[Dict]:
+    """
+    Flush any buffered audio for an active recorder without stopping it.
+    """
+    recorder = active_recorders.get(meeting_id)
+    if not recorder:
+        return None
+    return await recorder.flush_current_chunk()
 
 
 async def stop_recorder(meeting_id: str) -> Optional[Dict]:

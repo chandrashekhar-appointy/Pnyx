@@ -13,15 +13,18 @@ import asyncio
 import logging
 import os
 import shutil
+import json
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 try:
     from .recorder import AudioRecorder
     from ..storage import StorageService
+    from ...db import DatabaseManager
 except (ImportError, ValueError):
     from services.audio.recorder import AudioRecorder
     from services.storage import StorageService
+    from db import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,14 @@ class PostRecordingService:
 
     def __init__(self, storage_path: str = "./data/recordings"):
         self.storage_path = Path(storage_path)
+        self.db = DatabaseManager()
         self.storage_type = os.getenv("STORAGE_TYPE", "local").lower()
+        self.recovery_min_duration_ratio = float(
+            os.getenv("AUDIO_RECOVERY_MIN_DURATION_RATIO", "0.8")
+        )
+        self.recovery_min_expected_seconds = float(
+            os.getenv("AUDIO_RECOVERY_MIN_EXPECTED_SECONDS", "15")
+        )
         self.prefer_compressed_read = (
             os.getenv("AUDIO_PREFER_COMPRESSED_READ", "true").lower() == "true"
         )
@@ -83,166 +93,439 @@ class PostRecordingService:
         }
 
         try:
-            recording_dir = self.storage_path / meeting_id
-
-            if self.prefer_compressed_read and self.skip_wav_finalize_if_compressed:
-                compressed_path = await self._get_compressed_archive_path(meeting_id)
-                # DANGER: Only use compressed path if we are absolutely sure no concurrent pcm chunks exist
-                # If we have PCM chunks, we MUST merge them to ensure no data loss from session resumes.
-                if compressed_path:
-                    logger.info(f"💾 Found compressed archive: {compressed_path}")
-                    
-                    # Double check for PCM chunks
-                    has_chunks = False
-                    if self.storage_type == "gcp":
-                        prefix = f"{meeting_id}/{self.chunk_prefix}/"
-                        files = await StorageService.list_files(prefix)
-                        has_chunks = any(f.endswith(".pcm") for f in files)
-                    else:
-                        local_dir = self.storage_path / meeting_id
-                        has_chunks = local_dir.exists() and any(local_dir.glob("chunk_*.pcm"))
-
-                    if not has_chunks:
-                        if self.storage_type == "gcp" and self.delete_pcm_after_merge:
-                            try:
-                                await self._cleanup_gcp_chunks(meeting_id)
-                                result["local_cleaned"] = True
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to delete PCM chunks in GCS for {meeting_id}: {e}"
-                                )
-                        result["status"] = "completed"
-                        result["uploaded_to_gcp"] = self.storage_type == "gcp"
-                        result["gcp_path"] = compressed_path
-                        logger.info(
-                            f"✅ Post-recording fast path for {meeting_id}: {compressed_path} already available"
-                        )
-                        if trigger_diarization:
-                            asyncio.create_task(
-                                self._trigger_diarization(meeting_id, user_email)
-                            )
-                        return result
-                    else:
-                        logger.info(f"📦 PCM chunks detected for {meeting_id}, ignoring compressed archive to ensure full merge.")
-
-            if self.storage_type == "gcp":
-                logger.info(f"☁️ GCP mode: merging PCM in backend for {meeting_id}")
-                merged = await self._merge_gcp_chunks_to_wav(meeting_id)
-                if not merged:
-                    result["status"] = "merge_failed"
-                    result["error"] = "Failed to merge PCM chunks in GCP"
+            async with self.db.advisory_lock(f"audio-finalize:{meeting_id}") as acquired:
+                if not acquired:
+                    result["status"] = "already_running"
+                    result["error"] = "Another finalize job is already in progress"
+                    logger.info(
+                        "⏳ Skipping duplicate finalize for %s because another worker holds the lock",
+                        meeting_id,
+                    )
                     return result
 
-                result["uploaded_to_gcp"] = True
-                result["gcp_path"] = f"{meeting_id}/recording.wav"
+                logger.info("🔒 Acquired finalize lock for %s", meeting_id)
+                recording_dir = self.storage_path / meeting_id
 
-                if self.delete_pcm_after_merge:
-                    try:
-                        await self._cleanup_gcp_chunks(meeting_id)
-                        result["local_cleaned"] = True
-                    except Exception as e:
-                        logger.warning(f"Failed to delete PCM chunks in GCS: {e}")
+                if self.prefer_compressed_read and self.skip_wav_finalize_if_compressed:
+                    compressed_path = await self._get_compressed_archive_path(meeting_id)
+                    if compressed_path:
+                        logger.info(f"💾 Found compressed archive: {compressed_path}")
+
+                        has_chunks = False
+                        if self.storage_type == "gcp":
+                            prefix = f"{meeting_id}/{self.chunk_prefix}/"
+                            files = await StorageService.list_files(prefix)
+                            has_chunks = any(f.endswith(".pcm") for f in files)
+                        else:
+                            local_dir = self.storage_path / meeting_id
+                            has_chunks = local_dir.exists() and any(local_dir.glob("chunk_*.pcm"))
+
+                        if not has_chunks:
+                            verified = await self._verify_storage_artifact(
+                                compressed_path,
+                                min_size_bytes=128,
+                            )
+                            if not verified:
+                                result["status"] = "verification_failed"
+                                result["error"] = (
+                                    "Compressed archive exists but failed verification"
+                                )
+                                return result
+
+                            if self.storage_type == "gcp" and self.delete_pcm_after_merge:
+                                try:
+                                    await self._cleanup_gcp_chunks(meeting_id)
+                                    result["local_cleaned"] = True
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Failed to delete PCM chunks in GCS for {meeting_id}: {e}"
+                                    )
+                            result["status"] = "completed"
+                            result["uploaded_to_gcp"] = self.storage_type == "gcp"
+                            result["gcp_path"] = compressed_path
+                            logger.info(
+                                f"✅ Post-recording fast path for {meeting_id}: {compressed_path} already available"
+                            )
+                            if trigger_diarization:
+                                asyncio.create_task(
+                                    self._trigger_diarization(meeting_id, user_email)
+                                )
+                            return result
+                        else:
+                            logger.info(f"📦 PCM chunks detected for {meeting_id}, ignoring compressed archive to ensure full merge.")
+
+                if self.storage_type == "gcp":
+                    logger.info(f"☁️ GCP mode: merging PCM in backend for {meeting_id}")
+                    merged = await self._merge_gcp_chunks_to_wav(meeting_id)
+                    if not merged:
+                        result["status"] = "merge_failed"
+                        result["error"] = "Failed to merge PCM chunks in GCP"
+                        return result
+
+                    result["uploaded_to_gcp"] = True
+                    result["gcp_path"] = f"{meeting_id}/recording.wav"
+                    healthy, health = await self._assess_recording_health(
+                        meeting_id,
+                        artifact_path=result["gcp_path"],
+                    )
+                    if not healthy:
+                        logger.warning(
+                            "⚠️ Recording health check failed for %s after merge: %s",
+                            meeting_id,
+                            health,
+                        )
+                        recovered = await self._attempt_recovery(
+                            meeting_id,
+                            artifact_path=result["gcp_path"],
+                            health=health,
+                        )
+                        if not recovered:
+                            result["status"] = "recovery_failed"
+                            result["error"] = (
+                                "Merged WAV failed health check and recovery was unsuccessful"
+                            )
+                            result["health"] = health
+                            return result
+                        healthy, health = await self._assess_recording_health(
+                            meeting_id,
+                            artifact_path=result["gcp_path"],
+                        )
+                        if not healthy:
+                            result["status"] = "recovery_failed"
+                            result["error"] = (
+                                "Recovered WAV still failed health check"
+                            )
+                            result["health"] = health
+                            return result
+
+                    result["health"] = health
+
+                    if self.delete_pcm_after_merge:
+                        try:
+                            await self._cleanup_gcp_chunks(meeting_id)
+                            result["local_cleaned"] = True
+                        except Exception as e:
+                            logger.warning(f"Failed to delete PCM chunks in GCS: {e}")
+
+                    result["status"] = "completed"
+                    logger.info(f"✅ Post-recording (GCP) complete for {meeting_id}")
+
+                    if trigger_diarization:
+                        asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
+
+                    return result
+
+                if not recording_dir.exists():
+                    result["status"] = "no_recording"
+                    result["error"] = f"No recording found for meeting {meeting_id}"
+                    logger.warning(f"No recording directory found: {recording_dir}")
+                    return result
+
+                logger.info(f"📼 Step 1: Merging PCM chunks for meeting {meeting_id}")
+                merged_pcm = await self._merge_chunks(meeting_id)
+
+                if not merged_pcm:
+                    logger.warning(
+                        f"Merge returned None, attempting manual chunk scan for {meeting_id}"
+                    )
+                    chunk_dir = self.storage_path / meeting_id
+                    if chunk_dir.exists() and list(chunk_dir.glob("chunk_*.pcm")):
+                        logger.info("Found orphan chunks, retrying merge...")
+                        merged_pcm = await AudioRecorder.merge_chunks(
+                            meeting_id, str(self.storage_path)
+                        )
+
+                if not merged_pcm:
+                    wav_path = self.storage_path / meeting_id / "recording.wav"
+                    if wav_path.exists():
+                        logger.info("Found existing recording.wav, using that.")
+                        result["merged_locally"] = True
+                        result["local_path"] = str(wav_path)
+                    else:
+                        result["status"] = "merge_failed"
+                        result["error"] = (
+                            "Failed to merge audio chunks and no existing WAV found"
+                        )
+                        return result
+
+                if merged_pcm:
+                    logger.info(f"🎵 Step 2: Converting to WAV format")
+                    wav_path = await self._convert_to_wav(meeting_id, merged_pcm)
+
+                    if not wav_path:
+                        result["status"] = "conversion_failed"
+                        result["error"] = "Failed to convert to WAV"
+                        return result
+
+                    result["merged_locally"] = True
+                    result["local_path"] = str(wav_path)
+
+                if not result.get("local_path"):
+                    result["status"] = "error"
+                    result["error"] = "Lost audio file path reference"
+                    return result
+
+                wav_path = Path(result["local_path"])
+                healthy, health = await self._assess_recording_health(
+                    meeting_id,
+                    artifact_path=str(wav_path),
+                    local_override_path=wav_path,
+                )
+                if not healthy:
+                    recovered = await self._attempt_recovery(
+                        meeting_id,
+                        artifact_path=str(wav_path),
+                        health=health,
+                        local_override_path=wav_path,
+                    )
+                    if not recovered:
+                        result["status"] = "recovery_failed"
+                        result["error"] = "Local WAV failed health check and recovery was unsuccessful"
+                        result["health"] = health
+                        return result
+                    healthy, health = await self._assess_recording_health(
+                        meeting_id,
+                        artifact_path=str(wav_path),
+                        local_override_path=wav_path,
+                    )
+                    if not healthy:
+                        result["status"] = "recovery_failed"
+                        result["error"] = "Recovered local WAV still failed health check"
+                        result["health"] = health
+                        return result
+                result["health"] = health
+
+                if self.storage_type == "gcp":
+                    logger.info(f"☁️ Step 3: Uploading to GCP")
+                    gcp_path = await self._upload_to_gcp(meeting_id, wav_path)
+
+                    if gcp_path:
+                        result["uploaded_to_gcp"] = True
+                        result["gcp_path"] = gcp_path
+                        healthy_remote, remote_health = await self._assess_recording_health(
+                            meeting_id,
+                            artifact_path=gcp_path,
+                        )
+                        if not healthy_remote:
+                            recovered = await self._attempt_recovery(
+                                meeting_id,
+                                artifact_path=gcp_path,
+                                health=remote_health,
+                            )
+                            if not recovered:
+                                logger.warning(f"GCP upload failed recovery health check, keeping local files")
+                                result["status"] = "recovery_failed"
+                                result["error"] = "Uploaded artifact failed health check and recovery was unsuccessful"
+                                result["health"] = remote_health
+                                return result
+                            healthy_remote, remote_health = await self._assess_recording_health(
+                                meeting_id,
+                                artifact_path=gcp_path,
+                            )
+                            if not healthy_remote:
+                                result["status"] = "recovery_failed"
+                                result["error"] = "Recovered uploaded artifact still failed health check"
+                                result["health"] = remote_health
+                                return result
+
+                        result["health"] = remote_health
+                        if self.delete_local_after_upload:
+                            logger.info(f"🗑️ Step 4: Cleaning up local files")
+                            await self._cleanup_local(meeting_id, keep_wav=False)
+                            result["local_cleaned"] = True
+                    else:
+                        logger.warning(f"GCP upload failed verification, keeping local files")
+                        result["status"] = "verification_failed"
+                        result["error"] = "Uploaded artifact could not be verified"
+                        return result
+                else:
+                    logger.info(f"📁 Step 3: Local storage mode - skipping GCP upload")
 
                 result["status"] = "completed"
-                logger.info(f"✅ Post-recording (GCP) complete for {meeting_id}")
+                logger.info(f"✅ Post-recording processing complete for {meeting_id}")
 
                 if trigger_diarization:
                     asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
 
                 return result
 
-            # Local mode: Check if recording directory exists
-            if not recording_dir.exists():
-                result["status"] = "no_recording"
-                result["error"] = f"No recording found for meeting {meeting_id}"
-                logger.warning(f"No recording directory found: {recording_dir}")
-                return result
-
-            # Step 1: Merge PCM chunks
-            logger.info(f"📼 Step 1: Merging PCM chunks for meeting {meeting_id}")
-            merged_pcm = await self._merge_chunks(meeting_id)
-
-            if not merged_pcm:
-                # RECOVERY ATTEMPT: Check if we have chunks but merge failed silently
-                logger.warning(
-                    f"Merge returned None, attempting manual chunk scan for {meeting_id}"
-                )
-                chunk_dir = self.storage_path / meeting_id
-                if chunk_dir.exists() and list(chunk_dir.glob("chunk_*.pcm")):
-                    logger.info("Found orphan chunks, retrying merge...")
-                    merged_pcm = await AudioRecorder.merge_chunks(
-                        meeting_id, str(self.storage_path)
-                    )
-
-            if not merged_pcm:
-                # Final check: Maybe it was already merged and converted?
-                wav_path = self.storage_path / meeting_id / "recording.wav"
-                if wav_path.exists():
-                    logger.info("Found existing recording.wav, using that.")
-                    result["merged_locally"] = True
-                    result["local_path"] = str(wav_path)
-                    # Jump to GCP upload
-                else:
-                    result["status"] = "merge_failed"
-                    result["error"] = (
-                        "Failed to merge audio chunks and no existing WAV found"
-                    )
-                    return result
-
-            # Step 2: Convert to WAV (if we have new PCM)
-            if merged_pcm:
-                logger.info(f"🎵 Step 2: Converting to WAV format")
-                wav_path = await self._convert_to_wav(meeting_id, merged_pcm)
-
-                if not wav_path:
-                    result["status"] = "conversion_failed"
-                    result["error"] = "Failed to convert to WAV"
-                    return result
-
-                result["merged_locally"] = True
-                result["local_path"] = str(wav_path)
-
-            # Ensure we have a path before proceeding
-            if not result.get("local_path"):
-                result["status"] = "error"
-                result["error"] = "Lost audio file path reference"
-                return result
-
-            wav_path = Path(result["local_path"])
-
-            # Step 3: Upload to GCP (if configured)
-            if self.storage_type == "gcp":
-                logger.info(f"☁️ Step 3: Uploading to GCP")
-                gcp_path = await self._upload_to_gcp(meeting_id, wav_path)
-
-                if gcp_path:
-                    result["uploaded_to_gcp"] = True
-                    result["gcp_path"] = gcp_path
-
-                    # Step 4: Clean up local files (if configured and upload succeeded)
-                    if self.delete_local_after_upload:
-                        logger.info(f"🗑️ Step 4: Cleaning up local files")
-                        await self._cleanup_local(meeting_id, keep_wav=False)
-                        result["local_cleaned"] = True
-                else:
-                    logger.warning(f"GCP upload failed, keeping local files")
-            else:
-                logger.info(f"📁 Step 3: Local storage mode - skipping GCP upload")
-
-            result["status"] = "completed"
-            logger.info(f"✅ Post-recording processing complete for {meeting_id}")
-
-            # Step 5: Trigger diarization if requested
-            if trigger_diarization:
-                asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
-
-            return result
-
         except Exception as e:
             logger.error(f"Post-recording processing failed: {e}", exc_info=True)
             result["status"] = "error"
             result["error"] = str(e)
             return result
+
+    async def _verify_storage_artifact(
+        self, path: str, min_size_bytes: int = 1
+    ) -> bool:
+        exists = await StorageService.check_file_exists(path)
+        if not exists:
+            logger.warning("Artifact verification failed; file missing: %s", path)
+            return False
+
+        size = await StorageService.get_file_size(path)
+        if size is None:
+            logger.warning(
+                "Artifact verification could not determine size for %s", path
+            )
+            return False
+        if size < min_size_bytes:
+            logger.warning(
+                "Artifact verification failed; %s is too small (%s bytes, expected >= %s)",
+                path,
+                size,
+                min_size_bytes,
+            )
+            return False
+        return True
+
+    async def _verify_local_path(self, path: Path, min_size_bytes: int = 1) -> bool:
+        try:
+            if not path.exists():
+                logger.warning("Local artifact verification failed; missing: %s", path)
+                return False
+            size = path.stat().st_size
+            if size < min_size_bytes:
+                logger.warning(
+                    "Local artifact verification failed; %s is too small (%s bytes, expected >= %s)",
+                    path,
+                    size,
+                    min_size_bytes,
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.warning("Local artifact verification errored for %s: %s", path, e)
+            return False
+
+    async def _assess_recording_health(
+        self,
+        meeting_id: str,
+        artifact_path: str,
+        local_override_path: Optional[Path] = None,
+    ) -> Tuple[bool, Dict]:
+        if local_override_path:
+            verified = await self._verify_local_path(local_override_path, min_size_bytes=45)
+            size_bytes = (
+                int(local_override_path.stat().st_size)
+                if local_override_path.exists()
+                else None
+            )
+        else:
+            verified = await self._verify_storage_artifact(artifact_path, min_size_bytes=45)
+            size_bytes = await StorageService.get_file_size(artifact_path)
+
+        expected_duration = await self._get_expected_pcm_duration_seconds(meeting_id)
+        actual_duration = (
+            self._wav_duration_seconds_from_size(size_bytes)
+            if size_bytes is not None
+            else None
+        )
+        duration_ratio = None
+        suspiciously_short = False
+        if expected_duration and actual_duration is not None and expected_duration > 0:
+            duration_ratio = actual_duration / expected_duration
+            suspiciously_short = (
+                expected_duration >= self.recovery_min_expected_seconds
+                and duration_ratio < self.recovery_min_duration_ratio
+            )
+
+        health = {
+            "artifact_path": artifact_path,
+            "verified": verified,
+            "size_bytes": size_bytes,
+            "expected_duration_seconds": expected_duration,
+            "actual_duration_seconds": actual_duration,
+            "duration_ratio": duration_ratio,
+            "suspiciously_short": suspiciously_short,
+        }
+        return bool(verified and not suspiciously_short), health
+
+    async def _attempt_recovery(
+        self,
+        meeting_id: str,
+        artifact_path: str,
+        health: Dict,
+        local_override_path: Optional[Path] = None,
+    ) -> bool:
+        if not health.get("expected_duration_seconds"):
+            logger.warning("Skipping recovery for %s because expected duration is unavailable", meeting_id)
+            return False
+
+        logger.warning(
+            "🛠️ Attempting recording recovery for %s (artifact=%s health=%s)",
+            meeting_id,
+            artifact_path,
+            health,
+        )
+        if self.storage_type == "gcp" and not local_override_path:
+            return await self._merge_gcp_chunks_to_wav(meeting_id, append_existing=False)
+
+        merged_pcm = await self._merge_chunks(meeting_id)
+        if not merged_pcm:
+            return False
+        wav_path = await self._convert_to_wav(
+            meeting_id,
+            merged_pcm,
+            append_existing=False,
+        )
+        return bool(wav_path and await self._verify_local_path(wav_path, min_size_bytes=45))
+
+    async def _get_expected_pcm_duration_seconds(self, meeting_id: str) -> Optional[float]:
+        metadata = await self._load_chunk_metadata(meeting_id)
+        chunks = metadata.get("chunks") if isinstance(metadata, dict) else None
+        if chunks:
+            durations = [
+                float(chunk.get("duration_seconds") or 0.0)
+                for chunk in chunks
+                if isinstance(chunk, dict)
+            ]
+            total = sum(d for d in durations if d > 0)
+            if total > 0:
+                return total
+
+        if self.storage_type == "gcp":
+            prefix = f"{meeting_id}/{self.chunk_prefix}/"
+            files = await StorageService.list_files(prefix)
+            chunk_files = [f for f in files if f.endswith(".pcm")]
+            if not chunk_files:
+                return None
+            total_bytes = 0
+            for path in chunk_files:
+                size = await StorageService.get_file_size(path)
+                if size:
+                    total_bytes += int(size)
+            return total_bytes / float(16000 * 2) if total_bytes > 0 else None
+
+        chunk_dir = self.storage_path / meeting_id
+        if not chunk_dir.exists():
+            return None
+        total_bytes = sum(path.stat().st_size for path in chunk_dir.glob("chunk_*.pcm"))
+        return total_bytes / float(16000 * 2) if total_bytes > 0 else None
+
+    async def _load_chunk_metadata(self, meeting_id: str) -> Dict:
+        try:
+            if self.storage_type == "gcp":
+                metadata_path = f"{meeting_id}/{self.chunk_prefix}/metadata.json"
+                metadata_bytes = await StorageService.download_bytes(metadata_path)
+                if not metadata_bytes:
+                    return {}
+                return json.loads(metadata_bytes.decode("utf-8"))
+
+            metadata_path = self.storage_path / meeting_id / "metadata.json"
+            if not metadata_path.exists():
+                return {}
+            return json.loads(metadata_path.read_text())
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _wav_duration_seconds_from_size(size_bytes: Optional[int]) -> Optional[float]:
+        if size_bytes is None:
+            return None
+        if size_bytes <= 44:
+            return 0.0
+        return max(0.0, float(size_bytes - 44) / float(16000 * 2))
 
     async def _get_compressed_archive_path(self, meeting_id: str) -> Optional[str]:
         """
@@ -279,7 +562,7 @@ class PostRecordingService:
         except Exception:
             return None
 
-    async def _merge_gcp_chunks_to_wav(self, meeting_id: str) -> bool:
+    async def _merge_gcp_chunks_to_wav(self, meeting_id: str, append_existing: bool = True) -> bool:
         """
         Merge PCM chunks stored in GCS into a WAV file, upload to GCS.
         No local disk usage; uses in-memory buffering.
@@ -314,11 +597,12 @@ class PostRecordingService:
                 wav_file.setframerate(16000)
 
                 # Check for existing recording.wav to append to
-                existing_wav_path = f"{meeting_id}/recording.wav"
-                existing_wav_bytes = await StorageService.download_bytes(existing_wav_path)
-                if existing_wav_bytes and len(existing_wav_bytes) > 44:
-                    logger.info(f"Found existing GCP recording.wav for {meeting_id}, appending new PCM chunks.")
-                    wav_file.writeframes(existing_wav_bytes[44:])
+                if append_existing:
+                    existing_wav_path = f"{meeting_id}/recording.wav"
+                    existing_wav_bytes = await StorageService.download_bytes(existing_wav_path)
+                    if existing_wav_bytes and len(existing_wav_bytes) > 44:
+                        logger.info(f"Found existing GCP recording.wav for {meeting_id}, appending new PCM chunks.")
+                        wav_file.writeframes(existing_wav_bytes[44:])
 
                 for blob_name in chunk_files:
                     chunk = await StorageService.download_bytes(blob_name)
@@ -367,14 +651,16 @@ class PostRecordingService:
             logger.error(f"Failed to merge chunks: {e}")
             return None
 
-    async def _convert_to_wav(self, meeting_id: str, pcm_data: bytes) -> Optional[Path]:
+    async def _convert_to_wav(
+        self, meeting_id: str, pcm_data: bytes, append_existing: bool = True
+    ) -> Optional[Path]:
         """Convert PCM to WAV and append to existing WAV locally if present."""
         try:
             wav_path = self.storage_path / meeting_id / "recording.wav"
             import aiofiles
             
             existing_pcm = b""
-            if wav_path.exists():
+            if append_existing and wav_path.exists():
                 logger.info(f"Found existing recording.wav for {meeting_id}, appending new PCM chunks.")
                 async with aiofiles.open(wav_path, "rb") as f:
                     old_wav = await f.read()

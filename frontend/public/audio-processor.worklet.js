@@ -23,7 +23,28 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
     this.sampleIndex = 0;
     this.filterBuffer = [0, 0, 0]; // Simple 3-tap low-pass filter
 
+    this.port.onmessage = (event) => {
+      if (event.data?.type === 'flush') {
+        this.flushBuffer();
+      }
+    };
+
     console.log(`[AudioWorklet] Initialized: ${this.inputSampleRate}Hz → ${this.outputSampleRate}Hz (ratio: ${this.downsampleRatio})`);
+  }
+
+  flushBuffer() {
+    if (this.bufferIndex <= 0) {
+      return;
+    }
+
+    const pcmData = new Int16Array(this.bufferIndex);
+    for (let j = 0; j < this.bufferIndex; j++) {
+      const s = Math.max(-1, Math.min(1, this.buffer[j]));
+      pcmData[j] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+
+    this.port.postMessage(pcmData.buffer, [pcmData.buffer]);
+    this.bufferIndex = 0;
   }
 
   process(inputs, outputs, parameters) {
@@ -56,18 +77,7 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
 
         // Send to main thread when buffer full
         if (this.bufferIndex >= this.bufferSize) {
-          // Convert float32 (-1 to 1) to int16 PCM (-32768 to 32767)
-          const pcmData = new Int16Array(this.bufferSize);
-          for (let j = 0; j < this.bufferSize; j++) {
-            const s = Math.max(-1, Math.min(1, this.buffer[j]));
-            pcmData[j] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-
-          // Send to main thread (transfer buffer for performance)
-          this.port.postMessage(pcmData.buffer, [pcmData.buffer]);
-
-          // Reset buffer
-          this.bufferIndex = 0;
+          this.flushBuffer();
         }
       }
     }

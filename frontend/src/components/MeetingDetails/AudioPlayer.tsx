@@ -31,6 +31,8 @@ export function AudioPlayer({ meetingId }: AudioPlayerProps) {
         } else {
           if (res.status === 404) {
              setError("No recording");
+          } else if (res.status === 409) {
+             setError("Processing");
           } else {
              console.error("Failed to load audio url");
              setError("Error loading");
@@ -89,6 +91,7 @@ export function AudioPlayer({ meetingId }: AudioPlayerProps) {
   };
 
   if (error === "No recording") return null;
+  if (error === "Processing") return null;
   if (isLoading) return null; // Don't show skeleton to keep UI clean, just pop in when ready
   if (!audioUrl) return null;
 

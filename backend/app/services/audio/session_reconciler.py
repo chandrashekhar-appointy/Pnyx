@@ -1,12 +1,15 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta
 from typing import Optional
 
 try:
     from ...db import DatabaseManager
+    from .post_recording import get_post_recording_service
 except (ImportError, ValueError):
     from db import DatabaseManager
+    from services.audio.post_recording import get_post_recording_service
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,12 @@ class AudioSessionReconciler:
             os.getenv("AUDIO_SESSION_RECONCILER_ENABLED", "true").lower() == "true"
         )
         self.celery_enabled = os.getenv("AUDIO_CELERY_ENABLED", "false").lower() == "true"
+        self.repair_enabled = (
+            os.getenv("AUDIO_SESSION_REPAIR_ENABLED", "true").lower() == "true"
+        )
+        self.repair_lookback_hours = int(
+            os.getenv("AUDIO_SESSION_REPAIR_LOOKBACK_HOURS", "24")
+        )
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
@@ -67,44 +76,98 @@ class AudioSessionReconciler:
             stale_after_minutes=self.stale_after_minutes,
             limit=100,
         )
-        if not stale:
+        if stale:
+            logger.warning("[AudioReconciler] Found %s stale sessions", len(stale))
+            for session in stale:
+                session_id = session["session_id"]
+                status = session["status"]
+                try:
+                    if self.celery_enabled:
+                        try:
+                            from ...tasks.audio_pipeline import (
+                                enqueue_finalize_session_task,
+                            )
+                        except (ImportError, ValueError):
+                            from tasks.audio_pipeline import enqueue_finalize_session_task
+
+                        task_id = enqueue_finalize_session_task(session_id)
+                        await self.db.merge_recording_session_metadata(
+                            session_id,
+                            {
+                                "reconcile_requeued": True,
+                                "reconcile_finalize_task_id": task_id,
+                            },
+                        )
+                        logger.info(
+                            "[AudioReconciler] Requeued finalize task for stale session %s (%s)",
+                            session_id,
+                            status,
+                        )
+                    else:
+                        logger.warning(
+                            "[AudioReconciler] Session %s is stale in %s but celery is disabled",
+                            session_id,
+                            status,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "[AudioReconciler] Failed reconciling session %s: %s",
+                        session_id,
+                        exc,
+                    )
+
+        if self.repair_enabled:
+            await self._repair_recent_sessions()
+
+    async def _repair_recent_sessions(self):
+        started_after = datetime.utcnow() - timedelta(hours=self.repair_lookback_hours)
+        sessions = await self.db.list_recording_sessions_since(
+            started_after=started_after,
+            limit=100,
+        )
+        if not sessions:
             return
 
-        logger.warning("[AudioReconciler] Found %s stale sessions", len(stale))
-        for session in stale:
-            session_id = session["session_id"]
-            status = session["status"]
+        post_service = get_post_recording_service()
+        for session in sessions:
+            status = session.get("status")
+            if status not in {"completed", "failed"}:
+                continue
+            meeting_id = session.get("meeting_id")
+            session_id = session.get("session_id")
+            if not meeting_id or not session_id:
+                continue
             try:
-                if self.celery_enabled:
-                    try:
-                        from ...tasks.audio_pipeline import (
-                            enqueue_finalize_session_task,
-                        )
-                    except (ImportError, ValueError):
-                        from tasks.audio_pipeline import enqueue_finalize_session_task
+                healthy, health = await post_service._assess_recording_health(
+                    meeting_id=meeting_id,
+                    artifact_path=f"{meeting_id}/recording.wav",
+                )
+                if healthy:
+                    continue
 
-                    task_id = enqueue_finalize_session_task(session_id)
-                    await self.db.merge_recording_session_metadata(
-                        session_id,
-                        {
-                            "reconcile_requeued": True,
-                            "reconcile_finalize_task_id": task_id,
-                        },
-                    )
-                    logger.info(
-                        "[AudioReconciler] Requeued finalize task for stale session %s (%s)",
-                        session_id,
-                        status,
-                    )
-                else:
-                    logger.warning(
-                        "[AudioReconciler] Session %s is stale in %s but celery is disabled",
-                        session_id,
-                        status,
-                    )
+                logger.warning(
+                    "[AudioReconciler] Repairing suspicious recording session=%s meeting=%s health=%s",
+                    session_id,
+                    meeting_id,
+                    health,
+                )
+                result = await post_service.finalize_recording(
+                    meeting_id=meeting_id,
+                    trigger_diarization=False,
+                    user_email=session.get("user_email"),
+                )
+                await self.db.merge_recording_session_metadata(
+                    session_id,
+                    {
+                        "repair_attempted": True,
+                        "repair_health": health,
+                        "repair_result": result,
+                    },
+                )
             except Exception as exc:
                 logger.error(
-                    "[AudioReconciler] Failed reconciling session %s: %s",
+                    "[AudioReconciler] Failed repairing session %s (%s): %s",
                     session_id,
+                    meeting_id,
                     exc,
                 )

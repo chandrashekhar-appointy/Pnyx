@@ -209,6 +209,14 @@ class StorageService:
         else:
             return await StorageService._check_local_exists(path)
 
+    @staticmethod
+    async def get_file_size(path: str) -> Optional[int]:
+        """Return file size in bytes when available."""
+        if STORAGE_TYPE == "gcp":
+            return await StorageService._get_gcp_file_size(path)
+        else:
+            return await StorageService._get_local_file_size(path)
+
     # --- Internal Implementations ---
 
     @staticmethod
@@ -232,6 +240,38 @@ class StorageService:
     async def _check_local_exists(relative_path: str) -> bool:
         base_path = Path("./data/recordings")
         return (base_path / relative_path).exists()
+
+    @staticmethod
+    async def _get_gcp_file_size(blob_name: str) -> Optional[int]:
+        try:
+            bucket = get_gcp_bucket()
+            if not bucket:
+                return None
+
+            import asyncio
+
+            loop = asyncio.get_running_loop()
+
+            def _get_size():
+                blob = bucket.get_blob(blob_name)
+                return int(blob.size) if blob and blob.size is not None else None
+
+            return await loop.run_in_executor(None, _get_size)
+        except Exception as e:
+            logger.error(f"GCS size check failed: {e}")
+            return None
+
+    @staticmethod
+    async def _get_local_file_size(relative_path: str) -> Optional[int]:
+        try:
+            base_path = Path("./data/recordings")
+            path = base_path / relative_path
+            if not path.exists():
+                return None
+            return int(path.stat().st_size)
+        except Exception as e:
+            logger.error(f"Local size check failed: {e}")
+            return None
 
     @staticmethod
     async def _upload_to_gcp(local_path: str, blob_name: str) -> bool:

@@ -423,29 +423,44 @@ export class AudioStreamClient {
     }
   }
 
+  private async flushProcessorBuffer(): Promise<void> {
+    if (!this.audioWorklet) return;
+    try {
+      this.audioWorklet.port.postMessage({ type: 'flush' });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    } catch (error) {
+      console.warn('[AudioStream] Processor flush failed:', error);
+    }
+  }
+
+  private async drainOutgoingAudio(maxWaitMs: number = 500): Promise<void> {
+    const startedAt = Date.now();
+
+    if (this.websocket?.readyState === WebSocket.OPEN) {
+      this.flushQueue();
+    }
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      const pendingQueue = this.audioQueue.length;
+      const pendingSocketBytes = this.websocket?.bufferedAmount || 0;
+      if (pendingQueue <= 0 && pendingSocketBytes <= 0) {
+        return;
+      }
+      if (this.websocket?.readyState === WebSocket.OPEN) {
+        this.flushQueue();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   /**
    * Cleanup all resources
    */
   private async cleanup(): Promise<void> {
-    // Stop audio worklet
-    if (this.audioWorklet) {
-      this.audioWorklet.disconnect();
-      this.audioWorklet = null;
-    }
+    await this.flushProcessorBuffer();
+    await this.drainOutgoingAudio();
 
-    // Close audio context
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
-
-    // Stop media stream
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-      this.mediaStream = null;
-    }
-
-    // Close WebSocket
+    // Close WebSocket after flushing processor + buffered chunks
     if (this.websocket) {
       try {
         if (this.websocket.readyState === WebSocket.OPEN) {
@@ -453,6 +468,7 @@ export class AudioStreamClient {
             this.pendingStopResolve = resolve;
             this.pendingStopReject = reject;
           });
+          this.flushQueue();
           this.websocket.send(JSON.stringify({ type: 'stop' }));
           await Promise.race([
             ackPromise,
@@ -467,6 +483,23 @@ export class AudioStreamClient {
       }
       this.websocket = null;
     }
+
+    // Stop audio worklet after stop handshake so last flush can arrive
+    if (this.audioWorklet) {
+      this.audioWorklet.disconnect();
+      this.audioWorklet = null;
+    }
+
+    if (this.audioContext) {
+      await this.audioContext.close();
+      this.audioContext = null;
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => track.stop());
+      this.mediaStream = null;
+    }
+
     this.pendingStopResolve = null;
     this.pendingStopReject = null;
   }

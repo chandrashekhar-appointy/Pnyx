@@ -5,6 +5,7 @@ import json
 from typing import Optional
 import os
 from pathlib import Path
+from datetime import datetime
 
 from celery import shared_task, group
 
@@ -294,6 +295,12 @@ async def _finalize_session_async(session_id: str):
     await state.transition(session_id, "finalizing")
 
     try:
+        logger.info(
+            "[CeleryAudio] Finalize task started for session=%s meeting=%s status=%s",
+            session_id,
+            session["meeting_id"],
+            session["status"],
+        )
         chunk_upload_via_celery = (
             os.getenv("AUDIO_CHUNK_UPLOAD_VIA_CELERY", "false").lower() == "true"
         )
@@ -331,6 +338,28 @@ async def _finalize_session_async(session_id: str):
             trigger_diarization=False,
             user_email=session["user_email"],
         )
+        integrity_summary = {
+            "finalize_status": result.get("status"),
+            "finalize_error": result.get("error"),
+            "artifact_path": result.get("gcp_path") or result.get("local_path"),
+            "uploaded_to_gcp": bool(result.get("uploaded_to_gcp")),
+            "local_cleaned": bool(result.get("local_cleaned")),
+            "health": result.get("health"),
+            "last_finalize_attempt_at": datetime.utcnow().isoformat(),
+        }
+        await db.merge_recording_session_metadata(
+            session_id,
+            {
+                "recording_integrity": integrity_summary,
+            },
+        )
+        logger.info(
+            "[CeleryAudio] Finalize result for session=%s meeting=%s status=%s error=%s",
+            session_id,
+            session["meeting_id"],
+            result.get("status"),
+            result.get("error"),
+        )
         if result.get("status") == "completed":
             postprocess_enabled = (
                 os.getenv("AUDIO_POSTPROCESS_ENABLED", "true").lower() == "true"
@@ -352,6 +381,19 @@ async def _finalize_session_async(session_id: str):
                     await state.transition(session_id, "completed")
             else:
                 await state.transition(session_id, "completed")
+        elif result.get("status") == "already_running":
+            await db.merge_recording_session_metadata(
+                session_id,
+                {
+                    "finalize_lock_skipped": True,
+                    "finalize_lock_message": result.get("error"),
+                },
+            )
+            logger.info(
+                "[CeleryAudio] Finalize already in progress for session=%s; leaving state unchanged",
+                session_id,
+            )
+            return
         else:
             await state.transition(
                 session_id,

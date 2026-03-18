@@ -2,6 +2,7 @@ import asyncpg
 import json
 import os
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List
 import logging
@@ -73,6 +74,35 @@ class DatabaseManager:
             yield conn
         finally:
             await conn.close()
+
+    @staticmethod
+    def _advisory_lock_key(lock_name: str) -> int:
+        digest = hashlib.blake2b(lock_name.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, byteorder="big", signed=False)
+        if value >= 2**63:
+            value -= 2**64
+        return value
+
+    @asynccontextmanager
+    async def advisory_lock(self, lock_name: str):
+        lock_key = self._advisory_lock_key(lock_name)
+        async with self._get_connection() as conn:
+            acquired = False
+            try:
+                acquired = bool(
+                    await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_key)
+                )
+                yield acquired
+            finally:
+                if acquired:
+                    try:
+                        await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+                    except Exception:
+                        logger.warning(
+                            "Failed to release advisory lock %s (%s)",
+                            lock_name,
+                            lock_key,
+                        )
 
     async def create_process(self, meeting_id: str) -> str:
         """Create a new process entry or update existing one and return its ID"""
@@ -2080,6 +2110,23 @@ class DatabaseManager:
                 WHERE session_id = $1
             """,
                 session_id,
+            )
+            return dict(row) if row else None
+
+    async def get_latest_recording_session_for_meeting(self, meeting_id: str) -> Optional[Dict]:
+        async with self._get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT session_id, user_email, meeting_id, status, started_at, stop_requested_at,
+                       stopped_at, finalized_at, expected_chunk_count, finalized_chunk_count,
+                       dropped_chunk_count, idempotency_finalize_key, last_heartbeat_at,
+                       error_code, error_message, metadata, created_at, updated_at
+                FROM recording_sessions
+                WHERE meeting_id = $1
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+            """,
+                meeting_id,
             )
             return dict(row) if row else None
 

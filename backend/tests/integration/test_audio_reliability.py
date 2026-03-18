@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,9 @@ import pytest
 from app.api.routers import audio as audio_router
 from app.schemas.ai_participant import GuardrailAlert, GuardrailReason
 from app.services.ai_participant import MeetingContext
+from app.services.audio.recorder import AudioRecorder
+from app.services.audio.post_recording import PostRecordingService
+from app.services.audio.session_reconciler import AudioSessionReconciler
 
 
 @pytest.mark.anyio
@@ -57,6 +61,153 @@ async def test_finalize_session_is_idempotent(monkeypatch):
 
     assert calls["stop"] == 1
     assert session_id in audio_router.session_finalized
+
+
+@pytest.mark.anyio
+async def test_post_recording_skips_duplicate_finalize_when_lock_held(monkeypatch):
+    service = PostRecordingService("/tmp/recordings")
+
+    @asynccontextmanager
+    async def fake_advisory_lock(_name):
+        yield False
+
+    service.db = SimpleNamespace(advisory_lock=fake_advisory_lock)
+
+    result = await service.finalize_recording("11111111-1111-1111-1111-111111111111")
+
+    assert result["status"] == "already_running"
+    assert "already in progress" in result["error"]
+
+
+@pytest.mark.anyio
+async def test_recorder_can_flush_partial_chunk_without_stopping(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENABLE_AUDIO_RECORDING", "true")
+    monkeypatch.setenv("STORAGE_TYPE", "local")
+    monkeypatch.setenv("AUDIO_PARALLEL_ENCODING_ENABLED", "false")
+    monkeypatch.setenv("AUDIO_CHUNK_DURATION_SECONDS", "10")
+    monkeypatch.setenv("AUDIO_BUFFER_FLUSH_INTERVAL_SECONDS", "5")
+
+    recorder = AudioRecorder("meeting-phase3", storage_path=str(tmp_path))
+    started = await recorder.start()
+    assert started is True
+
+    metadata = await recorder.add_chunk(b"\x00\x00" * 16000)
+    assert metadata is None
+
+    flushed = await recorder.flush_current_chunk()
+    assert flushed is not None
+    assert flushed["chunk_index"] == 0
+    assert flushed["size_bytes"] > 0
+
+    stop_result = await recorder.stop()
+    assert stop_result["chunk_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_post_recording_recovers_truncated_local_wav(monkeypatch, tmp_path):
+    monkeypatch.setenv("STORAGE_TYPE", "local")
+
+    meeting_id = "meeting-recovery"
+    meeting_dir = tmp_path / meeting_id
+    meeting_dir.mkdir(parents=True, exist_ok=True)
+
+    pcm_data = b"\x01\x02" * 16000 * 20
+    chunk_path = meeting_dir / "chunk_00000.pcm"
+    chunk_path.write_bytes(pcm_data)
+    metadata_path = meeting_dir / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "chunks": [
+                    {
+                        "chunk_index": 0,
+                        "duration_seconds": 20.0,
+                        "size_bytes": len(pcm_data),
+                    }
+                ]
+            }
+        )
+    )
+
+    truncated_wav = AudioRecorder.convert_pcm_to_wav(pcm_data[: 16000 * 2])
+    wav_path = meeting_dir / "recording.wav"
+    wav_path.write_bytes(truncated_wav)
+
+    service = PostRecordingService(str(tmp_path))
+    healthy, health = await service._assess_recording_health(
+        meeting_id=meeting_id,
+        artifact_path=str(wav_path),
+        local_override_path=wav_path,
+    )
+    assert healthy is False
+    assert health["suspiciously_short"] is True
+
+    recovered = await service._attempt_recovery(
+        meeting_id=meeting_id,
+        artifact_path=str(wav_path),
+        health=health,
+        local_override_path=wav_path,
+    )
+    assert recovered is True
+
+    healthy_after, health_after = await service._assess_recording_health(
+        meeting_id=meeting_id,
+        artifact_path=str(wav_path),
+        local_override_path=wav_path,
+    )
+    assert healthy_after is True
+    assert health_after["actual_duration_seconds"] > 10
+
+
+@pytest.mark.anyio
+async def test_session_reconciler_repairs_recent_broken_recording(monkeypatch):
+    reconciler = AudioSessionReconciler()
+    repair_calls = []
+
+    async def fake_list_sessions(*args, **kwargs):
+        return [
+            {
+                "session_id": "sess-1",
+                "meeting_id": "meet-1",
+                "user_email": "test@appointy.com",
+                "status": "completed",
+            }
+        ]
+
+    async def fake_merge_metadata(*args, **kwargs):
+        return None
+
+    class FakePostService:
+        async def _assess_recording_health(self, meeting_id, artifact_path):
+            return False, {
+                "verified": True,
+                "expected_duration_seconds": 120,
+                "actual_duration_seconds": 20,
+                "duration_ratio": 0.16,
+                "suspiciously_short": True,
+            }
+
+        async def finalize_recording(self, meeting_id, trigger_diarization=False, user_email=None):
+            repair_calls.append(
+                {
+                    "meeting_id": meeting_id,
+                    "trigger_diarization": trigger_diarization,
+                    "user_email": user_email,
+                }
+            )
+            return {"status": "completed"}
+
+    monkeypatch.setattr(reconciler.db, "list_recording_sessions_since", fake_list_sessions)
+    monkeypatch.setattr(reconciler.db, "merge_recording_session_metadata", fake_merge_metadata)
+    monkeypatch.setattr(
+        "app.services.audio.session_reconciler.get_post_recording_service",
+        lambda: FakePostService(),
+    )
+
+    await reconciler._repair_recent_sessions()
+
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["meeting_id"] == "meet-1"
 
 
 @pytest.mark.anyio
