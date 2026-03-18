@@ -446,7 +446,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         onSave={handleSaveApiKey}
       />
       <div className="flex flex-col space-y-2">
-        <div className="flex items-center space-x-2 bg-white rounded-full shadow-lg px-4 py-2">
+        <div className="flex items-center space-x-3 bg-white rounded-full shadow-lg px-4 py-2">
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
@@ -455,28 +455,34 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           ) : (
             <>
               {!isRecording ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => {
-                        Analytics.trackButtonClick('start_recording', 'recording_controls');
-                        void handleUserStartRequest();
-                      }}
-                      disabled={isStarting || isProcessing || isRecordingDisabled}
-                      className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
-                        } rounded-full text-white transition-colors relative`}
-                    >
-                      {isStarting ? (
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                      ) : (
-                        <Mic size={20} />
-                      )}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Start recording</p>
-                  </TooltipContent>
-                </Tooltip>
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => {
+                          Analytics.trackButtonClick('start_recording', 'recording_controls');
+                          void handleUserStartRequest();
+                        }}
+                        disabled={isStarting || isProcessing || isRecordingDisabled}
+                        className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
+                          } rounded-full text-white transition-colors relative`}
+                      >
+                        {isStarting ? (
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                        ) : (
+                          <Mic size={20} />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Start recording</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-900">Start Pnyx</p>
+                    <p className="text-xs text-gray-500">Tap the mic to begin recording and live notes.</p>
+                  </div>
+                </>
               ) : (
                 <div className="flex items-center space-x-2">
                   <Tooltip>
@@ -523,7 +529,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                 </div>
               )}
 
-              <div className="flex items-center space-x-1 mx-4">
+              <div className="flex items-center space-x-1 mx-2">
                 {barHeights.map((height, index) => (
                   <div
                     key={index}

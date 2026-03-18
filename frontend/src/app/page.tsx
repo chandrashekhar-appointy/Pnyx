@@ -2431,6 +2431,24 @@ export default function Home() {
 
           <div className="pb-28">
             <div className="mx-auto w-full max-w-[1200px] px-4 lg:px-6 space-y-4">
+              {!isRecording && transcripts.length === 0 && !pendingRecoveryId && !isProcessingStop && !isSavingTranscript && (
+                <div className="flex min-h-[420px] items-center justify-center">
+                  <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50 px-8 py-12 text-center shadow-sm">
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-red-50 text-red-500 shadow-sm">
+                      <Sparkles className="h-8 w-8" />
+                    </div>
+                    <h2 className="mt-6 text-3xl font-semibold tracking-tight text-slate-900">Pnyx is ready when you are</h2>
+                    <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-600">
+                      Start Pnyx to capture live transcript, decisions, action items, and meeting notes in real time.
+                    </p>
+                    <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-xs font-medium text-slate-500">
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">Live transcript</span>
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">AI meeting notes</span>
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">Action items</span>
+                    </div>
+                  </div>
+                </div>
+              )}
               {isRecording && (
                 <>
                   <LayoutGroup id="host-intelligence-board">
