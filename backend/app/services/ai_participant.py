@@ -65,6 +65,23 @@ DEFAULT_PROVIDER_MODELS = {
     "anthropic": "claude-opus-4-1-20250805",
     "openrouter": "anthropic/claude-3.5-sonnet",
 }
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+DECISION_CUE_RE = re.compile(
+    r"\b("
+    r"decide(?:d|s)?|decision|agreed?|finali[sz]ed?|approved?|confirmed?|"
+    r"we(?:'ll| will)|let(?:'s| us) go with|ship(?:ping)?|proceed(?:ing)? with|"
+    r"move forward with|lock(?:ed|ing)? in|chosen?|settled on"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+UNRESOLVED_CUE_RE = re.compile(
+    r"\b("
+    r"question|unclear|not sure|need to check|need to confirm|follow up|follow-up|"
+    r"pending|blocker|issue|risk|debate|discuss|open item|open question|"
+    r"let's revisit|to be decided|tbd"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _clean_env_value(raw: Optional[str], default: str = "") -> str:
@@ -418,12 +435,12 @@ class AIParticipantEngine:
         async def add_decision(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
             """Record a commitment or decision agreed upon by participants."""
             engine = ctx.deps
-            normalized_content = " ".join(content.strip().lower().split())
-            
-            # Check for duplicates in pinned or suggested items
-            for item in engine._host_state.pinned_items + engine._host_state.suggested_items:
-                if normalized_content in " ".join(item.content.strip().lower().split()):
-                    return "SKIP: This decision is already recorded."
+            title = await engine._ensure_english_text(title, preserve_markdown=False)
+            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            if not content.strip():
+                return "FAILURE: Decision content is empty."
+            if engine._has_similar_host_item("decision_candidate", title, content):
+                return "SKIP: This decision is already recorded."
 
             # We use the engine's existing building logic
             event = {
@@ -443,11 +460,12 @@ class AIParticipantEngine:
         async def add_discussion(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
             """Record an unresolved question or active debate."""
             engine = ctx.deps
-            normalized_content = " ".join(content.strip().lower().split())
-            
-            for item in engine._host_state.pinned_items + engine._host_state.suggested_items:
-                if normalized_content in " ".join(item.content.strip().lower().split()):
-                    return "SKIP: This discussion/topic is already recorded."
+            title = await engine._ensure_english_text(title, preserve_markdown=False)
+            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            if not content.strip():
+                return "FAILURE: Discussion content is empty."
+            if engine._has_similar_host_item("open_discussion", title, content):
+                return "SKIP: This discussion/topic is already recorded."
 
             event = {
                 "event_type": "open_discussion",
@@ -475,6 +493,10 @@ class AIParticipantEngine:
             - Do NOT use `#` or `##` as they are too large for the side panel.
             """
             engine = ctx.deps
+            summary_markdown = await engine._ensure_english_text(
+                summary_markdown,
+                preserve_markdown=True,
+            )
             summary_markdown = summary_markdown.strip()
             if not summary_markdown or len(summary_markdown) < 20:
                 return "FAILURE: Summary too short or empty."
@@ -486,12 +508,12 @@ class AIParticipantEngine:
         async def add_action_item(ctx: RunContext[AIParticipantEngine], owner: str, task: str, due_date: Optional[str] = None) -> str:
             """Record a specific task assigned to a participant (Participant Action)."""
             engine = ctx.deps
-            normalized_task = " ".join(task.strip().lower().split())
-            
-            # Check for duplicates in suggested items (action items are often stored as follow-ups)
-            for item in engine._host_state.suggested_items:
-                if normalized_task in " ".join(item.content.strip().lower().split()):
-                    return f"SKIP: Action item '{task}' is already recorded."
+            task = await engine._ensure_english_text(task, preserve_markdown=False)
+            due_date = await engine._ensure_english_text(due_date or "", preserve_markdown=False)
+            if not task.strip():
+                return "FAILURE: Action item task is empty."
+            if engine._has_similar_host_item("follow_up_needed", f"Action for {owner}", task):
+                return f"SKIP: Action item '{task}' is already recorded."
 
             event = {
                 "event_type": "follow_up_needed",
@@ -516,15 +538,15 @@ class AIParticipantEngine:
             Use this for 'Guardrails' like agenda drift or engagement drops.
             """
             engine = ctx.deps
-            normalized_content = " ".join(content.strip().lower().split())
-            
-            # Insights are more ephemeral, so we check recently suggested/pinned
-            for item in engine._host_state.suggested_items:
-                if normalized_content in " ".join(item.content.strip().lower().split()):
-                    return "SKIP: This insight was recently shared."
+            title = await engine._ensure_english_text(title, preserve_markdown=False)
+            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            if not content.strip():
+                return "FAILURE: Insight content is empty."
 
             # Use the specified type or default
             event_type = engine._normalize_host_event_type(insight_type) or "ai_insight"
+            if engine._has_similar_host_item(event_type, title, content):
+                return "SKIP: This insight was recently shared."
             
             event = {
                 "event_type": event_type,
@@ -768,6 +790,7 @@ class AIParticipantEngine:
             # The new agentic path handles summary updates and collects suggestions via tools
             self._temp_suggestions = []
             await self._reason_host_events()
+            await self._supplement_host_events_from_heuristics(self.buffer.get_text())
             
             if not self._temp_suggestions and not (self._host_state.meeting_summary or "").strip():
                 # If agent did nothing, try heuristic fallback
@@ -863,7 +886,7 @@ class AIParticipantEngine:
                 deps=self,
                 model=model
             )
-            logger.info(f"[AIParticipant] Agent run complete. Tool calls: {len(result.all_model_requests())}")
+            logger.info("[AIParticipant] Agent run complete.")
             # The tools have updated self._temp_suggestions, we don't need to return list of dicts anymore
             # but for internal consistency we return it.
             return [{"collected": True}] if self._temp_suggestions else []
@@ -1041,6 +1064,7 @@ Rules:
 - If intervention is required, return strict JSON:
   {{"intervention_required": true, "reason": "...", "insight": "...", "confidence": 0.0}}
 - Insight must be one actionable sentence and no more than 30 words.
+- Insight must always be written in English, even if the transcript includes Hindi or mixed-language discussion.
 - Reason must be one of: agenda_deviation, no_decision, unresolved_question, missing_context_or_repeat.
 - Return JSON only. No markdown.
 
@@ -1112,6 +1136,7 @@ Rules:
 - You are an active observer. DO NOT return a JSON object. Instead, use the provided tools to share insights and update the summary.
 - Update the meeting summary frequently using the `update_summary` tool.
 - **CRITICAL**: In `update_summary`, use rich Markdown (Level 3 Headings `###`, Bold `**bold**`, and Lists `- `) so the UI looks structured and professional.
+- Everything you send through tools must be in English only. Translate Hindi or mixed-language discussion into clear English before calling a tool.
 - Use Level 3 headings (`### Overview`, `### Decisions`, `### Open Discussions`, `### Next Steps`) for sections. Do NOT use `#` or `##`.
 - Use concise bullet points under those sections. Omit empty sections instead of inventing content.
 - Include key decisions, unresolved discussions, risks, and concrete next steps when present.
@@ -1119,11 +1144,11 @@ Rules:
 - Preserve still-relevant earlier decisions and open discussions unless the newest transcript clearly changes them.
 - If no action is needed, simply finish your turn without calling any tools.
 - Do NOT suggest events for topics or decisions that are already in the "Already Pinned Decisions/Topics" list.
-- ONLY call `add_decision` if an explicit commitment, AGREED-UPON choice, or final resolution has been made by participants.
+- Call `add_decision` whenever participants make an explicit commitment, a clearly agreed choice, or a final resolution. Do not skip a real decision because the wording is informal.
 - If a direction is "unclear", "conflicted", or "unresolved", DO NOT use `add_decision`. Instead, use `add_action_item` to record it as a follow-up or `add_discussion` to mark it as unresolved.
 - Use `add_action_item` for specific tasks, unowned follow-ups, or resolving unclear points. These will be shown directly in the UI.
 - Use `add_discussion` for unresolved questions/debates that need more airtime.
-- Use `add_insight` for meta-observations (risks, participation, drift).
+- Use `add_insight` for meta-observations (risks, participation, drift), especially if the discussion is deviating from the agenda or stalling without resolution.
 - Do NOT call a tool twice if the content hasn't changed.
 
 Recent transcript window:
@@ -1160,6 +1185,35 @@ Recent transcript window:
             source_excerpt=event.get("source_excerpt"),
             metadata={"priority": event.get("priority", "medium")},
         )
+
+    @staticmethod
+    def _normalize_compare_text(value: str) -> str:
+        return " ".join(str(value or "").strip().lower().split())
+
+    def _has_similar_host_item(self, event_type: str, title: str, content: str) -> bool:
+        candidate_title = self._normalize_compare_text(title)
+        candidate_content = self._normalize_compare_text(content)
+        if not candidate_content:
+            return False
+
+        for item in (
+            self._host_state.pinned_items
+            + self._host_state.suggested_items
+            + self._temp_suggestions
+        ):
+            if str(item.event_type or "") != str(event_type or ""):
+                continue
+            existing_title = self._normalize_compare_text(item.title)
+            existing_content = self._normalize_compare_text(item.content)
+            if candidate_content == existing_content:
+                return True
+            if candidate_title and candidate_title == existing_title:
+                return True
+            if existing_content and (
+                candidate_content in existing_content or existing_content in candidate_content
+            ):
+                return True
+        return False
 
     def _build_intervention_from_suggestion(
         self,
@@ -1276,6 +1330,139 @@ Recent transcript window:
         )
         return events
 
+    async def _ensure_english_text(
+        self,
+        text: str,
+        preserve_markdown: bool = False,
+    ) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        if not DEVANAGARI_RE.search(raw):
+            return raw
+
+        prompt = (
+            "Translate the following meeting content into concise professional English. "
+            "Preserve names, dates, bullets, and markdown formatting when present. "
+            "Return only the translated text.\n\n"
+            f"Content:\n{raw}"
+        )
+        try:
+            await self.load_runtime_config()
+            api_key = await self._get_provider_api_key()
+            if not api_key:
+                return raw
+
+            async def _translate() -> str:
+                if self.provider == "gemini":
+                    return await generate_content_text_async(
+                        api_key=api_key,
+                        model=self.model_name,
+                        contents=prompt,
+                        config={"temperature": 0.1},
+                    )
+                if self.provider == "openai":
+                    client = AsyncOpenAI(api_key=api_key)
+                    response = await client.chat.completions.create(
+                        model=self.model_name,
+                        temperature=0.1,
+                        messages=[
+                            {"role": "system", "content": "Translate to English only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                    )
+                    return response.choices[0].message.content or ""
+                if self.provider == "anthropic":
+                    client = AsyncAnthropic(api_key=api_key)
+                    response = await client.messages.create(
+                        model=self.model_name,
+                        max_tokens=1200,
+                        temperature=0.1,
+                        system="Translate to English only.",
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    parts: List[str] = []
+                    for block in getattr(response, "content", []) or []:
+                        block_text = getattr(block, "text", None)
+                        if block_text:
+                            parts.append(block_text)
+                    return "".join(parts)
+                return raw
+
+            translated = await asyncio.wait_for(
+                _translate(),
+                timeout=max(3.0, min(self.llm_timeout_seconds, 8.0)),
+            )
+            cleaned = str(translated or "").strip()
+            if preserve_markdown:
+                return cleaned or raw
+            return " ".join(cleaned.split()).strip() or raw
+        except Exception:
+            return raw
+
+    def _extract_candidate_host_events(self, transcript_window: str) -> List[Dict[str, Any]]:
+        lines = [
+            " ".join(re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).split()).strip()
+            for line in str(transcript_window or "").splitlines()
+            if " ".join(re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).split()).strip()
+        ]
+        if not lines:
+            return []
+
+        events: List[Dict[str, Any]] = []
+        for line in lines[-8:]:
+            snippet = line.strip(" .,:;")
+            if not snippet:
+                continue
+            if DECISION_CUE_RE.search(snippet):
+                events.append(
+                    {
+                        "event_type": "decision_candidate",
+                        "title": "Decision Captured",
+                        "content": snippet[:220],
+                        "confidence": 0.78,
+                        "priority": "high",
+                        "source_excerpt": snippet[:220],
+                    }
+                )
+                continue
+            if UNRESOLVED_CUE_RE.search(snippet):
+                events.append(
+                    {
+                        "event_type": "open_discussion",
+                        "title": "Open Discussion",
+                        "content": snippet[:220],
+                        "confidence": 0.72,
+                        "priority": "medium",
+                        "source_excerpt": snippet[:220],
+                    }
+                )
+        return events
+
+    async def _supplement_host_events_from_heuristics(
+        self,
+        transcript_window: str,
+    ) -> None:
+        for event in self._extract_candidate_host_events(transcript_window):
+            suggestion = self._build_host_suggestion(event)
+            if not suggestion:
+                continue
+            suggestion.title = await self._ensure_english_text(
+                suggestion.title,
+                preserve_markdown=False,
+            )
+            suggestion.content = await self._ensure_english_text(
+                suggestion.content,
+                preserve_markdown=False,
+            )
+            if self._has_similar_host_item(
+                suggestion.event_type,
+                suggestion.title,
+                suggestion.content,
+            ):
+                continue
+            self._temp_suggestions.append(suggestion)
+
     def _fallback_meeting_summary(self, transcript_window: str) -> str:
         lines = [
             " ".join(line.split()).strip()
@@ -1299,58 +1486,18 @@ Recent transcript window:
         return "### Discussion Snapshot\n" + "\n".join(bullets)
 
     def _fallback_core_events(self, transcript_window: str) -> List[Dict[str, Any]]:
-        text = "\n".join(
-            re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).strip()
-            for line in str(transcript_window or "").splitlines()
-            if re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).strip()
-        )
-        normalized_text = " ".join(text.split())
-        if not normalized_text:
-            return []
-
-        events: List[Dict[str, Any]] = []
-
-        decision_match = re.search(
-            r"(decision|decided|final|agreed|ठीक है तो decision|यह तो decision|तो decision|we will|हम .* करेंगे|की जगह .* बनाएंगे)(.{0,180})",
-            normalized_text,
-            flags=re.IGNORECASE,
-        )
-        if decision_match:
-            snippet = " ".join(decision_match.group(0).split()).strip(" .,:;")
-            events.append(
-                {
-                    "event_type": "decision_candidate",
-                    "title": "Possible Decision",
-                    "content": snippet[:180],
-                    "confidence": 0.74,
-                    "priority": "medium",
-                    "source_excerpt": snippet[:180],
-                }
+        deduped: List[Dict[str, Any]] = []
+        seen = set()
+        for event in self._extract_candidate_host_events(transcript_window):
+            key = (
+                str(event.get("event_type") or ""),
+                self._normalize_compare_text(str(event.get("content") or "")),
             )
-
-        discussion_match = re.search(
-            r"(problem|issue|दिक्कत|कैसे|how|check करना है|देखना है|समझना है|let's see|question)(.{0,180})",
-            normalized_text,
-            flags=re.IGNORECASE,
-        )
-        if discussion_match:
-            snippet = " ".join(discussion_match.group(0).split()).strip(" .,:;")
-            if snippet and all(
-                snippet != str(existing.get("content") or "")
-                for existing in events
-            ):
-                events.append(
-                    {
-                        "event_type": "open_discussion",
-                        "title": "Open Discussion",
-                        "content": snippet[:180],
-                        "confidence": 0.7,
-                        "priority": "medium",
-                        "source_excerpt": snippet[:180],
-                    }
-                )
-
-        return events[:2]
+            if not key[1] or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(event)
+        return deduped[:4]
 
     def _refresh_host_state_from_events(self, events: List[Dict[str, Any]]) -> None:
         current_topic = ""

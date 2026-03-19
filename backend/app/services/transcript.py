@@ -249,6 +249,7 @@ class TranscriptService:
                             6. If someone is mentioned as doing something, it MUST be in 'ImmediateActionItems'.
                             7. 'MeetingName' should be a concise title for the meeting.
                             8. Capture ALL relevant points. Do not omit information.
+                            9. Write every field in English only. If the transcript contains Hindi or another language, translate the output into English.
                             
                             Transcript Chunk:
                             ---
@@ -292,7 +293,8 @@ class TranscriptService:
                             {chunk}
                             ---
 
-                            Please capture all relevant action items. Transcription can have spelling mistakes. correct it if required. context is important.
+                                Please capture all relevant action items. Transcription can have spelling mistakes. correct it if required. context is important.
+                                Write every output field in English only, even if the transcript contains Hindi or another language.
                             
                             While generating the summary, please add the following context:
                             ---

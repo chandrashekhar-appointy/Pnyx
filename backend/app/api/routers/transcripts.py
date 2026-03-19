@@ -28,7 +28,10 @@ try:
     from ...services.audio.vad import SimpleVAD
     from ...services.audio.groq_client import GroqTranscriptionClient
     from ...services.chat import ChatService
-    from ...services.gemini_client import generate_content_with_file_sync
+    from ...services.gemini_client import (
+        generate_content_text_async,
+        generate_content_with_file_sync,
+    )
     from ...services.storage import StorageService
     from ...services.calendar.google_oauth import GoogleCalendarOAuthService
     from ...services.calendar.reminder_email import CalendarReminderEmailService
@@ -50,7 +53,10 @@ except (ImportError, ValueError):
     from services.audio.vad import SimpleVAD
     from services.audio.groq_client import GroqTranscriptionClient
     from services.chat import ChatService
-    from services.gemini_client import generate_content_with_file_sync
+    from services.gemini_client import (
+        generate_content_text_async,
+        generate_content_with_file_sync,
+    )
     from services.storage import StorageService
     from services.calendar.google_oauth import GoogleCalendarOAuthService
     from services.calendar.reminder_email import CalendarReminderEmailService
@@ -63,6 +69,15 @@ processor = SummarizationService()
 router = APIRouter()
 logger = logging.getLogger(__name__)
 DIARIZED_SOURCES = {"diarized", "diarization"}
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+DECISION_CUE_RE = re.compile(
+    r"\b("
+    r"decide(?:d|s)?|decision|agreed?|finali[sz]ed?|approved?|confirmed?|"
+    r"we(?:'ll| will)|let(?:'s| us) go with|proceed(?:ing)? with|move forward with|"
+    r"ship(?:ping)?|lock(?:ed|ing)? in|chosen?|settled on"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
 
 # --- Meeting Templates with Optimized Prompts ---
@@ -165,6 +180,7 @@ Global rules (apply to every template):
 7) If a decision has supporting rationale, tradeoff, owner, or timing, include those details in KeyItemsDecisions.
 8) If data is missing, return empty blocks [] instead of invented text.
 9) Keep output concise and factual.
+10) Write all output in English only. Translate Hindi or any other language into English in MeetingName, SessionSummary, KeyItemsDecisions, ImmediateActionItems, NextSteps, CriticalDeadlines, and MeetingNotes.
 """
 
     templates = {
@@ -354,6 +370,126 @@ def _dedupe_summary_content(summary: dict) -> dict:
     return summary
 
 
+def _extract_json_object(text: str) -> str:
+    if not text:
+        return "{}"
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return cleaned
+    return cleaned[start : end + 1]
+
+
+def _summary_contains_devanagari(value) -> bool:
+    if isinstance(value, str):
+        return bool(DEVANAGARI_RE.search(value))
+    if isinstance(value, list):
+        return any(_summary_contains_devanagari(item) for item in value)
+    if isinstance(value, dict):
+        return any(_summary_contains_devanagari(item) for item in value.values())
+    return False
+
+
+async def _get_gemini_notes_api_key(user_email: str) -> str:
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        api_key = await db.get_api_key("gemini", user_email=user_email)
+    return api_key or ""
+
+
+async def _translate_summary_to_english(
+    summary: dict,
+    user_email: str,
+    model_name: str = "gemini-3-pro-preview",
+) -> dict:
+    if not _summary_contains_devanagari(summary):
+        return summary
+
+    api_key = await _get_gemini_notes_api_key(user_email)
+    if not api_key:
+        return summary
+    translate_model = (
+        model_name
+        if str(model_name or "").strip().lower().startswith("gemini")
+        else "gemini-3-pro-preview"
+    )
+
+    prompt = (
+        "Translate the following meeting summary JSON into English.\n"
+        "Rules:\n"
+        "1. Return valid JSON only.\n"
+        "2. Preserve the exact structure, keys, ids, block types, colors, and section ordering.\n"
+        "3. Translate only human-readable text values.\n"
+        "4. Preserve names, dates, emails, URLs, and markdown emphasis.\n\n"
+        f"JSON:\n{json.dumps(summary, ensure_ascii=False)}"
+    )
+    try:
+        response_text = await generate_content_text_async(
+            api_key=api_key,
+            model=translate_model,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        translated = json.loads(_extract_json_object(response_text))
+        return translated if isinstance(translated, dict) else summary
+    except Exception as e:
+        logger.warning("Failed to translate summary to English: %s", e)
+        return summary
+
+
+def _extract_decision_lines_from_transcript(transcript_text: str) -> List[str]:
+    decisions: List[str] = []
+    seen = set()
+    for raw_line in str(transcript_text or "").splitlines():
+        line = " ".join(raw_line.split()).strip(" -\t")
+        if not line or not DECISION_CUE_RE.search(line):
+            continue
+        if len(line) > 240:
+            line = line[:237].rstrip(" ,;:.") + "..."
+        key = _normalize_text_for_dedupe(line)
+        if key and key not in seen:
+            seen.add(key)
+            decisions.append(line)
+    return decisions[:6]
+
+
+def _ensure_decision_blocks(summary: dict, transcript_text: str) -> dict:
+    decision_lines = _extract_decision_lines_from_transcript(transcript_text)
+    if not decision_lines:
+        return summary
+
+    decision_section = summary.setdefault(
+        "KeyItemsDecisions",
+        {"title": "Key Decisions", "blocks": []},
+    )
+    existing_blocks = decision_section.setdefault("blocks", [])
+    existing_normalized = {
+        _normalize_text_for_dedupe((block or {}).get("content", ""))
+        for block in existing_blocks
+        if isinstance(block, dict)
+    }
+
+    next_id = len(existing_blocks) + 1
+    for line in decision_lines:
+        normalized = _normalize_text_for_dedupe(line)
+        if not normalized or normalized in existing_normalized:
+            continue
+        existing_blocks.append(
+            {
+                "id": f"decision-{next_id}",
+                "type": "bullet",
+                "content": line,
+                "color": "",
+            }
+        )
+        existing_normalized.add(normalized)
+        next_id += 1
+    return summary
+
+
 def _build_transcript_text_from_version_content(content: list) -> str:
     lines = []
     for segment in content or []:
@@ -533,6 +669,13 @@ async def process_transcript_background(
                 transcript.meeting_id, final_summary["MeetingName"]
             )
 
+        final_summary = _dedupe_summary_content(final_summary)
+        final_summary = _ensure_decision_blocks(final_summary, transcript.text)
+        final_summary = await _translate_summary_to_english(
+            final_summary,
+            user_email=user_email or "",
+            model_name=transcript.model_name or "gemini-3-pro-preview",
+        )
         final_summary = _dedupe_summary_content(final_summary)
 
         # Save final result
@@ -864,7 +1007,8 @@ async def generate_notes_with_gemini_background(
             "2) Any explicit decision confirmed in the audio must be included in KeyItemsDecisions, even if the transcript is imperfect.\n"
             "3) Transcript is secondary and should mainly assist with speaker mapping and entities (names/dates/terms).\n"
             "4) Never invent facts not supported by transcript or audio.\n"
-            "5) Return valid JSON only, matching the required template shape.\n\n"
+            "5) Return valid JSON only, matching the required template shape.\n"
+            "6) Every output field must be in English only, even if the meeting was partly or fully in Hindi.\n\n"
             f"Transcript:\n{compact_transcript}"
         )
 
@@ -1037,6 +1181,13 @@ async def generate_notes_with_gemini_background(
         if not final_result["MeetingNotes"]["meeting_name"]:
             final_result["MeetingNotes"]["meeting_name"] = final_result["MeetingName"]
 
+        final_result = _dedupe_summary_content(final_result)
+        final_result = _ensure_decision_blocks(final_result, full_transcript_text)
+        final_result = await _translate_summary_to_english(
+            final_result,
+            user_email=user_email,
+            model_name=model_name,
+        )
         final_result = _dedupe_summary_content(final_result)
 
         # 6. Convert final_result to Markdown
