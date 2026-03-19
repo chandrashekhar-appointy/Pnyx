@@ -1281,34 +1281,19 @@ async def generate_notes_with_gemini_background(
                         "transcript": settings.get("share_transcript", False),
                     }
 
-                    shared_tokens = []
+                    shared_users = []
                     for recipient in final_attendees:
                         if recipient != user_email:  # Don't share with self
-                            token = await db.create_shared_note(
+                            await db.create_shared_note(
                                 meeting_id=meeting_id,
                                 owner_email=user_email,
                                 shared_with_email=recipient,
                                 share_config=share_config,
                             )
-                            shared_tokens.append(token)
+                            shared_users.append(recipient)
 
-                    if shared_tokens:
-                        # Use the first token to generate the URL (or wait, the email goes to all, but each needs a unique token?)
-                        # Actually, send_post_meeting_recap sends ONE email to all BCC'd or individually?
-                        # The plan says "The shared notes link in emails will point to {APP_BASE_URL}/shared/{meeting_id}?token={share_token}"
-                        # If each user needs a unique token, we might need to send individual emails or use a generic token.
-                        # Wait, the prompt says "{APP_BASE_URL}/shared/{meeting_id}?token={share_token}".
-                        # But send_post_meeting_recap takes `attendees` and sends one email (or loops inside).
-                        # Let's pass the first token just as a generic link, or if the email service expects a single app_notes_url.
-                        # Wait, the prompt says "app_notes_url parameter". So it assumes one URL.
-                        # Let's pass the URL for the first token, or let's create a generic view token?
-                        # Actually, let's just pass `share_token` of the first created share, or since they all access the same meeting,
-                        # the token validates the user if they log in, OR the token grants access directly.
-                        # Let's just use the first token as the access URL in the email.
-                        token_to_use = shared_tokens[0]
-                        app_notes_url = (
-                            f"{app_base_url}/shared/{meeting_id}?token={token_to_use}"
-                        )
+                    if shared_users:
+                        app_notes_url = f"{app_base_url}/meeting-details?id={meeting_id}&shared=true"
 
                         recap_service = CalendarReminderEmailService()
                         await recap_service.send_post_meeting_recap(

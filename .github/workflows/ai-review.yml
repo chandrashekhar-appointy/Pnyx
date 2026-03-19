@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run AI Reviewer
-        uses: tegveer-work/ai-code-reviewer@main 
+        uses: tegveer-work/ai-code-reviewer@7826359f71c4c16a49fa7e06a37f5945e4396b27 # pinned from @main 
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,7 @@
 import pytest
 
 from app.services import ai_participant as aip
-from app.schemas.ai_participant import HostEventType, HostSuggestion
+from app.schemas.ai_participant import HostSuggestion
 
 
 class DummyDb:
@@ -78,7 +78,7 @@ def test_host_pin_and_dismiss_update_state(monkeypatch):
     engine = _make_engine(monkeypatch)
     suggestion = HostSuggestion(
         id="s1",
-        event_type=HostEventType.OPEN_QUESTION,
+        event_type="open_question",
         title="Question pending",
         content="An unresolved question needs closure.",
         confidence=0.9,
@@ -94,7 +94,7 @@ def test_host_pin_and_dismiss_update_state(monkeypatch):
     engine._host_state.suggested_items = [
         HostSuggestion(
             id="s2",
-            event_type=HostEventType.AGENDA_DRIFT,
+            event_type="agenda_drift",
             title="Agenda drift",
             content="Discussion moved away from agenda.",
             confidence=0.88,

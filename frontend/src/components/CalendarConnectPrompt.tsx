@@ -79,7 +79,7 @@ export function CalendarConnectPrompt() {
 
   const handleConnect = async () => {
     try {
-      const response = await authFetch('/api/calendar/connect?request_write_scope=false', {
+      const response = await authFetch('/api/calendar/google/connect?request_write_scope=false', {
         method: 'POST',
       });
       if (!response.ok) throw new Error('Failed to get auth URL');

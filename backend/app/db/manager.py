@@ -25,16 +25,25 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class DatabaseManager:
-    def __init__(self, db_url: str = None):
-        if db_url is None:
-            # SECURITY: Rely only on environment variable
-            self.db_url = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
-            if not self.db_url:
-                raise ValueError(
-                    "DATABASE_URL or NEON_DATABASE_URL environment variable is not set"
-                )
-        else:
-            self.db_url = db_url
+    _pool = None
+
+    @classmethod
+    async def init_pool(cls, db_url: str):
+        if cls._pool is None:
+            cls._pool = await asyncpg.create_pool(db_url, min_size=5, max_size=20)
+            logger.info("✅ Database connection pool initialized")
+
+    @classmethod
+    async def close_pool(cls):
+        if cls._pool is not None:
+            await cls._pool.close()
+            cls._pool = None
+            logger.info("Database connection pool closed")
+
+    def __init__(self):
+        self.db_url = os.getenv("DATABASE_URL")
+        if not self.db_url:
+            logger.warning("DATABASE_URL not set in environment.")
 
         # No more local init_db or schema validation on app startup
         # We assume the migration script has run or the DB is provisioned
@@ -42,38 +51,41 @@ class DatabaseManager:
     @asynccontextmanager
     async def _get_connection(self):
         """Get a new database connection from the pool"""
-        # In a real prod app, you'd want a global pool created on startup
-        # For now, creating a connection per request is okay for low traffic,
-        # but we should move to a pool pattern in main.py startup event later.
+        if self.__class__._pool is None:
+            # Fallback to connection per request if pool wasn't initialized
+            conn = None
+            max_retries = 3
+            retry_delay = 1
+            last_error = None
 
-        conn = None
-        max_retries = 3
-        retry_delay = 1
-        last_error = None
+            for attempt in range(max_retries):
+                try:
+                    conn = await asyncpg.connect(self.db_url)
+                    break
+                except (OSError, asyncpg.PostgresError) as e:
+                    last_error = e
+                    logger.warning(
+                        f"Database connection attempt {attempt + 1}/{max_retries} failed: {e}"
+                    )
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2**attempt))
 
-        for attempt in range(max_retries):
-            try:
-                conn = await asyncpg.connect(self.db_url)
-                break
-            except (OSError, asyncpg.PostgresError) as e:
-                last_error = e
-                logger.warning(
-                    f"Database connection attempt {attempt + 1}/{max_retries} failed: {e}"
+            if conn is None:
+                logger.error(
+                    f"Failed to connect to database after {max_retries} attempts"
                 )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay * (2**attempt))
+                if last_error:
+                    raise last_error
+                else:
+                    raise ConnectionError("Could not connect to database")
 
-        if conn is None:
-            logger.error(f"Failed to connect to database after {max_retries} attempts")
-            if last_error:
-                raise last_error
-            else:
-                raise ConnectionError("Could not connect to database")
-
-        try:
-            yield conn
-        finally:
-            await conn.close()
+            try:
+                yield conn
+            finally:
+                await conn.close()
+        else:
+            async with self.__class__._pool.acquire() as conn:
+                yield conn
 
     @staticmethod
     def _advisory_lock_key(lock_name: str) -> int:
@@ -1844,7 +1856,9 @@ class DatabaseManager:
             if not isinstance(manual_context, dict):
                 return None
 
-            calendar_event_id = str(manual_context.get("calendar_event_id") or "").strip()
+            calendar_event_id = str(
+                manual_context.get("calendar_event_id") or ""
+            ).strip()
             if not calendar_event_id:
                 return None
 
@@ -1923,6 +1937,7 @@ class DatabaseManager:
         self, user_email: str, provider: str = "google", hours: int = 12
     ) -> List[Dict]:
         """Fetch all calendar events for a user within a time window from now."""
+
         def _to_ist_iso(value):
             if not value:
                 return None
@@ -2113,7 +2128,9 @@ class DatabaseManager:
             )
             return dict(row) if row else None
 
-    async def get_latest_recording_session_for_meeting(self, meeting_id: str) -> Optional[Dict]:
+    async def get_latest_recording_session_for_meeting(
+        self, meeting_id: str
+    ) -> Optional[Dict]:
         async with self._get_connection() as conn:
             row = await conn.fetchrow(
                 """

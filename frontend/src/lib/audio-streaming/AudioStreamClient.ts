@@ -60,6 +60,7 @@ export interface StreamingCallbacks {
   onError?: (error: Error, code?: string) => void;
   onConnected?: (sessionId: string) => void;
   onDisconnected?: () => void;
+  onCreditExhausted?: () => void;
 }
 
 import { wsUrl } from '../config';
@@ -257,9 +258,6 @@ export class AudioStreamClient {
       if (this.meetingId) {
         url += (url.includes('?') ? '&' : '?') + `meeting_id=${encodeURIComponent(this.meetingId)}`;
       }
-      if (this.authToken) {
-        url += (url.includes('?') ? '&' : '?') + `auth_token=${encodeURIComponent(this.authToken)}`;
-      }
         
       const ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
@@ -276,6 +274,11 @@ export class AudioStreamClient {
         if (this.websocket !== ws) return;
         clearTimeout(timeout);
         console.log('[AudioStream] WebSocket connected');
+        
+        // Send authentication as the first message
+        if (this.authToken) {
+          ws.send(JSON.stringify({ type: 'authenticate', token: this.authToken }));
+        }
         
         // Start heartbeat
         this.startHeartbeat();
@@ -369,6 +372,10 @@ export class AudioStreamClient {
             this.pendingStopResolve?.();
             this.pendingStopResolve = null;
             this.pendingStopReject = null;
+          }
+          else if (data.type === 'credit_exhausted') {
+            console.warn('[AudioStream] ⚠️ Credit exhausted');
+            this.callbacks.onCreditExhausted?.();
           }
           else if (data.type === 'error') this.callbacks.onError?.(new Error(data.message), data.code);
         } catch (e) {

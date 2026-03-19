@@ -66,18 +66,24 @@ export const authOptions: NextAuthOptions = {
   ],
   
   callbacks: {
-    // Domain restriction - only allow @appointy.com
+    // Domain restriction check
     async signIn({ user }) {
-      const allowedDomains = ['appointy.com'];
-      const email = user.email || '';
-      const domain = email.split('@')[1];
-      
-      if (!allowedDomains.includes(domain)) {
-        console.log(`[Auth] Rejected login from: ${email}`);
-        return false;
+      const allowedDomains = (process.env.ALLOWED_DOMAINS || '')
+        .split(',')
+        .map(d => d.trim())
+        .filter(Boolean);
+        
+      if (allowedDomains.length > 0) {
+        const email = user.email || '';
+        const domain = email.split('@')[1];
+        
+        if (!allowedDomains.includes(domain)) {
+          console.log(`[Auth] Rejected login from: ${email}`);
+          return false;
+        }
       }
       
-      console.log(`[Auth] Successful login: ${email}`);
+      console.log(`[Auth] Successful login: ${user.email}`);
       return true;
     },
     

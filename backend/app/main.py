@@ -92,6 +92,16 @@ app.include_router(payments.router)
 
 @app.on_event("startup")
 async def startup_event():
+    # Initialize database connection pool
+    try:
+        from app.db.manager import DatabaseManager
+    except ImportError:
+        from db.manager import DatabaseManager
+
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        await DatabaseManager.init_pool(db_url)
+
     global calendar_scheduler, audio_reconciler
     try:
         from app.services.calendar.reminder_scheduler import CalendarReminderScheduler
@@ -126,6 +136,13 @@ async def shutdown_event():
         await audio_reconciler.stop()
         audio_reconciler = None
 
+    # Close database pool
+    try:
+        from app.db.manager import DatabaseManager
+    except ImportError:
+        from db.manager import DatabaseManager
+    await DatabaseManager.close_pool()
+
 
 @app.get("/health")
 async def health_check():
@@ -135,4 +152,4 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)

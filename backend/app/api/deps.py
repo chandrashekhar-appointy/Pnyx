@@ -49,12 +49,31 @@ async def get_current_user(
     if not email:
         raise HTTPException(status_code=401, detail="Token missing email")
 
-    # Domain restriction check
-    # Temporary bypass for testing
-    if not email.endswith("@appointy.com"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access restricted to @appointy.com users (found {email})",
-        )
+    import os
+
+    allowed_domains = [
+        d.strip() for d in os.getenv("ALLOWED_DOMAINS", "").split(",") if d.strip()
+    ]
+
+    if allowed_domains:
+        domain = email.split("@")[1] if "@" in email else ""
+        if domain not in allowed_domains:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access restricted to allowed domains (found {email})",
+            )
 
     return User(email=email, name=payload.get("name"), picture=payload.get("picture"))
+
+
+def get_admin_user(user: User = Depends(get_current_user)) -> User:
+    import os
+
+    admin_emails = [
+        e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
+    ]
+    if admin_emails and user.email not in admin_emails:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required"
+        )
+    return user

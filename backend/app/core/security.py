@@ -66,26 +66,15 @@ async def verify_google_token(token: str) -> Dict[str, Any]:
         jwks = await get_google_public_keys()
 
         # Verify and decode
-        # Note: audience check is crucial
-        # DEBUG: Temporarily disable strict audience check to debug mismatch
         payload = jwt.decode(
             token,
             jwks,
             algorithms=["RS256"],
-            audience=None,  # GOOGLE_CLIENT_ID,
+            audience=GOOGLE_CLIENT_ID,
             options={
                 "verify_at_hash": False,
-                "verify_aud": False,  # Explicitly disable audience verification
             },
         )
-
-        token_aud = payload.get("aud")
-        # print(f"DEBUG AUTH: Token aud: '{token_aud}'", flush=True)
-        # print(f"DEBUG AUTH: Server GOOGLE_CLIENT_ID: '{GOOGLE_CLIENT_ID}'", flush=True)
-
-        if str(token_aud) != str(GOOGLE_CLIENT_ID):
-            print("DEBUG AUTH: Audience Mismatch! Continuing for debug...", flush=True)
-            # raise HTTPException(status_code=401, detail=f"Audience mismatch: {token_aud} vs {GOOGLE_CLIENT_ID}")
 
         return payload
     except JWTError as e:

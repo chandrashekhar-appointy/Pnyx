@@ -210,17 +210,22 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
     try {
       setIsSearching(true);
-      const response = await authFetch('/search-transcripts', { // Use relative URL with authFetch
+      const response = await authFetch('/search-context', { // Use relative URL with authFetch
         method: 'POST',
-        body: JSON.stringify({ query })
+        body: JSON.stringify({ query, n_results: 10 })
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const results = await response.json() as TranscriptSearchResult[];
-      setSearchResults(results);
+      const data = await response.json();
+      if (data.message) {
+        console.warn('Search context message:', data.message);
+      }
+      
+      // Fallback logic for empty array since semantic search is disabled
+      setSearchResults(data.results || []);
     } catch (error) {
       console.error('Error searching transcripts:', error);
       setSearchResults([]);

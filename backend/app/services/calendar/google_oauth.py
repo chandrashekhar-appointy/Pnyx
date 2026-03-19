@@ -35,7 +35,9 @@ class GoogleCalendarOAuthService:
         return self._required_env("CALENDAR_OAUTH_REDIRECT_URI")
 
     def _get_frontend_settings_url(self) -> str:
-        return os.getenv("CALENDAR_OAUTH_FRONTEND_SETTINGS_URL", "http://localhost:3000/settings")
+        return os.getenv(
+            "CALENDAR_OAUTH_FRONTEND_SETTINGS_URL", "http://localhost:3118/settings"
+        )
 
     async def build_google_authorization_url(
         self, user_email: str, request_write_scope: bool = False
@@ -45,9 +47,11 @@ class GoogleCalendarOAuthService:
 
         state = secrets.token_urlsafe(32)
         code_verifier = secrets.token_urlsafe(64)
-        challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        ).decode().rstrip("=")
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
 
         scopes = list(self.BASE_SCOPES)
         if request_write_scope:
@@ -200,7 +204,9 @@ class GoogleCalendarOAuthService:
         return response
 
     @staticmethod
-    def _build_writeback_description(existing_description: str, notes_markdown: str) -> str:
+    def _build_writeback_description(
+        existing_description: str, notes_markdown: str
+    ) -> str:
         marker_start = "<!-- PNYX_NOTES_START -->"
         marker_end = "<!-- PNYX_NOTES_END -->"
         safe_existing = existing_description or ""
@@ -216,10 +222,7 @@ class GoogleCalendarOAuthService:
             notes_excerpt = notes_excerpt[:3500].rstrip() + "\n\n[...truncated by Pnyx]"
 
         pnyx_block = (
-            f"{marker_start}\n"
-            "## Pnyx Meeting Notes\n\n"
-            f"{notes_excerpt}\n"
-            f"{marker_end}"
+            f"{marker_start}\n## Pnyx Meeting Notes\n\n{notes_excerpt}\n{marker_end}"
         )
 
         if without_old_block:

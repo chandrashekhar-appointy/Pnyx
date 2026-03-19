@@ -116,6 +116,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
   const [sessionError, setSessionError] = useState<boolean>(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
+  const [isCreditExhausted, setIsCreditExhausted] = useState(false);
   const { data: session, status: sessionStatus } = useSession();
 
   // Real-time streaming audio client
@@ -222,6 +223,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         if (isStarting) {
           setIsStarting(false);
         }
+      },
+      onCreditExhausted: () => {
+        setIsCreditExhausted(true);
+        if (!storeOnly) {
+          onTranscriptionError?.('Credits exhausted. Transcription has stopped.', 'CREDIT_EXHAUSTED');
+        }
       }
     }),
     [
@@ -310,6 +317,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsStarting(true);
     setIsPaused(false);
     setDeviceError(null);
+    setIsCreditExhausted(false);
     startAckHandledRef.current = false;
 
     try {
@@ -519,6 +527,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         onSave={handleSaveApiKey}
       />
       <div className="flex flex-col space-y-2">
+        {isCreditExhausted && (
+          <Alert variant="destructive" className="mb-4 border-amber-300 bg-amber-50">
+            <AlertCircle className="h-5 w-5 text-amber-600" />
+            <AlertTitle className="text-amber-800 font-semibold mb-1">
+              Credits Exhausted
+            </AlertTitle>
+            <AlertDescription className="text-amber-700 text-sm">
+              Your credit balance has been exhausted. Live transcription has been paused.
+              <button 
+                onClick={() => window.open('/settings', '_blank')}
+                className="ml-2 font-bold underline"
+              >
+                Top up now
+              </button>
+            </AlertDescription>
+          </Alert>
+        )}
         <div className="flex items-center space-x-3 bg-white rounded-full shadow-lg px-4 py-2">
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">

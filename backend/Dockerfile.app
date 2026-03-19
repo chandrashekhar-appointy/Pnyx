@@ -35,7 +35,7 @@ RUN mkdir -p /app/data /app/logs
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV DATABASE_PATH=/app/data/meeting_minutes.db
-ENV DATABASE_URL=postgresql://neondb_owner:npg_3JYK7ySezjrT@ep-morning-truth-ahrz730e-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require
+ENV DATABASE_URL=""
 
 # Expose the port the app runs on
 EXPOSE 5167

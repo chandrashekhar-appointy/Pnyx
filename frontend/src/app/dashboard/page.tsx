@@ -27,7 +27,12 @@ export default function DashboardPage() {
     }
 
     if (status === 'authenticated') {
-      if (session?.user?.email !== 'gagan@appointy.com') {
+      const adminEmails = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || '')
+        .split(',')
+        .map(e => e.trim())
+        .filter(Boolean);
+        
+      if (adminEmails.length > 0 && session?.user?.email && !adminEmails.includes(session.user.email)) {
         router.push('/'); // Redirect non-admins to home
         return;
       }

@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 try:
-    from ..deps import get_current_user
+    from ..deps import get_current_user, get_admin_user
     from ...db import DatabaseManager
 except (ImportError, ValueError):
-    from api.deps import get_current_user
+    from api.deps import get_current_user, get_admin_user
     from db import DatabaseManager
 
 db = DatabaseManager()
@@ -67,13 +67,9 @@ async def track_event(request: TrackEventRequest, req: Request):
 
 @router.get("/dashboard/metrics")
 async def get_dashboard_metrics(
-    user_filter: str | None = None, user=Depends(get_current_user)
+    user_filter: str | None = None, user=Depends(get_admin_user)
 ):
     """Fetch dashboard metrics, restricted to admin."""
-    # Security: Only admin can see the dashboard
-    if not user or getattr(user, "email", "") != "gagan@appointy.com":
-        raise HTTPException(status_code=403, detail="Forbidden: Admin access only")
-
     try:
         async with db._get_connection() as conn:
             # Fetch all unique users to populate the dropdown
@@ -83,36 +79,55 @@ async def get_dashboard_metrics(
             unique_users_list = [row["user_id"] for row in unique_users_list_rows]
 
             base_where = "user_id NOT LIKE 'localhost%'"
+            args = []
+
             if user_filter == "exclude_admin":
-                base_where += " AND user_id != 'gagan@appointy.com'"
+                import os
+
+                admin_emails = [
+                    e.strip()
+                    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+                    if e.strip()
+                ]
+                if admin_emails:
+                    placeholders = ", ".join(
+                        [f"${i + 1}" for i in range(len(admin_emails))]
+                    )
+                    base_where += f" AND user_id NOT IN ({placeholders})"
+                    args.extend(admin_emails)
             elif user_filter and user_filter != "all":
-                # if user_filter is a specific email
-                base_where += f" AND user_id = '{user_filter}'"
+                args.append(user_filter)
+                base_where += f" AND user_id = ${len(args)}"
 
             # Top-level KPIs
             total_events = await conn.fetchval(
-                f"SELECT COUNT(*) FROM analytics_events WHERE {base_where}"
+                f"SELECT COUNT(*) FROM analytics_events WHERE {base_where}", *args
             )
             unique_users = await conn.fetchval(
-                f"SELECT COUNT(DISTINCT user_id) FROM analytics_events WHERE user_id IS NOT NULL AND {base_where}"
+                f"SELECT COUNT(DISTINCT user_id) FROM analytics_events WHERE user_id IS NOT NULL AND {base_where}",
+                *args,
             )
 
             # Breakdown by feature
-            feature_breakdown_rows = await conn.fetch(f"""
+            feature_breakdown_rows = await conn.fetch(
+                f"""
                 SELECT event_name, COUNT(*) as count 
                 FROM analytics_events 
                 WHERE {base_where}
                 GROUP BY event_name 
                 ORDER BY count DESC
                 LIMIT 15
-            """)
+            """,
+                *args,
+            )
             feature_breakdown = [
                 {"name": row["event_name"], "value": row["count"]}
                 for row in feature_breakdown_rows
             ]
 
             # Template popularity (for notes_generated OR notes_template_switched)
-            template_popularity_rows = await conn.fetch(f"""
+            template_popularity_rows = await conn.fetch(
+                f"""
                 SELECT properties->>'template_name' as template_name, COUNT(*) as count
                 FROM analytics_events
                 WHERE event_name IN ('notes_generated', 'notes_template_switched') 
@@ -120,21 +135,26 @@ async def get_dashboard_metrics(
                   AND {base_where}
                 GROUP BY properties->>'template_name'
                 ORDER BY count DESC
-            """)
+            """,
+                *args,
+            )
             template_popularity = [
                 {"name": row["template_name"], "value": row["count"]}
                 for row in template_popularity_rows
             ]
 
             # Daily active usage (last 7 days)
-            daily_usage_rows = await conn.fetch(f"""
+            daily_usage_rows = await conn.fetch(
+                f"""
                 SELECT date_trunc('day', timestamp) as day, COUNT(*) as count
                 FROM analytics_events
                 WHERE timestamp >= CURRENT_DATE - INTERVAL '7 days'
                   AND {base_where}
                 GROUP BY day
                 ORDER BY day
-            """)
+            """,
+                *args,
+            )
             daily_usage = [
                 {
                     "date": row["day"].strftime("%Y-%m-%d") if row["day"] else "",

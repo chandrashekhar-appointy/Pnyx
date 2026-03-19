@@ -29,6 +29,8 @@ import { ImportModal } from '@/components/ImportModal';
 import Logo from '../Logo';
 import Info from '../Info';
 import { ComplianceNotification } from '../ComplianceNotification';
+import { CreditBalance } from '../CreditBalance';
+import { PurchaseCreditsModal } from '../PurchaseCreditsModal';
 
 interface SidebarItem {
   id: string;
@@ -41,7 +43,13 @@ const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session } = useSession();
-  const isAdmin = session?.user?.email === 'gagan@appointy.com';
+  const adminEmails = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || '')
+    .split(',')
+    .map(e => e.trim())
+    .filter(Boolean);
+  const isAdmin = adminEmails.length > 0 && session?.user?.email 
+    ? adminEmails.includes(session.user.email) 
+    : false;
 
   const {
     currentMeeting,
@@ -103,6 +111,7 @@ const Sidebar: React.FC = () => {
 
   const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; itemId: string | null }>({ isOpen: false, itemId: null });
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
 
   useEffect(() => {
     // Note: Don't set hardcoded defaults - let DB be the source of truth
@@ -892,6 +901,10 @@ const Sidebar: React.FC = () => {
               </button>
             )}
 
+            <div className="px-1 mt-2 mb-2">
+              <CreditBalance onTopUpClick={() => setIsPurchaseModalOpen(true)} />
+            </div>
+
             <button
               onClick={() => { sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors shadow-sm"
@@ -918,6 +931,11 @@ const Sidebar: React.FC = () => {
       <ImportModal
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
+      />
+
+      <PurchaseCreditsModal
+        isOpen={isPurchaseModalOpen}
+        onClose={() => setIsPurchaseModalOpen(false)}
       />
 
       {/* Edit Meeting Title Modal */}

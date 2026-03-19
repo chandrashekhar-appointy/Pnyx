@@ -21,17 +21,23 @@ except Exception:
 
 def encrypt_key(plain_text: str) -> str:
     """Encrypt a plain text API key."""
-    if not plain_text or not fernet:
+    if not plain_text:
         return ""
+    if not fernet:
+        raise ValueError("MASTER_KEY is not configured. Cannot encrypt secrets.")
     return fernet.encrypt(plain_text.encode()).decode()
 
 
 def decrypt_key(encrypted_text: str) -> str:
     """Decrypt an encrypted API key."""
-    if not encrypted_text or not fernet:
+    if not encrypted_text:
         return ""
+    if not fernet:
+        raise ValueError("MASTER_KEY is not configured. Cannot decrypt secrets.")
     try:
         return fernet.decrypt(encrypted_text.encode()).decode()
-    except Exception:
-        # If decryption fails (e.g. key changed), return empty or handle error
-        return ""
+    except Exception as e:
+        # If decryption fails (e.g. key changed), raise explicit error
+        raise ValueError(
+            f"Failed to decrypt secret. The MASTER_KEY might have changed: {e}"
+        )

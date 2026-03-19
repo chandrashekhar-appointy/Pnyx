@@ -5,14 +5,22 @@ import asyncio
 try:
     from ...db import DatabaseManager
     from ...services.credit_manager import CreditManager
-    from ..deps import get_current_user
-    from ...schemas.credits import AdminCreditOverrideRequest, AdminSetUnlimitedRequest, CreditBalanceResponse
+    from ..deps import get_current_user, get_admin_user
+    from ...schemas.credits import (
+        AdminCreditOverrideRequest,
+        AdminSetUnlimitedRequest,
+        CreditBalanceResponse,
+    )
     from ...schemas.user import User
 except (ImportError, ValueError):
     from db import DatabaseManager
     from services.credit_manager import CreditManager
-    from api.deps import get_current_user
-    from schemas.credits import AdminCreditOverrideRequest, AdminSetUnlimitedRequest, CreditBalanceResponse
+    from api.deps import get_current_user, get_admin_user
+    from schemas.credits import (
+        AdminCreditOverrideRequest,
+        AdminSetUnlimitedRequest,
+        CreditBalanceResponse,
+    )
     from schemas.user import User
 
 router = APIRouter()
@@ -22,7 +30,7 @@ credit_mgr = CreditManager(db)
 
 
 @router.post("/admin/reindex-all")
-async def reindex_all():
+async def reindex_all(admin: User = Depends(get_admin_user)):
     """Admin endpoint to re-index all past meetings into ChromaDB."""
     debug_logs = []
     try:
@@ -158,7 +166,7 @@ async def reindex_all():
 @router.post("/admin/credits/override")
 async def override_credits(
     req: AdminCreditOverrideRequest,
-    user: User = Depends(get_current_user),
+    admin: User = Depends(get_admin_user),
 ):
     """Add or remove admin bonus credits for a user with audit trail."""
     try:
@@ -166,7 +174,7 @@ async def override_credits(
             user_email=req.user_email,
             amount=req.credits,
             reason=req.reason,
-            admin_email=user.email,
+            admin_email=admin.email,
         )
         return {
             "status": "success",
@@ -183,7 +191,7 @@ async def override_credits(
 @router.get("/admin/credits/{user_email}", response_model=CreditBalanceResponse)
 async def get_user_credits(
     user_email: str,
-    _admin: User = Depends(get_current_user),
+    admin: User = Depends(get_admin_user),
 ):
     """View a specific user's credit balance (admin only)."""
     balance = await credit_mgr.get_balance(user_email)
@@ -193,7 +201,7 @@ async def get_user_credits(
 @router.post("/admin/credits/set-unlimited")
 async def set_user_unlimited(
     req: AdminSetUnlimitedRequest,
-    user: User = Depends(get_current_user),
+    admin: User = Depends(get_admin_user),
 ):
     """Toggle unlimited mode for a user."""
     await credit_mgr.set_unlimited(req.user_email, req.is_unlimited)
@@ -201,6 +209,5 @@ async def set_user_unlimited(
         "status": "success",
         "user_email": req.user_email,
         "is_unlimited": req.is_unlimited,
-        "set_by": user.email,
+        "set_by": admin.email,
     }
-

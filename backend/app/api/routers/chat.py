@@ -381,12 +381,13 @@ async def search_context_endpoint(request: SearchContextRequest):
     """
     try:
         # Fallback to empty results for now as VectorDB logic is not fully migrated
-        results = []
+        # Inform frontend that search is currently unavailable
         return {
             "status": "success",
             "query": request.query,
-            "results": results,
+            "results": [],
             "total_indexed": 0,
+            "message": "Semantic search is currently disabled for maintenance.",
         }
 
     except Exception as e:

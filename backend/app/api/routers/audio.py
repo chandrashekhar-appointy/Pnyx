@@ -35,7 +35,11 @@ try:
     from ...services.audio.manager import StreamingTranscriptionManager
     from ...services.audio.groq_client import GroqTranscriptionClient
     from ...services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
-    from ...services.audio.recorder import get_or_create_recorder, stop_recorder, flush_recorder
+    from ...services.audio.recorder import (
+        get_or_create_recorder,
+        stop_recorder,
+        flush_recorder,
+    )
     from ...services.audio.post_recording import get_post_recording_service
     from ...services.audio.pipeline_state import get_audio_pipeline_state_service
     from ...services.storage import StorageService
@@ -51,7 +55,11 @@ except (ImportError, ValueError):
     from services.audio.manager import StreamingTranscriptionManager
     from services.audio.groq_client import GroqTranscriptionClient
     from services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
-    from services.audio.recorder import get_or_create_recorder, stop_recorder, flush_recorder
+    from services.audio.recorder import (
+        get_or_create_recorder,
+        stop_recorder,
+        flush_recorder,
+    )
     from services.audio.post_recording import get_post_recording_service
     from services.audio.pipeline_state import get_audio_pipeline_state_service
     from services.storage import StorageService
@@ -395,7 +403,7 @@ async def _build_ai_meeting_context(
                 event_id=calendar_event_id,
                 user_email=user_email,
             )
-        
+
         if not event_context:
             # Fallback to implicit meeting matching
             event_context = await db.get_calendar_event_context_for_meeting(
@@ -746,18 +754,34 @@ async def websocket_streaming_audio(
     websocket: WebSocket,
     session_id: Optional[str] = None,
     meeting_id: Optional[str] = None,
-    auth_token: Optional[str] = None,
 ):
     """
     Real-time streaming transcription with Groq Whisper Large v3.
     Includes heartbeat and force-flush on disconnect.
     """
+    await websocket.accept()
+
     try:
+        # Wait for the first message to be an authentication token
+        first_msg = await asyncio.wait_for(websocket.receive(), timeout=5.0)
+        if "text" not in first_msg:
+            await websocket.close(code=1008, reason="Expected authentication message")
+            return
+
+        import json
+
+        auth_data = json.loads(first_msg["text"])
+        if auth_data.get("type") != "authenticate":
+            await websocket.close(code=1008, reason="Expected authentication message")
+            return
+
+        auth_token = auth_data.get("token")
         current_user = await _authenticate_websocket(auth_token)
         if not current_user:
             await websocket.close(code=1008, reason="Authentication required")
             return
-    except Exception:
+    except Exception as e:
+        logger.error(f"WebSocket auth failed: {e}")
         await websocket.close(code=1008, reason="Authentication failed")
         return
 
@@ -876,7 +900,9 @@ async def websocket_streaming_audio(
             metadata={"mode": "streaming_ws", "celery_enabled": AUDIO_CELERY_ENABLED},
         )
     except Exception as state_err:
-        logger.warning("[Streaming] Failed to initialize session state early: %s", state_err)
+        logger.warning(
+            "[Streaming] Failed to initialize session state early: %s", state_err
+        )
 
     try:
         await websocket.send_json(
@@ -889,7 +915,10 @@ async def websocket_streaming_audio(
             }
         )
     except WebSocketDisconnect:
-        logger.info("[Streaming] Client disconnected before initialization completed for %s", session_id)
+        logger.info(
+            "[Streaming] Client disconnected before initialization completed for %s",
+            session_id,
+        )
         return
 
     # Audio recorder setup
@@ -922,9 +951,9 @@ async def websocket_streaming_audio(
 
         if not is_resume:
             # ── Transcription provider selection ─────────────────────────
-            transcription_provider = os.getenv(
-                "TRANSCRIPTION_PROVIDER", "groq"
-            ).lower().strip()
+            transcription_provider = (
+                os.getenv("TRANSCRIPTION_PROVIDER", "groq").lower().strip()
+            )
 
             transcription_client = None
 
@@ -948,9 +977,7 @@ async def websocket_streaming_audio(
                     await websocket.close()
                     return
 
-                elevenlabs_mode = os.getenv(
-                    "ELEVENLABS_MODE", "batch"
-                ).lower().strip()
+                elevenlabs_mode = os.getenv("ELEVENLABS_MODE", "batch").lower().strip()
                 transcription_client = ElevenLabsTranscriptionClient(
                     api_key=elevenlabs_api_key, mode=elevenlabs_mode
                 )
@@ -1013,14 +1040,14 @@ async def websocket_streaming_audio(
                         meeting_id=active_meeting_id,
                     )
                     session_ai_participants[session_id] = ai_engine
-                    
+
                     # Push initial state to client if restored
                     if state_restored:
                         initial_state = ai_engine.get_host_state_snapshot()
                         if initial_state:
                             await _publish_ai_host_state_delta_payload(
                                 state_delta=initial_state,
-                                ai_stats=ai_engine.get_stats_snapshot()
+                                ai_stats=ai_engine.get_stats_snapshot(),
                             )
 
                     logger.info(
@@ -1070,14 +1097,14 @@ async def websocket_streaming_audio(
                 meeting_id=active_meeting_id,
             )
             session_ai_participants[session_id] = ai_engine
-            
+
             # Push initial state to client if restored
             if state_restored:
                 initial_state = ai_engine.get_host_state_snapshot()
                 if initial_state:
                     await _publish_ai_host_state_delta_payload(
                         state_delta=initial_state,
-                        ai_stats=ai_engine.get_stats_snapshot()
+                        ai_stats=ai_engine.get_stats_snapshot(),
                     )
 
             logger.info(
@@ -1295,9 +1322,7 @@ async def websocket_streaming_audio(
         metadata_patch = {
             "ai_host_last_intervention": payload,
             "ai_host_last_intervention_at": payload.get("timestamp"),
-            "ai_host_interventions_count": runtime_stats[
-                "ai_host_interventions_count"
-            ],
+            "ai_host_interventions_count": runtime_stats["ai_host_interventions_count"],
         }
         if ai_stats is not None:
             metadata_patch["ai_host"] = ai_stats
@@ -1375,9 +1400,7 @@ async def websocket_streaming_audio(
                     float(ai_stats.get("window_duration_seconds") or 0.0),
                 )
         except Exception as ai_err:
-            logger.error(
-                "[AIHost] Host processing failed: %s", ai_err, exc_info=True
-            )
+            logger.error("[AIHost] Host processing failed: %s", ai_err, exc_info=True)
 
     async def on_error(message: str, code: Optional[str] = None):
         try:
@@ -1420,7 +1443,9 @@ async def websocket_streaming_audio(
                             audio_queue.qsize(),
                         )
                         # ── Credit check before STT ────────────────
-                        chunk_user_email = session_context.get(session_id, {}).get("user_email")
+                        chunk_user_email = session_context.get(session_id, {}).get(
+                            "user_email"
+                        )
                         if chunk_user_email:
                             credit_result = await credit_mgr.deduct_credits(
                                 user_email=chunk_user_email,
@@ -1430,11 +1455,13 @@ async def websocket_streaming_audio(
                             if not credit_result["allowed"]:
                                 # Credits exhausted — notify frontend, skip chunk
                                 try:
-                                    await websocket.send_json({
-                                        "type": "credit_exhausted",
-                                        "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
-                                        "remaining": credit_result["total"],
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "credit_exhausted",
+                                            "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
+                                            "remaining": credit_result["total"],
+                                        }
+                                    )
                                 except Exception:
                                     pass
                                 audio_queue.task_done()
@@ -1655,7 +1682,9 @@ async def websocket_streaming_audio(
                                 source="meeting",
                             )
                             runtime_stats["ai_host_policy_source"] = "meeting"
-                            runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
+                            runtime_stats["last_update_at"] = (
+                                datetime.utcnow().isoformat()
+                            )
                             applied = True
                             try:
                                 await state_service.db.merge_recording_session_metadata(
@@ -1685,7 +1714,9 @@ async def websocket_streaming_audio(
                             )
                             ai_stats = ai_engine.get_stats_snapshot()
                             runtime_stats["ai_host"] = ai_stats
-                            runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
+                            runtime_stats["last_update_at"] = (
+                                datetime.utcnow().isoformat()
+                            )
                             try:
                                 await state_service.db.merge_recording_session_metadata(
                                     session_id,
@@ -1716,7 +1747,9 @@ async def websocket_streaming_audio(
                             )
                             ai_stats = ai_engine.get_stats_snapshot()
                             runtime_stats["ai_host"] = ai_stats
-                            runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
+                            runtime_stats["last_update_at"] = (
+                                datetime.utcnow().isoformat()
+                            )
                             try:
                                 await state_service.db.merge_recording_session_metadata(
                                     session_id,
@@ -1741,7 +1774,12 @@ async def websocket_streaming_audio(
                         suggestion_id = str(data.get("suggestion_id") or "").strip()
                         feedback = str(data.get("feedback") or "").strip()[:200]
                         recorded = False
-                        if ai_engine and can_manage_ai_host and suggestion_id and feedback:
+                        if (
+                            ai_engine
+                            and can_manage_ai_host
+                            and suggestion_id
+                            and feedback
+                        ):
                             ai_engine.record_feedback(
                                 suggestion_id=suggestion_id,
                                 feedback=feedback,
@@ -1749,7 +1787,9 @@ async def websocket_streaming_audio(
                             )
                             ai_stats = ai_engine.get_stats_snapshot()
                             runtime_stats["ai_host"] = ai_stats
-                            runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
+                            runtime_stats["last_update_at"] = (
+                                datetime.utcnow().isoformat()
+                            )
                             recorded = True
                             try:
                                 await state_service.db.merge_recording_session_metadata(
@@ -1778,22 +1818,27 @@ async def websocket_streaming_audio(
                             goal = manual_context.get("goal") or None
                             agenda_text = manual_context.get("agenda_text") or None
                             participants = manual_context.get("participants") or None
-                            
+
                             if calendar_event_id:
                                 try:
                                     fresh_context = await _build_ai_meeting_context(
                                         meeting_id=active_meeting_id,
                                         user_email=user_email,
-                                        calendar_event_id=calendar_event_id
+                                        calendar_event_id=calendar_event_id,
                                     )
                                     if not goal:
                                         goal = fresh_context.goal
                                     if not agenda_text:
                                         agenda_text = fresh_context.agenda_text
-                                    if not participants and fresh_context.participant_names:
+                                    if (
+                                        not participants
+                                        and fresh_context.participant_names
+                                    ):
                                         participants = fresh_context.participant_names
                                 except Exception as e:
-                                    logger.error(f"[Streaming] Failed to fetch calendar context override: {e}")
+                                    logger.error(
+                                        f"[Streaming] Failed to fetch calendar context override: {e}"
+                                    )
 
                             ai_engine.apply_manual_context(
                                 goal=goal,
@@ -2618,13 +2663,19 @@ async def get_recording_integrity_report(
                     1 for item in report_items if item["issue_flags"]["finalize_failed"]
                 ),
                 "missing_artifact": sum(
-                    1 for item in report_items if item["issue_flags"]["missing_artifact"]
+                    1
+                    for item in report_items
+                    if item["issue_flags"]["missing_artifact"]
                 ),
                 "suspiciously_short": sum(
-                    1 for item in report_items if item["issue_flags"]["suspiciously_short"]
+                    1
+                    for item in report_items
+                    if item["issue_flags"]["suspiciously_short"]
                 ),
                 "repair_attempted": sum(
-                    1 for item in report_items if item["issue_flags"]["repair_attempted"]
+                    1
+                    for item in report_items
+                    if item["issue_flags"]["repair_attempted"]
                 ),
                 "dropped_chunks": sum(
                     1 for item in report_items if item["issue_flags"]["dropped_chunks"]

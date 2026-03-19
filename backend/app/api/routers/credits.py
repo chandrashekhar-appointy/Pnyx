@@ -104,8 +104,18 @@ async def purchase_credits(
             purchase_id=str(row["id"]),
         )
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"[Credits] Purchase failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create payment QR")
+@router.get("/purchase/{purchase_id}")
+async def get_purchase_status(
+    purchase_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Check the status of a specific credit purchase."""
+    async with db._get_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM credit_purchases WHERE id = $1 AND user_email = $2",
+            purchase_id,
+            user.email,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Purchase not found")
+        return {"status": row["status"]}
