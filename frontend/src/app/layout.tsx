@@ -13,6 +13,7 @@ import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { AuthProvider } from '@/components/AuthProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
+import { PersistentRecordingRuntime } from '@/components/PersistentRecordingRuntime'
 // import { OllamaDownloadProvider } from '@/contexts/OllamaDownloadContext'
 
 const sourceSans3 = Source_Sans_3({
@@ -50,6 +51,7 @@ export default function RootLayout({
                       <Sidebar />
                       <MainContent>
                         <CalendarConnectPrompt />
+                        <PersistentRecordingRuntime />
                         {children}
                       </MainContent>
                     </div>

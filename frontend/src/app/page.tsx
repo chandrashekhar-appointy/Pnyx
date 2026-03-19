@@ -47,6 +47,7 @@ import { recoveryService, PendingMeetingData } from '@/lib/transcriptRecovery';
 import { SetupRequirements } from '@/components/SetupRequirements';
 import { CalendarMeetingPicker, CalendarEvent, formatCalendarEventTimeIST } from '@/components/CalendarMeetingPicker';
 import { AudioStreamClient } from '@/lib/audio-streaming/AudioStreamClient';
+import { getPersistentRecordingClient, usePersistentRecordingSession } from '@/lib/recordingSessionStore';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 
@@ -165,12 +166,30 @@ const toTitleCase = (value: string): string =>
     .join(' ');
 
 export default function Home() {
+  const {
+    meetingTitle,
+    setMeetingTitle,
+    transcripts,
+    setTranscripts,
+    isRecording,
+    setIsRecording,
+    isPaused,
+    setIsPaused,
+    pendingRecoveryId,
+    setPendingRecoveryId,
+    currentSessionId,
+    setCurrentSessionId,
+    resumeStartSignal,
+    setResumeStartSignal,
+    recordingElapsedSeconds,
+    setRecordingElapsedSeconds,
+    audioTimelineOffsetSeconds,
+    setAudioTimelineOffsetSeconds,
+  } = usePersistentRecordingSession();
 
-  const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>('idle');
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
-  const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [customPrompt, setCustomPrompt] = useState('');
   const [aiSummary, setAiSummary] = useState<Summary | null>({
@@ -223,18 +242,11 @@ export default function Home() {
 
   // State for web audio recording
   // State for web audio recording
-  const [isRecording, setIsRecording] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Recovery State
   const [showReauthModal, setShowReauthModal] = useState(false);
-  const [pendingRecoveryId, setPendingRecoveryId] = useState<string | null>(null);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isRestoredSession, setIsRestoredSession] = useState(false);
-  const [resumeStartSignal, setResumeStartSignal] = useState(0);
-  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
-  const [audioTimelineOffsetSeconds, setAudioTimelineOffsetSeconds] = useState(0);
   const [streamingHealth, setStreamingHealth] = useState<StreamingHealthPayload | null>(null);
   const [activeGuardrailAlert, setActiveGuardrailAlert] = useState<AIGuardrailAlert | null>(null);
   const [guardrailAlertHistory, setGuardrailAlertHistory] = useState<AIGuardrailAlert[]>([]);
@@ -265,6 +277,15 @@ export default function Home() {
 
   useEffect(() => {
     const checkRecoveries = async () => {
+      const hasLivePersistentSession =
+        isRecording ||
+        Boolean(currentSessionId) ||
+        Boolean(getPersistentRecordingClient()?.getSessionId());
+
+      if (hasLivePersistentSession) {
+        return;
+      }
+
       if (typeof window !== 'undefined') {
         const launchParams = new URLSearchParams(window.location.search);
         if (launchParams.get('autoStart') === 'true') {
@@ -275,6 +296,12 @@ export default function Home() {
       const pending = await recoveryService.getAllPendingTranscripts();
       if (pending.length > 0) {
         const latest = pending[0];
+        const recoveredId = latest.sessionId || latest.meetingId;
+
+        if (currentSessionId && recoveredId === currentSessionId) {
+          return;
+        }
+
         const ageMinutes = (Date.now() - latest.timestamp) / 1000 / 60;
 
         // If backup is fresh (< 5 mins), auto-restore seamlessly
@@ -282,7 +309,6 @@ export default function Home() {
           console.log('[Recovery] Found fresh backup (< 5 mins), auto-restoring...');
           setMeetingTitle(latest.title);
           setTranscripts(latest.transcripts);
-          const recoveredId = latest.sessionId || latest.meetingId;
           setPendingRecoveryId(recoveredId);
           setIsRestoredSession(true);
 
@@ -307,7 +333,7 @@ export default function Home() {
       }
     };
     checkRecoveries();
-  }, []);
+  }, [currentSessionId, isRecording, setCurrentSessionId, setMeetingTitle, setPendingRecoveryId, setTranscripts]);
 
   useEffect(() => {
     const loadHostStyles = async () => {
@@ -723,10 +749,6 @@ export default function Home() {
   // Update sidebar recording state
   useEffect(() => {
     setSidebarIsRecording(isRecording);
-    return () => {
-      // Prevent stale sidebar "recording" UI if Home unmounts mid-transition.
-      setSidebarIsRecording(false);
-    };
   }, [isRecording, setSidebarIsRecording]);
 
   // Handle receiving transcript updates from RecordingControls
@@ -1146,20 +1168,20 @@ export default function Home() {
     setContextApplySignal((v) => v + 1);
   }, [hasManualContextValues, isRecording]);
 
-  useEffect(() => {
-    if (!isRecording) return;
-    if (!effectiveHostStyleMarkdown.trim()) return;
-    hostClientRef.current?.applyHostSkillOverride(effectiveHostStyleMarkdown);
-  }, [isRecording, effectiveHostStyleMarkdown]);
-
   const handleInlineHostModeChange = useCallback((nextStyleId: string) => {
     setSelectedHostStyleId(nextStyleId);
+    const nextStyleMarkdown =
+      hostStyles.find((style) => style.id === (nextStyleId === '__default__' ? defaultHostStyleId : nextStyleId))
+        ?.skill_markdown || '';
+    if (isRecording && nextStyleMarkdown.trim()) {
+      hostClientRef.current?.applyHostSkillOverride(nextStyleMarkdown);
+    }
     if (isRecording) {
       setTimeout(() => {
         toast.success('AI Participant style updated for this meeting');
       }, 0);
     }
-  }, [isRecording]);
+  }, [defaultHostStyleId, hostStyles, isRecording]);
 
   const handleBeforeStartRecording = useCallback((): boolean | Promise<boolean> => {
     if (!askHostStyleBeforeStart) {
@@ -2876,7 +2898,7 @@ export default function Home() {
                     isRecording={isRecording}
                     onRecordingStop={(success) => handleRecordingStop(success)}
                     onRecordingStart={handleRecordingStart}
-                    onTranscriptReceived={handleTranscriptUpdate}
+                    onTranscriptReceived={() => {}}
                     onGuardrailAlert={handleGuardrailAlert}
                     onHostSuggestion={handleHostSuggestion}
                     onHostIntervention={handleHostIntervention}

@@ -6,6 +6,7 @@ import Analytics from '@/lib/analytics';
 import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 import { useSession } from 'next-auth/react';
+import { usePersistentRecordingSession } from '@/lib/recordingSessionStore';
 
 interface SidebarItem {
   id: string;
@@ -82,6 +83,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [activeSummaryPolls, setActiveSummaryPolls] = useState<Map<string, NodeJS.Timeout>>(new Map());
   const [sharedNotesCount, setSharedNotesCount] = useState(0);
   const { status } = useSession(); // Access Auth Session Check
+  const { isRecording: persistentIsRecording } = usePersistentRecordingSession();
 
 
   const pathname = usePathname();
@@ -143,6 +145,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchMeetings();
     fetchSharedNotesCount();
   }, [serverAddress, fetchMeetings, fetchSharedNotesCount]);
+
+  useEffect(() => {
+    setIsRecording(persistentIsRecording);
+  }, [persistentIsRecording]);
 
   useEffect(() => {
     const fetchSettings = async () => {

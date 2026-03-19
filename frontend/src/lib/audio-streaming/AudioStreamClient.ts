@@ -66,7 +66,9 @@ import { wsUrl } from '../config';
 
 export class AudioStreamClient {
   private audioContext: AudioContext | null = null;
+  private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
   private audioWorklet: AudioWorkletNode | null = null;
+  private silentMonitorGain: GainNode | null = null;
   private websocket: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
   private callbacks: StreamingCallbacks = {};
@@ -87,10 +89,18 @@ export class AudioStreamClient {
   private maxBufferedChunks: number = 500;
   private pendingStopResolve: (() => void) | null = null;
   private pendingStopReject: ((reason?: unknown) => void) | null = null;
+  private userPaused: boolean = false;
+  private audioWatchdogInterval: NodeJS.Timeout | null = null;
+  private visibilityHandler: (() => void) | null = null;
+  private focusHandler: (() => void) | null = null;
 
   constructor(
     private wsUrlOverride: string = wsUrl
   ) {}
+
+  setCallbacks(callbacks: StreamingCallbacks): void {
+    this.callbacks = callbacks;
+  }
 
   /**
    * Start streaming audio to backend
@@ -107,6 +117,7 @@ export class AudioStreamClient {
     this.reconnectAttempts = 0;
     this.audioQueue = []; // Clear queue on fresh start
     this.intentionalClose = false;
+    this.userPaused = false;
     this.sessionId = sessionId || null; // Use provided sessionId if available
     this.meetingId = meetingId || null;
     this.authToken = authToken || null;
@@ -141,12 +152,14 @@ export class AudioStreamClient {
       await this.connectWithRetry();
 
       // 4. Create pipeline
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      this.mediaStreamSource = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.audioWorklet = new AudioWorkletNode(
         this.audioContext,
         'audio-stream-processor',
         { processorOptions: { sampleRate: this.audioContext.sampleRate } }
       );
+      this.silentMonitorGain = this.audioContext.createGain();
+      this.silentMonitorGain.gain.value = 0;
 
       // 5. Handle audio data
       this.audioWorklet.port.onmessage = (event) => {
@@ -187,8 +200,11 @@ export class AudioStreamClient {
         }
       };
 
-      source.connect(this.audioWorklet);
+      this.mediaStreamSource.connect(this.audioWorklet);
+      this.audioWorklet.connect(this.silentMonitorGain);
+      this.silentMonitorGain.connect(this.audioContext.destination);
       this.isStreaming = true;
+      this.startAudioWatchdog();
       console.log('[AudioStream] ✅ Streaming started');
 
     } catch (error) {
@@ -398,7 +414,9 @@ export class AudioStreamClient {
     console.log('[AudioStream] Stopping...');
     this.intentionalClose = true;
     this.isStreaming = false;
+    this.userPaused = false;
     this.stopHeartbeat();
+    this.stopAudioWatchdog();
     await this.cleanup();
     console.log('[AudioStream] ✅ Stopped');
   }
@@ -420,6 +438,56 @@ export class AudioStreamClient {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+  }
+
+  private startAudioWatchdog() {
+    this.stopAudioWatchdog();
+
+    const attemptAutoResume = () => {
+      if (!this.isStreaming || this.intentionalClose || this.userPaused) return;
+      if (!this.audioContext) return;
+      if (this.audioContext.state !== 'suspended') return;
+
+      console.warn('[AudioStream] AudioContext suspended unexpectedly, attempting auto-resume');
+      void this.audioContext.resume().catch((error) => {
+        console.warn('[AudioStream] Auto-resume failed:', error);
+      });
+    };
+
+    this.audioWatchdogInterval = setInterval(attemptAutoResume, 2000);
+
+    if (typeof document !== 'undefined') {
+      this.visibilityHandler = () => {
+        if (document.visibilityState === 'visible') {
+          attemptAutoResume();
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
+
+    if (typeof window !== 'undefined') {
+      this.focusHandler = () => {
+        attemptAutoResume();
+      };
+      window.addEventListener('focus', this.focusHandler);
+    }
+  }
+
+  private stopAudioWatchdog() {
+    if (this.audioWatchdogInterval) {
+      clearInterval(this.audioWatchdogInterval);
+      this.audioWatchdogInterval = null;
+    }
+
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+
+    if (this.focusHandler && typeof window !== 'undefined') {
+      window.removeEventListener('focus', this.focusHandler);
+      this.focusHandler = null;
     }
   }
 
@@ -490,6 +558,16 @@ export class AudioStreamClient {
       this.audioWorklet = null;
     }
 
+    if (this.silentMonitorGain) {
+      this.silentMonitorGain.disconnect();
+      this.silentMonitorGain = null;
+    }
+
+    if (this.mediaStreamSource) {
+      this.mediaStreamSource.disconnect();
+      this.mediaStreamSource = null;
+    }
+
     if (this.audioContext) {
       await this.audioContext.close();
       this.audioContext = null;
@@ -502,6 +580,7 @@ export class AudioStreamClient {
 
     this.pendingStopResolve = null;
     this.pendingStopReject = null;
+    this.stopAudioWatchdog();
   }
 
   /**
@@ -510,6 +589,7 @@ export class AudioStreamClient {
   async pause(): Promise<void> {
     if (this.audioContext && this.audioContext.state === 'running') {
       console.log('[AudioStream] Pausing...');
+      this.userPaused = true;
       await this.audioContext.suspend();
       console.log('[AudioStream] Paused');
     }
@@ -521,6 +601,7 @@ export class AudioStreamClient {
   async resume(): Promise<void> {
     if (this.audioContext && this.audioContext.state === 'suspended') {
       console.log('[AudioStream] Resuming...');
+      this.userPaused = false;
       await this.audioContext.resume();
       console.log('[AudioStream] Resumed');
     }

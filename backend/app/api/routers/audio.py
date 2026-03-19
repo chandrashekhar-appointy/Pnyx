@@ -847,6 +847,45 @@ async def websocket_streaming_audio(
             await websocket.close(code=1011)
             return
 
+    # Register the connection immediately so health checks do not race against
+    # slower recorder / AI / provider initialization work.
+    if session_id not in active_connections:
+        active_connections[session_id] = 0
+    active_connections[session_id] += 1
+    runtime_stats = _ensure_runtime_stats(session_id)
+    runtime_stats["connection_count"] = active_connections[session_id]
+    runtime_stats["connection_state"] = "initializing"
+    runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
+    session_context[session_id] = {
+        "meeting_id": active_meeting_id,
+        "recorder_key": active_meeting_id,
+        "user_email": user_email,
+    }
+
+    try:
+        await state_service.ensure_session(
+            session_id=session_id,
+            user_email=user_email,
+            meeting_id=active_meeting_id,
+            metadata={"mode": "streaming_ws", "celery_enabled": AUDIO_CELERY_ENABLED},
+        )
+    except Exception as state_err:
+        logger.warning("[Streaming] Failed to initialize session state early: %s", state_err)
+
+    try:
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "session_id": session_id,
+                "message": "Streaming connection established. Initializing audio pipeline.",
+                "initializing": True,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+    except WebSocketDisconnect:
+        logger.info("[Streaming] Client disconnected before initialization completed for %s", session_id)
+        return
+
     # Audio recorder setup
     audio_recorder = None
     enable_recording = os.getenv("ENABLE_AUDIO_RECORDING", "true").lower() == "true"
@@ -1057,29 +1096,8 @@ async def websocket_streaming_audio(
                 session_id,
                 ai_ctx_err,
             )
-
-    try:
-        await state_service.ensure_session(
-            session_id=session_id,
-            user_email=user_email,
-            meeting_id=active_meeting_id,
-            metadata={"mode": "streaming_ws", "celery_enabled": AUDIO_CELERY_ENABLED},
-        )
-    except Exception as state_err:
-        logger.warning("[Streaming] Failed to initialize session state: %s", state_err)
-
-    # Register active connection
-    if session_id not in active_connections:
-        active_connections[session_id] = 0
-    active_connections[session_id] += 1
-    runtime_stats = _ensure_runtime_stats(session_id)
-    runtime_stats["connection_count"] = active_connections[session_id]
+    runtime_stats["connection_state"] = "ready"
     runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
-    session_context[session_id] = {
-        "meeting_id": active_meeting_id,
-        "recorder_key": active_meeting_id,
-        "user_email": user_email,
-    }
 
     # Heartbeat setup (configurable with safe default).
     # Keep this above common browser timer-throttling windows to avoid false disconnects.
@@ -1119,16 +1137,6 @@ async def websocket_streaming_audio(
             pass
 
     monitor_task = asyncio.create_task(heartbeat_monitor())
-
-    # Send connection confirmation
-    await websocket.send_json(
-        {
-            "type": "connected",
-            "session_id": session_id,
-            "message": "Groq streaming ready (HYBRID mode)",
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-    )
 
     # Define callbacks
     async def on_partial(data):
@@ -2371,7 +2379,23 @@ async def get_streaming_session_health(
 
     session = await db.get_recording_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        ctx = session_context.get(session_id) or {}
+        runtime = _sanitize_runtime_for_json(session_runtime_stats.get(session_id, {}))
+        if not ctx:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if ctx.get("user_email") != current_user.email:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        mgr = streaming_managers.get(session_id)
+        manager_stats = mgr.get_stats() if mgr else {}
+        return {
+            "session_id": session_id,
+            "meeting_id": ctx.get("meeting_id"),
+            "session_status": "initializing",
+            "active_connections": active_connections.get(session_id, 0),
+            "runtime": runtime,
+            "manager_stats": manager_stats,
+        }
 
     if session.get("user_email") != current_user.email:
         meeting_id = session.get("meeting_id")

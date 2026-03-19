@@ -9,11 +9,17 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import Analytics from '@/lib/analytics';
 import { wsUrl } from '@/lib/config';
 import { AudioStreamClient } from '@/lib/audio-streaming/AudioStreamClient';
+import {
+  appendStreamingTranscript,
+  getPersistentRecordingClient,
+  setPersistentRecordingClient,
+} from '@/lib/recordingSessionStore';
 import { GroqApiKeyDialog } from './GroqApiKeyDialog';
 import { authFetch } from '@/lib/api';
 
 interface RecordingControlsProps {
   isRecording: boolean;
+  renderUI?: boolean;
   barHeights: string[];
   onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
@@ -77,6 +83,7 @@ interface RecordingControlsProps {
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
+  renderUI = true,
   barHeights,
   onRecordingStop,
   onRecordingStart,
@@ -115,6 +122,114 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const audioClientRef = useRef<AudioStreamClient | null>(null);
   const lastStartSignalRef = useRef<number | undefined>(undefined);
 
+  const buildStreamingCallbacks = useCallback(
+    (storeOnly: boolean = false) => ({
+      onConnected: (sessionId: string) => {
+        console.log('✅ Connected to streaming service, session:', sessionId);
+        if (!storeOnly && onSessionIdReceived) onSessionIdReceived(sessionId);
+        if (manualContext) {
+          audioClientRef.current?.updateMeetingContext(manualContext);
+        }
+        if ((hostSkillMarkdown || '').trim()) {
+          audioClientRef.current?.applyHostSkillOverride(hostSkillMarkdown || '');
+        }
+      },
+      onContextAck: (applied: boolean) => {
+        if (!storeOnly) {
+          onContextApplied?.(applied);
+        }
+      },
+      onPartial: () => {
+        // Partial transcripts are intentionally ignored in the UI.
+      },
+      onGuardrailAlert: (alert: NonNullable<Parameters<NonNullable<typeof onGuardrailAlert>>[0]>) => {
+        if (!storeOnly) {
+          onGuardrailAlert?.(alert);
+        }
+      },
+      onHostSuggestion: (suggestion: NonNullable<Parameters<NonNullable<typeof onHostSuggestion>>[0]>) => {
+        if (!storeOnly) {
+          onHostSuggestion?.(suggestion);
+        }
+      },
+      onHostIntervention: (intervention: NonNullable<Parameters<NonNullable<typeof onHostIntervention>>[0]>) => {
+        if (!storeOnly) {
+          onHostIntervention?.(intervention);
+        }
+      },
+      onHostStateDelta: (state: Record<string, unknown>) => {
+        if (!storeOnly) {
+          onHostStateDelta?.(state);
+        }
+      },
+      onHostActionAck: (payload: { action: string; applied: boolean; suggestion?: unknown; suggestion_id?: string }) => {
+        if (!storeOnly) {
+          onHostActionAck?.(payload);
+        }
+      },
+      onHostSkillAck: (applied: boolean) => {
+        if (!storeOnly) {
+          onHostSkillAck?.(applied);
+        }
+      },
+      onFinal: (
+        text: string,
+        _confidence: number,
+        _reason: string,
+        timing?: { start: number; end: number; duration: number },
+        metadata?: {
+          stability_score?: number;
+          stability_class?: 'stable' | 'volatile';
+          segment_finalize_latency_seconds?: number;
+          boundary_score?: number;
+        }
+      ) => {
+        console.log('📝 [RecordingControls] Final transcript:', text.substring(0, 50) + '...');
+
+        appendStreamingTranscript({
+          text,
+          timestamp: new Date().toISOString(),
+          sequence_id: Date.now(),
+          audio_start_time: timing?.start,
+          audio_end_time: timing?.end,
+          duration: timing?.duration,
+          stability_score: metadata?.stability_score,
+          stability_class: metadata?.stability_class || 'stable',
+          segment_finalize_latency_seconds: metadata?.segment_finalize_latency_seconds,
+          boundary_score: metadata?.boundary_score,
+        });
+      },
+      onError: (error: Error, code?: string) => {
+        console.error('❌ Streaming error:', error, 'Code:', code);
+
+        if (code === 'GROQ_KEY_REQUIRED') {
+          setShowApiKeyDialog(true);
+          return;
+        }
+
+        if (!storeOnly) {
+          onTranscriptionError?.(error.message, code);
+        }
+      },
+      onDisconnected: () => {
+        console.log('🔌 Streaming disconnected');
+      }
+    }),
+    [
+      hostSkillMarkdown,
+      manualContext,
+      onContextApplied,
+      onGuardrailAlert,
+      onHostActionAck,
+      onHostIntervention,
+      onHostSkillAck,
+      onHostStateDelta,
+      onHostSuggestion,
+      onSessionIdReceived,
+      onTranscriptionError,
+    ]
+  );
+
   // Debug: Log when component mounts
   useEffect(() => {
     console.log('✅ [RecordingControlsWeb] Component mounted');
@@ -124,15 +239,27 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       isParentProcessing
     });
 
+    const existingClient = getPersistentRecordingClient();
+    if (existingClient) {
+      console.log('♻️ [RecordingControls] Reattached to persistent recording session');
+      audioClientRef.current = existingClient;
+      existingClient.setCallbacks(buildStreamingCallbacks());
+      onHostClientReady?.(existingClient);
+      setIsPaused(existingClient.isPaused());
+    }
+
     return () => {
       if (audioClientRef.current) {
-        console.log('🧹 [RecordingControls] Unmounting - cleaning up audio client');
-        void audioClientRef.current.stop();
-        audioClientRef.current = null;
-        onHostClientReady?.(null);
+        console.log('🧷 [RecordingControls] Unmounting - preserving active audio client');
+        audioClientRef.current.setCallbacks(buildStreamingCallbacks(true));
       }
     };
-  }, []);
+  }, [buildStreamingCallbacks, isParentProcessing, isRecording, isRecordingDisabled, onHostClientReady]);
+
+  useEffect(() => {
+    if (!audioClientRef.current) return;
+    audioClientRef.current.setCallbacks(buildStreamingCallbacks());
+  }, [buildStreamingCallbacks]);
 
   // Extra safety: force-stop on tab close/reload to avoid orphan live streams.
   useEffect(() => {
@@ -140,6 +267,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       if (audioClientRef.current) {
         void audioClientRef.current.stop();
         audioClientRef.current = null;
+        setPersistentRecordingClient(null);
       }
     };
 
@@ -177,6 +305,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       // Create new streaming audio client (uses Groq Whisper)
       const client = new AudioStreamClient(wsUrl);
       audioClientRef.current = client;
+      setPersistentRecordingClient(client);
       onHostClientReady?.(client);
       const stableSessionId =
         initialSessionId ||
@@ -195,84 +324,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         throw new Error('Authentication is still initializing. Please try again in a moment.');
       }
 
-      await client.start({
-        onConnected: (sessionId) => {
-          console.log('✅ Connected to streaming service, session:', sessionId);
-          if (onSessionIdReceived) onSessionIdReceived(sessionId);
-          if (manualContext) {
-            client.updateMeetingContext(manualContext);
-          }
-          if ((hostSkillMarkdown || '').trim()) {
-            client.applyHostSkillOverride(hostSkillMarkdown || '');
-          }
-        },
-        onContextAck: (applied) => {
-          onContextApplied?.(applied);
-        },
-
-        onPartial: (text, confidence, isStable) => {
-          // Partial transcripts disabled by backend
-        },
-        onGuardrailAlert: (alert) => {
-          onGuardrailAlert?.(alert);
-        },
-        onHostSuggestion: (suggestion) => {
-          onHostSuggestion?.(suggestion);
-        },
-        onHostIntervention: (intervention) => {
-          onHostIntervention?.(intervention);
-        },
-        onHostStateDelta: (state) => {
-          onHostStateDelta?.(state);
-        },
-        onHostActionAck: (payload) => {
-          onHostActionAck?.(payload);
-        },
-        onHostSkillAck: (applied) => {
-          onHostSkillAck?.(applied);
-        },
-
-        onFinal: (text, confidence, reason, timing, metadata) => {
-          // Final transcripts (black, locked) - main content
-          console.log('📝 [RecordingControls] Final transcript:', text.substring(0, 50) + '...');
-
-          const transcriptUpdate = {
-            text: text,
-            timestamp: new Date().toISOString(),
-            sequence_id: Date.now(),
-            is_partial: false,
-            audio_start_time: timing?.start,
-            audio_end_time: timing?.end,
-            duration: timing?.duration,
-            stability_score: metadata?.stability_score,
-            stability_class: metadata?.stability_class || 'stable',
-            segment_finalize_latency_seconds: metadata?.segment_finalize_latency_seconds,
-            boundary_score: metadata?.boundary_score
-          };
-
-          if (onTranscriptReceived) {
-            onTranscriptReceived(transcriptUpdate as any);
-            console.log('✅ Transcript passed to parent component');
-          }
-        },
-
-        onError: (error, code) => {
-          console.error('❌ Streaming error:', error, 'Code:', code);
-
-          // Handle GROQ_KEY_REQUIRED specifically
-          if (code === 'GROQ_KEY_REQUIRED') {
-            setShowApiKeyDialog(true);
-            // Don't show the error alert, as the dialog will handle it
-            return; 
-          }
-
-          onTranscriptionError?.(error.message, code);
-        },
-
-        onDisconnected: () => {
-          console.log('🔌 Streaming disconnected');
-        }
-      }, stableSessionId, stableSessionId, authToken);
+      await client.start(buildStreamingCallbacks(), stableSessionId, stableSessionId, authToken);
 
       console.log('✅ Real-time streaming started');
 
@@ -365,6 +417,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       // Stop the streaming audio client
       await audioClientRef.current?.stop();
       audioClientRef.current = null;
+      setPersistentRecordingClient(null);
       onHostClientReady?.(null);
       console.log('✅ Streaming stopped');
 
@@ -437,6 +490,16 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     }
     handleStartRecording();
   }, [onBeforeStart, handleStartRecording]);
+
+  if (!renderUI) {
+    return (
+      <GroqApiKeyDialog
+        isOpen={showApiKeyDialog}
+        onClose={() => setShowApiKeyDialog(false)}
+        onSave={handleSaveApiKey}
+      />
+    );
+  }
 
   return (
     <TooltipProvider>
