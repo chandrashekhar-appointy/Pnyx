@@ -1,15 +1,24 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import logging
 import asyncio
 
 try:
     from ...db import DatabaseManager
+    from ...services.credit_manager import CreditManager
+    from ..deps import get_current_user
+    from ...schemas.credits import AdminCreditOverrideRequest, AdminSetUnlimitedRequest, CreditBalanceResponse
+    from ...schemas.user import User
 except (ImportError, ValueError):
     from db import DatabaseManager
+    from services.credit_manager import CreditManager
+    from api.deps import get_current_user
+    from schemas.credits import AdminCreditOverrideRequest, AdminSetUnlimitedRequest, CreditBalanceResponse
+    from schemas.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 db = DatabaseManager()
+credit_mgr = CreditManager(db)
 
 
 @router.post("/admin/reindex-all")
@@ -141,3 +150,57 @@ async def reindex_all():
     except Exception as e:
         logger.error(f"Re-indexing failed: {e}")
         return {"status": "error", "error": str(e), "debug_logs": debug_logs}
+
+
+# ── Credit Management Admin Endpoints ───────────────────────────────
+
+
+@router.post("/admin/credits/override")
+async def override_credits(
+    req: AdminCreditOverrideRequest,
+    user: User = Depends(get_current_user),
+):
+    """Add or remove admin bonus credits for a user with audit trail."""
+    try:
+        balance = await credit_mgr.add_admin_credits(
+            user_email=req.user_email,
+            amount=req.credits,
+            reason=req.reason,
+            admin_email=user.email,
+        )
+        return {
+            "status": "success",
+            "user_email": req.user_email,
+            "credits_added": req.credits,
+            "reason": req.reason,
+            "new_balance": balance,
+        }
+    except Exception as e:
+        logger.error(f"Credit override failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/credits/{user_email}", response_model=CreditBalanceResponse)
+async def get_user_credits(
+    user_email: str,
+    _admin: User = Depends(get_current_user),
+):
+    """View a specific user's credit balance (admin only)."""
+    balance = await credit_mgr.get_balance(user_email)
+    return CreditBalanceResponse(**balance)
+
+
+@router.post("/admin/credits/set-unlimited")
+async def set_user_unlimited(
+    req: AdminSetUnlimitedRequest,
+    user: User = Depends(get_current_user),
+):
+    """Toggle unlimited mode for a user."""
+    await credit_mgr.set_unlimited(req.user_email, req.is_unlimited)
+    return {
+        "status": "success",
+        "user_email": req.user_email,
+        "is_unlimited": req.is_unlimited,
+        "set_by": user.email,
+    }
+

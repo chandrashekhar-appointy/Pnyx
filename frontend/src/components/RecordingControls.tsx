@@ -121,11 +121,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Real-time streaming audio client
   const audioClientRef = useRef<AudioStreamClient | null>(null);
   const lastStartSignalRef = useRef<number | undefined>(undefined);
+  const startAckHandledRef = useRef(false);
 
   const buildStreamingCallbacks = useCallback(
     (storeOnly: boolean = false) => ({
       onConnected: (sessionId: string) => {
         console.log('✅ Connected to streaming service, session:', sessionId);
+        if (!startAckHandledRef.current) {
+          startAckHandledRef.current = true;
+          setIsStarting(false);
+          onRecordingStart();
+        }
         if (!storeOnly && onSessionIdReceived) onSessionIdReceived(sessionId);
         if (manualContext) {
           audioClientRef.current?.updateMeetingContext(manualContext);
@@ -213,10 +219,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       },
       onDisconnected: () => {
         console.log('🔌 Streaming disconnected');
+        if (isStarting) {
+          setIsStarting(false);
+        }
       }
     }),
     [
       hostSkillMarkdown,
+      isStarting,
       manualContext,
       onContextApplied,
       onGuardrailAlert,
@@ -300,6 +310,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsStarting(true);
     setIsPaused(false);
     setDeviceError(null);
+    startAckHandledRef.current = false;
 
     try {
       // Create new streaming audio client (uses Groq Whisper)
@@ -327,9 +338,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       await client.start(buildStreamingCallbacks(), stableSessionId, stableSessionId, authToken);
 
       console.log('✅ Real-time streaming started');
-
-      // Notify parent component
-      onRecordingStart();
 
       Analytics.trackButtonClick('start_recording_streaming', 'recording_controls');
     } catch (error) {
@@ -360,11 +368,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       }
 
       onTranscriptionError?.(errorMsg);
+      startAckHandledRef.current = false;
     } finally {
-      setIsStarting(false);
+      if (!startAckHandledRef.current) {
+        setIsStarting(false);
+      }
     }
   }, [
-    onRecordingStart,
     onTranscriptionError,
     onTranscriptReceived,
     isStarting,
@@ -542,8 +552,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     </TooltipContent>
                   </Tooltip>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-900">Start Pnyx</p>
-                    <p className="text-xs text-gray-500">Tap the mic to begin recording and live notes.</p>
+                    <p className="text-sm font-semibold text-gray-900">
+                      {isStarting ? 'Starting Pnyx...' : 'Start Pnyx'}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {isStarting
+                        ? 'Preparing live recording and transcription. This can take a few seconds.'
+                        : 'Tap the mic to begin recording and live notes.'}
+                    </p>
                   </div>
                 </>
               ) : (

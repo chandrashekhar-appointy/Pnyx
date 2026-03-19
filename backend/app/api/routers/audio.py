@@ -39,6 +39,7 @@ try:
     from ...services.audio.post_recording import get_post_recording_service
     from ...services.audio.pipeline_state import get_audio_pipeline_state_service
     from ...services.storage import StorageService
+    from ...services.credit_manager import CreditManager
 except (ImportError, ValueError):
     from api.deps import get_current_user
     from schemas.audio import StreamingSessionHealthResponse
@@ -54,9 +55,14 @@ except (ImportError, ValueError):
     from services.audio.post_recording import get_post_recording_service
     from services.audio.pipeline_state import get_audio_pipeline_state_service
     from services.storage import StorageService
+    from services.credit_manager import CreditManager
 
 db = DatabaseManager()
 rbac = RBAC(db)
+credit_mgr = CreditManager(db)
+
+# Credit cost per audio chunk (~0.3 credits/second, chunks are ~3s)
+CREDIT_COST_PER_CHUNK = int(os.getenv("CREDIT_COST_PER_CHUNK", "1"))
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1413,6 +1419,27 @@ async def websocket_streaming_audio(
                             runtime_stats.get("max_audio_queue_depth", 0),
                             audio_queue.qsize(),
                         )
+                        # ── Credit check before STT ────────────────
+                        chunk_user_email = session_context.get(session_id, {}).get("user_email")
+                        if chunk_user_email:
+                            credit_result = await credit_mgr.deduct_credits(
+                                user_email=chunk_user_email,
+                                cost=CREDIT_COST_PER_CHUNK,
+                                reference_id=session_id,
+                            )
+                            if not credit_result["allowed"]:
+                                # Credits exhausted — notify frontend, skip chunk
+                                try:
+                                    await websocket.send_json({
+                                        "type": "credit_exhausted",
+                                        "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
+                                        "remaining": credit_result["total"],
+                                    })
+                                except Exception:
+                                    pass
+                                audio_queue.task_done()
+                                continue
+
                         await current_mgr.process_audio_chunk(
                             audio_data=chunk,
                             client_timestamp=ts,

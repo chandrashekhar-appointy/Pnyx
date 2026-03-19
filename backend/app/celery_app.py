@@ -2,6 +2,7 @@ import os
 import importlib.util
 import importlib
 from celery import Celery
+from celery.schedules import crontab
 
 
 def _build_broker_url() -> str:
@@ -28,6 +29,12 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     task_track_started=True,
+    beat_schedule={
+        "weekly-credit-reset": {
+            "task": "tasks.weekly_credit_reset",
+            "schedule": crontab(hour=0, minute=0, day_of_week=1),  # Monday 00:00 UTC
+        },
+    },
 )
 
 task_packages = []
@@ -46,7 +53,12 @@ if task_packages:
 
 # Explicit task module imports for mixed import layouts ("/app" vs "app.*")
 # so worker always registers audio tasks even when autodiscovery is brittle.
-for module_name in ("tasks.audio_pipeline", "app.tasks.audio_pipeline"):
+for module_name in (
+    "tasks.audio_pipeline",
+    "app.tasks.audio_pipeline",
+    "tasks.weekly_credit_reset",
+    "app.tasks.weekly_credit_reset",
+):
     try:
         importlib.import_module(module_name)
     except ModuleNotFoundError:
