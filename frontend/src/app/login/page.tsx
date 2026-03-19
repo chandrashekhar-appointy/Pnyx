@@ -5,7 +5,7 @@ import { useState } from 'react';
 
 /**
  * Login Page
- * Simple Google OAuth login with appointy.com domain restriction
+ * Simple Google OAuth login
  */
 export default function LoginPage() {
     const [isLoading, setIsLoading] = useState(false);
@@ -109,10 +109,10 @@ export default function LoginPage() {
                         <span>{isLoading ? 'Signing in...' : 'Continue with Google'}</span>
                     </button>
 
-                    {/* Domain Restriction Notice */}
+                    {/* Sign-in Notice */}
                     <div className="mt-6 text-center">
                         <p className="text-sm text-gray-500">
-                            Only <span className="font-medium text-blue-600">@appointy.com</span> accounts are allowed
+                            Sign in with an approved Google account for this workspace
                         </p>
                     </div>
                 </div>

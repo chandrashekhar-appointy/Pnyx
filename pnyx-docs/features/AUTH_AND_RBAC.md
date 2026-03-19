@@ -1,7 +1,7 @@
 # Authentication Implementation
 
 ## Overview
-Meeting Co-Pilot uses **Google OAuth** for secure authentication. Access is strictly limited to users with **`@appointy.com`** email addresses.
+Meeting Co-Pilot uses **Google OAuth** for secure authentication. Access can be restricted to approved email domains via the `ALLOWED_DOMAINS` environment variable.
 
 > [!NOTE]
 > For Role-Based Access Control (Permissions, Workspaces, Meeting Roles), please refer to **[RBAC_SPEC.md](./RBAC_SPEC.md)**.
@@ -22,7 +22,7 @@ sequenceDiagram
     G->>U: Consent Screen
     U->>G: Approve
     G->>F: Auth Code -> Tokens
-    F->>F: Validate Domain (@appointy.com)
+    F->>F: Validate Domain (if configured)
     F->>F: Create Session (JWT)
     
     Note over F,B: Authenticated Request
@@ -62,20 +62,24 @@ GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
 NEXTAUTH_URL=http://localhost:3000 # or production URL
 NEXTAUTH_SECRET=openssl-generated-secret
+ALLOWED_DOMAINS=example.com,example.org
 ```
 
 #### Backend (`.env`)
 ```bash
 GOOGLE_CLIENT_ID=your-client-id # For validation
+ALLOWED_DOMAINS=example.com,example.org
+ADMIN_EMAILS=admin@example.com,ops@example.com
 ```
 
 ---
 
 ## Security Measures
 
-1.  **Domain Restriction**: Hardcoded check in NextAuth callback rejects non-`@appointy.com` emails.
+1.  **Domain Restriction**: Frontend and backend can enforce an env-configured allowlist of email domains via `ALLOWED_DOMAINS`.
 2.  **Stateless Validation**: Backend verifies JWT signature using Google's public keys (JWKS) on every request. No database session lookups required for validity check (though RBAC requires DB).
 3.  **Audience Check**: Backend ensures token was issued specifically for this `GOOGLE_CLIENT_ID`.
+4.  **Admin Endpoints**: Admin-only routes require `ADMIN_EMAILS` to be configured and fail closed when it is missing.
 
 ---
 
@@ -83,8 +87,8 @@ GOOGLE_CLIENT_ID=your-client-id # For validation
 
 ### Manual Verification
 1. Open Login Page.
-2. Sign in with `@appointy.com` account -> **Success**.
-3. Sign in with personal Gmail -> **Access Denied**.
+2. Sign in with an account from an allowed domain -> **Success**.
+3. Sign in with an account outside `ALLOWED_DOMAINS` -> **Access Denied**.
 4. Check Browser DevTools -> Application -> Cookies -> `next-auth.session-token` exists.
 
 ### API Parsing

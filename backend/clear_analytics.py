@@ -2,8 +2,11 @@ import asyncio
 import asyncpg
 import os
 
+
 async def clear_data():
-    db_url = "postgresql://neondb_owner:npg_3JYK7ySezjrT@ep-morning-truth-ahrz730e-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require"
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
     try:
         conn = await asyncpg.connect(db_url)
         await conn.execute("DELETE FROM analytics_events;")

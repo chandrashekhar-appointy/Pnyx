@@ -7,14 +7,14 @@ This document defines the simplified Role-Based Access Control (RBAC) model for 
 
 ### ✅ Phase 1: Isolation & Security (Completed)
 - **Data Model**: `meetings` table ownership, `workspaces` table.
-- **Enforcement**: Backend ensures users can only access meetings they own.
+- **Enforcement**: Backend allows meeting owners and explicitly permitted users from `meeting_permissions`.
 - **Frontend**: All API calls are authenticated using `authFetch`.
-- **Current Behavior**: Users see only their own private meetings.
+- **Current Behavior**: Users see meetings they own plus meetings explicitly shared with them.
 
-### ⏸️ Phase 2: Sharing & Collaboration (Deferred)
-- **Workspaces**: UI for creating/switching workspaces is deferred.
-- **Sharing**: UI for inviting users (Viewer/Editor) is deferred until multi-participant sessions are re-introduced.
-- **Admin**: No global admin or workspace admin UI.
+### ⏸️ Phase 2: Expanded Collaboration (Deferred)
+- **Workspaces**: UI for creating and switching workspaces is still deferred.
+- **Granular Roles**: Viewer/editor role differentiation is not yet enforced in the central RBAC policy.
+- **Workspace Admin**: Workspace-scoped admin behavior described below is a future design target, not the current implementation.
 
 ## Core Concepts
 
@@ -61,17 +61,15 @@ The system determines access using a central Policy Check: `can(user_id, action,
 ### Resolution Flow:
 1.  **Check Meeting Existence**: valid `meeting_id`?
 2.  **Check Ownership**: Is `user_id` == `meeting.owner_id`? -> **ALLOW ALL**.
-3.  **Check Workspace Admin**:
-    *   Is meeting in a valid `workspace_id`?
-    *   Is user `workspace_admin` of that workspace? -> **ALLOW ALL**.
-4.  **Check Explicit Meeting Invitation**:
+3.  **Check Explicit Meeting Permission**:
     *   Does `meeting_permissions` table have an entry for `(meeting_id, user_id)`?
-    *   If yes, resolve based on assigned role (`participant` or `viewer`).
-5.  **Default**: **DENY**.
+    *   If yes, allow access.
+4.  **Default**: **DENY**.
 
 ### Implications
-*   **Personal Meetings**: `workspace_id` is NULL. Only the `owner` and explicitly invited users can access. Workspace admins of other workspaces have NO access.
-*   **Workspace Member Visibility**: Being a `workspace_member` does *not* grant implicit read access to all workspace meetings. This effectively makes workspaces "private by default" for members.
+*   **Personal Meetings**: Only the `owner` and explicitly permitted users can access.
+*   **Shared Meetings**: Access is granted by presence in `meeting_permissions`; role-specific behavior is still limited.
+*   **Workspace Roles**: The role model below is aspirational documentation for a later phase and is not fully enforced by today's backend.
 
 ## Database Schema Changes
 

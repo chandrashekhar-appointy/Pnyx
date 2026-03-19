@@ -45,7 +45,7 @@ async function refreshAccessToken(token: JWT) {
 
 /**
  * NextAuth.js Configuration
- * - Google OAuth with @appointy.com domain restriction
+ * - Google OAuth with optional env-configured domain restriction
  * - JWT session strategy for backend API calls
  * - Automatic token refresh rotation
  */

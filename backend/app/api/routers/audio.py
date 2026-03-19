@@ -78,6 +78,56 @@ logger = logging.getLogger(__name__)
 # Track active streaming sessions
 streaming_managers = {}
 active_connections = {}
+
+
+def _get_allowed_domains() -> List[str]:
+    return [d.strip() for d in os.getenv("ALLOWED_DOMAINS", "").split(",") if d.strip()]
+
+
+def _get_admin_emails() -> List[str]:
+    return [e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()]
+
+
+def _enforce_allowed_domain(email: str):
+    allowed_domains = _get_allowed_domains()
+    if not allowed_domains:
+        return
+
+    domain = email.split("@", 1)[1] if "@" in email else ""
+    if domain not in allowed_domains:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access restricted to allowed domains (found {email})",
+        )
+
+
+def _is_admin_user(user_email: str) -> bool:
+    admin_emails = _get_admin_emails()
+    return bool(admin_emails) and user_email in admin_emails
+
+
+def _require_admin_user(user_email: str):
+    if not _get_admin_emails():
+        raise HTTPException(
+            status_code=503, detail="Admin access is not configured on this server"
+        )
+    if not _is_admin_user(user_email):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _extract_websocket_auth_from_protocols(websocket: WebSocket) -> Optional[str]:
+    raw_protocols = websocket.headers.get("sec-websocket-protocol", "")
+    if not raw_protocols:
+        return None
+
+    protocols = [part.strip() for part in raw_protocols.split(",") if part.strip()]
+    if len(protocols) < 2:
+        return None
+
+    if protocols[0] != "auth":
+        return None
+
+    return protocols[1]
 session_cleanup_tasks = {}
 session_context = {}
 session_finalize_locks = {}
@@ -690,11 +740,7 @@ async def _authenticate_websocket(auth_token: Optional[str]) -> Optional[User]:
     email = payload.get("email")
     if not email:
         raise HTTPException(status_code=401, detail="Token missing email")
-    if not email.endswith("@appointy.com"):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access restricted to @appointy.com users (found {email})",
-        )
+    _enforce_allowed_domain(email)
     return User(email=email, name=payload.get("name"), picture=payload.get("picture"))
 
 
@@ -759,23 +805,31 @@ async def websocket_streaming_audio(
     Real-time streaming transcription with Groq Whisper Large v3.
     Includes heartbeat and force-flush on disconnect.
     """
-    await websocket.accept()
-
     try:
-        # Wait for the first message to be an authentication token
-        first_msg = await asyncio.wait_for(websocket.receive(), timeout=5.0)
-        if "text" not in first_msg:
-            await websocket.close(code=1008, reason="Expected authentication message")
-            return
+        auth_token = _extract_websocket_auth_from_protocols(websocket)
+        if auth_token:
+            await websocket.accept(subprotocol="auth")
+        else:
+            # Fallback for older clients that send auth as the first message.
+            await websocket.accept()
+            first_msg = await asyncio.wait_for(websocket.receive(), timeout=5.0)
+            if "text" not in first_msg:
+                await websocket.close(
+                    code=1008, reason="Expected authentication message"
+                )
+                return
 
-        import json
+            import json
 
-        auth_data = json.loads(first_msg["text"])
-        if auth_data.get("type") != "authenticate":
-            await websocket.close(code=1008, reason="Expected authentication message")
-            return
+            auth_data = json.loads(first_msg["text"])
+            if auth_data.get("type") != "authenticate":
+                await websocket.close(
+                    code=1008, reason="Expected authentication message"
+                )
+                return
 
-        auth_token = auth_data.get("token")
+            auth_token = auth_data.get("token")
+
         current_user = await _authenticate_websocket(auth_token)
         if not current_user:
             await websocket.close(code=1008, reason="Authentication required")
@@ -792,7 +846,6 @@ async def websocket_streaming_audio(
         await websocket.close(code=1008, reason="Invalid meeting id")
         return
 
-    await websocket.accept()
     user_email = current_user.email
 
     # Initialize manager to avoid unbound errors
@@ -2498,7 +2551,7 @@ async def get_streaming_slo_report(
 ):
     lookback_hours = max(1, min(168, int(lookback_hours)))
     limit = max(10, min(1000, int(limit)))
-    is_admin = current_user.email == "gagan@appointy.com"
+    is_admin = _is_admin_user(current_user.email)
 
     target_user = current_user.email
     if user_email and user_email != current_user.email:
@@ -2595,9 +2648,7 @@ async def get_recording_integrity_report(
     only_issues: bool = True,
     current_user: User = Depends(get_current_user),
 ):
-    is_admin = current_user.email == "gagan@appointy.com"
-    if not is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_admin_user(current_user.email)
 
     lookback_hours = max(1, min(168, int(lookback_hours)))
     limit = max(10, min(1000, int(limit)))
@@ -2727,8 +2778,7 @@ async def retry_pipeline_finalize(
 
 @router.post("/sessions/reconcile")
 async def reconcile_pipeline_sessions(current_user: User = Depends(get_current_user)):
-    if current_user.email != "gagan@appointy.com":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_admin_user(current_user.email)
 
     try:
         try:

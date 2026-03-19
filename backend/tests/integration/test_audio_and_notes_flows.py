@@ -254,7 +254,7 @@ async def test_get_recording_integrity_status_returns_metadata(async_client, mon
         return {
             "session_id": _session_id,
             "meeting_id": "meeting-123",
-            "user_email": "gagan@appointy.com",
+            "user_email": "admin@example.com",
             "status": "completed",
             "expected_chunk_count": 12,
             "finalized_chunk_count": 12,
@@ -297,7 +297,7 @@ async def test_integrity_report_filters_issue_sessions(async_client, monkeypatch
             {
                 "session_id": "s1",
                 "meeting_id": "m1",
-                "user_email": "gagan@appointy.com",
+                "user_email": "admin@example.com",
                 "status": "completed",
                 "started_at": datetime.utcnow(),
                 "finalized_at": datetime.utcnow(),
@@ -314,7 +314,7 @@ async def test_integrity_report_filters_issue_sessions(async_client, monkeypatch
             {
                 "session_id": "s2",
                 "meeting_id": "m2",
-                "user_email": "gagan@appointy.com",
+                "user_email": "admin@example.com",
                 "status": "completed",
                 "started_at": datetime.utcnow(),
                 "finalized_at": datetime.utcnow(),
@@ -348,7 +348,7 @@ async def test_retry_pipeline_finalize_enqueues_task(async_client, monkeypatch):
         return {
             "session_id": _session_id,
             "meeting_id": "meeting-123",
-            "user_email": "gagan@appointy.com",
+            "user_email": "admin@example.com",
             "status": "failed",
         }
 

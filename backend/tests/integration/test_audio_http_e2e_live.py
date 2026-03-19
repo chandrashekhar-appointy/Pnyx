@@ -21,9 +21,10 @@ def _require_live_http_e2e() -> tuple[str, str]:
 async def test_websocket_http_e2e_connect_ping_stop_live():
     base_url, auth_token = _require_live_http_e2e()
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    ws_url = f"{ws_url}/ws/streaming-audio?auth_token={auth_token}"
+    ws_url = f"{ws_url}/ws/streaming-audio"
 
     async with websockets.connect(ws_url) as ws:
+        await ws.send('{"type":"authenticate","token":"' + auth_token + '"}')
         connected = await ws.recv()
         assert "connected" in connected
 

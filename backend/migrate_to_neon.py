@@ -15,7 +15,9 @@ if not os.path.exists(SQLITE_DB_PATH):
          SQLITE_DB_PATH = "data/meeting_minutes.db"
 
 # Neon Connection String
-NEON_URL = "postgresql://neondb_owner:npg_3JYK7ySezjrT@ep-morning-truth-ahrz730e-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require"
+NEON_URL = os.getenv("DATABASE_URL")
+if not NEON_URL:
+    raise ValueError("DATABASE_URL environment variable is not set")
 
 def migrate():
     print(f"🚀 Starting migration from {SQLITE_DB_PATH} to Neon DB...")

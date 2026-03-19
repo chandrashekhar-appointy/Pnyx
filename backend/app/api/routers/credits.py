@@ -103,6 +103,9 @@ async def purchase_credits(
             credits_to_add=qr_data["credits_to_add"],
             purchase_id=str(row["id"]),
         )
+    except Exception as e:
+        logger.error(f"[Credits] Purchase failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to initiate purchase")
 
 @router.get("/purchase/{purchase_id}")
 async def get_purchase_status(

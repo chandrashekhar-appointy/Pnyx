@@ -259,7 +259,8 @@ export class AudioStreamClient {
         url += (url.includes('?') ? '&' : '?') + `meeting_id=${encodeURIComponent(this.meetingId)}`;
       }
         
-      const ws = new WebSocket(url);
+      const protocols = this.authToken ? ['auth', this.authToken] : undefined;
+      const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       this.websocket = ws;
 
@@ -274,11 +275,6 @@ export class AudioStreamClient {
         if (this.websocket !== ws) return;
         clearTimeout(timeout);
         console.log('[AudioStream] WebSocket connected');
-        
-        // Send authentication as the first message
-        if (this.authToken) {
-          ws.send(JSON.stringify({ type: 'authenticate', token: this.authToken }));
-        }
         
         // Start heartbeat
         this.startHeartbeat();

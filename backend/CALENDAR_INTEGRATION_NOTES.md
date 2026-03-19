@@ -17,7 +17,7 @@
   - `SMTP_FROM_EMAIL`
   - `SMTP_USERNAME`
 - Reminder/recap mail does **not** send as the meeting host automatically.
-- If `SMTP_FROM_EMAIL` is set to `gagan@appointy.com`, recipients will see mail from that address.
+- If `SMTP_FROM_EMAIL` is set to `team@example.com`, recipients will see mail from that address.
 
 ## "Real meeting" rule
 
