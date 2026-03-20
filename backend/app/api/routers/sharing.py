@@ -18,6 +18,50 @@ router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 db_manager = DatabaseManager()
 
 
+def _normalize_share_config(share_config):
+    if isinstance(share_config, str):
+        import json
+
+        try:
+            return json.loads(share_config)
+        except json.JSONDecodeError:
+            return {"summary": True, "transcript": False}
+    return share_config or {"summary": True, "transcript": False}
+
+
+async def _build_shared_note_response(share_record: Dict, meeting_id: str) -> Dict:
+    summary_data = await db_manager.get_transcript_data(meeting_id)
+    meeting_details = await db_manager.get_meeting(meeting_id)
+    share_config = _normalize_share_config(share_record.get("share_config", {}))
+
+    result = {
+        "meeting": {
+            "id": meeting_details.get("id"),
+            "title": meeting_details.get("title"),
+            "created_at": meeting_details.get("created_at"),
+        }
+        if meeting_details
+        else None,
+        "shared_at": share_record.get("shared_at"),
+        "owner_email": share_record.get("owner_email"),
+        "share_token": share_record.get("share_token"),
+    }
+
+    if share_config.get("summary", True):
+        result["summary"] = summary_data.get("result") if summary_data else None
+    else:
+        result["summary"] = None
+
+    if share_config.get("transcript", False):
+        result["transcripts"] = (
+            meeting_details.get("transcripts", []) if meeting_details else []
+        )
+    else:
+        result["transcripts"] = []
+
+    return result
+
+
 @router.get("/shared-with-me")
 async def get_shared_notes(current_user: User = Depends(get_current_user)):
     """List all notes shared with the authenticated user."""
@@ -34,46 +78,22 @@ async def get_shared_note_details(
         raise HTTPException(
             status_code=404, detail="Shared note not found or access denied"
         )
+    return await _build_shared_note_response(share_record, meeting_id)
 
-    # Get the actual meeting data
-    summary_data = await db_manager.get_transcript_data(meeting_id)
-    meeting_details = await db_manager.get_meeting(meeting_id)
 
-    # Respect share_config
-    share_config = share_record.get("share_config", {})
-    if isinstance(share_config, str):
-        import json
-
-        try:
-            share_config = json.loads(share_config)
-        except json.JSONDecodeError:
-            share_config = {"summary": True, "transcript": False}
-
-    result = {
-        "meeting": {
-            "id": meeting_details.get("id"),
-            "title": meeting_details.get("title"),
-            "created_at": meeting_details.get("created_at"),
-        }
-        if meeting_details
-        else None,
-        "shared_at": share_record.get("shared_at"),
-        "owner_email": share_record.get("owner_email"),
-    }
-
-    if share_config.get("summary", True):
-        result["summary"] = summary_data.get("result") if summary_data else None
-    else:
-        result["summary"] = None
-
-    if share_config.get("transcript", False):
-        result["transcripts"] = (
-            meeting_details.get("transcripts", []) if meeting_details else []
+@router.get("/token/{share_token}")
+async def get_shared_note_details_by_token(
+    share_token: str, current_user: User = Depends(get_current_user)
+):
+    """Get a shared meeting using its share token, bound to the authenticated recipient."""
+    share_record = await db_manager.get_shared_note_by_token(share_token)
+    if not share_record:
+        raise HTTPException(status_code=404, detail="Invalid share link")
+    if share_record.get("shared_with_email") != current_user.email.strip().lower():
+        raise HTTPException(
+            status_code=404, detail="Shared note not found or access denied"
         )
-    else:
-        result["transcripts"] = []
-
-    return result
+    return await _build_shared_note_response(share_record, share_record["meeting_id"])
 
 
 @router.post("/{meeting_id}/share")
@@ -138,4 +158,20 @@ async def mark_note_viewed(
 ):
     """Mark a shared note as viewed by the user."""
     await db_manager.mark_shared_note_viewed(meeting_id, current_user.email)
+    return {"status": "success"}
+
+
+@router.patch("/token/{share_token}/viewed")
+async def mark_note_viewed_by_token(
+    share_token: str, current_user: User = Depends(get_current_user)
+):
+    """Mark a token-backed shared note as viewed by the authenticated recipient."""
+    share_record = await db_manager.get_shared_note_by_token(share_token)
+    if not share_record:
+        raise HTTPException(status_code=404, detail="Invalid share link")
+    if share_record.get("shared_with_email") != current_user.email.strip().lower():
+        raise HTTPException(
+            status_code=404, detail="Shared note not found or access denied"
+        )
+    await db_manager.mark_shared_note_viewed(share_record["meeting_id"], current_user.email)
     return {"status": "success"}

@@ -2641,7 +2641,7 @@ class DatabaseManager:
         async with self._get_connection() as conn:
             rows = await conn.fetch(
                 """
-                SELECT sn.id, sn.meeting_id, sn.owner_email, sn.shared_at,
+                SELECT sn.id, sn.meeting_id, sn.owner_email, sn.share_token, sn.shared_at,
                        sn.last_viewed_at, sn.notes_updated_at, sn.share_config,
                        m.title AS meeting_title
                 FROM shared_meeting_notes sn

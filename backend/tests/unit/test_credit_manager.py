@@ -15,9 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 def _make_credit_manager():
     """Create a CreditManager with mocked DB and Redis."""
-    with patch("app.services.credit_manager.DatabaseManager") as MockDB, \
-         patch("app.services.credit_manager.aioredis") as MockRedis:
-
+    with (
+        patch("app.services.credit_manager.DatabaseManager") as MockDB,
+        patch("app.services.credit_manager.aioredis") as MockRedis,
+    ):
         mock_db = MagicMock()
         mock_conn = AsyncMock()
         mock_db._get_connection = MagicMock(return_value=_async_ctx(mock_conn))
@@ -26,6 +27,7 @@ def _make_credit_manager():
         MockRedis.from_url.return_value = mock_redis
 
         from app.services.credit_manager import CreditManager
+
         mgr = CreditManager(db=mock_db)
         mgr.redis = mock_redis
 
@@ -34,10 +36,13 @@ def _make_credit_manager():
 
 class _async_ctx:
     """Async context manager wrapper for mocks."""
+
     def __init__(self, value):
         self.value = value
+
     async def __aenter__(self):
         return self.value
+
     async def __aexit__(self, *args):
         pass
 
@@ -54,14 +59,16 @@ class TestCreditPriority:
         mgr, mock_db, mock_redis, mock_conn = _make_credit_manager()
 
         # Setup: user exists, is not unlimited
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "user_email": "test@appointy.com",
-            "weekly_quota": 5000,
-            "purchased_credits": 1000,
-            "admin_bonus_credits": 500,
-            "is_unlimited": False,
-            "last_reset_week": "2026-W12",
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "user_email": "test@appointy.com",
+                "weekly_quota": 5000,
+                "purchased_credits": 1000,
+                "admin_bonus_credits": 500,
+                "is_unlimited": False,
+                "last_reset_week": "2026-W12",
+            }
+        )
 
         # Redis keys exist
         mock_redis.exists = AsyncMock(return_value=True)
@@ -93,14 +100,16 @@ class TestSoftLimit:
         """Should allow going to -100 but not beyond."""
         mgr, mock_db, mock_redis, mock_conn = _make_credit_manager()
 
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "user_email": "test@appointy.com",
-            "weekly_quota": 5,
-            "purchased_credits": 0,
-            "admin_bonus_credits": 0,
-            "is_unlimited": False,
-            "last_reset_week": "2026-W12",
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "user_email": "test@appointy.com",
+                "weekly_quota": 5,
+                "purchased_credits": 0,
+                "admin_bonus_credits": 0,
+                "is_unlimited": False,
+                "last_reset_week": "2026-W12",
+            }
+        )
 
         mock_redis.exists = AsyncMock(return_value=True)
 
@@ -117,14 +126,16 @@ class TestSoftLimit:
         """With 5 credits and cost 50, should succeed (goes to -45, within -100)."""
         mgr, mock_db, mock_redis, mock_conn = _make_credit_manager()
 
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "user_email": "test@appointy.com",
-            "weekly_quota": 5,
-            "purchased_credits": 0,
-            "admin_bonus_credits": 0,
-            "is_unlimited": False,
-            "last_reset_week": "2026-W12",
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "user_email": "test@appointy.com",
+                "weekly_quota": 5,
+                "purchased_credits": 0,
+                "admin_bonus_credits": 0,
+                "is_unlimited": False,
+                "last_reset_week": "2026-W12",
+            }
+        )
 
         mock_redis.exists = AsyncMock(return_value=True)
 
@@ -151,20 +162,25 @@ class TestUnlimitedMode:
         """Unlimited users should always pass credit checks."""
         mgr, mock_db, mock_redis, mock_conn = _make_credit_manager()
 
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "user_email": "admin@appointy.com",
-            "weekly_quota": 0,
-            "purchased_credits": 0,
-            "admin_bonus_credits": 0,
-            "is_unlimited": True,
-            "last_reset_week": "2026-W12",
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "user_email": "admin@appointy.com",
+                "weekly_quota": 0,
+                "purchased_credits": 0,
+                "admin_bonus_credits": 0,
+                "is_unlimited": True,
+                "last_reset_week": "2026-W12",
+            }
+        )
+
+        mock_script = AsyncMock()
+        mgr._deduct_script = mock_script
 
         result = await mgr.deduct_credits("admin@appointy.com", cost=999999)
 
         assert result["allowed"] is True
         # Lua script should NOT have been called
-        assert mgr._deduct_script.call_count == 0
+        assert mock_script.call_count == 0
 
 
 class TestWebhookIdempotency:
@@ -177,14 +193,16 @@ class TestWebhookIdempotency:
 
         # First call succeeds
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "user_email": "test@appointy.com",
-            "weekly_quota": 10000,
-            "purchased_credits": 5000,
-            "admin_bonus_credits": 0,
-            "is_unlimited": False,
-            "last_reset_week": "2026-W12",
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "user_email": "test@appointy.com",
+                "weekly_quota": 10000,
+                "purchased_credits": 5000,
+                "admin_bonus_credits": 0,
+                "is_unlimited": False,
+                "last_reset_week": "2026-W12",
+            }
+        )
 
         mock_redis.exists = AsyncMock(return_value=True)
         mock_redis.incrby = AsyncMock(return_value=15000)

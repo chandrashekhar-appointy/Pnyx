@@ -12,6 +12,12 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },
+  webServer: {
+    command: 'pnpm run dev',
+    url: 'http://localhost:3118',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120 * 1000,
+  },
   projects: [
     {
       name: "chromium",

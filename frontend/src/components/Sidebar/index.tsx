@@ -752,7 +752,7 @@ const Sidebar: React.FC = () => {
                   </div>
                   <input
                     type="text"
-                    placeholder="Search meeting content..."
+                    placeholder="Search meeting titles..."
                     value={searchQuery}
                     onChange={(e) => handleSearchChange(e.target.value)}
                     className="block w-full pl-8 pr-3 py-1.5 border border-gray-200 rounded-md text-xs placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"

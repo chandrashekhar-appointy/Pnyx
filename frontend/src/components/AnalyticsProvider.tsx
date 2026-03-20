@@ -2,6 +2,7 @@
 
 import React, { useEffect, ReactNode, useRef, useState, createContext } from 'react';
 import { useSession } from 'next-auth/react';
+import { usePathname, useSearchParams } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 
 interface AnalyticsProviderProps {
@@ -20,8 +21,11 @@ export const AnalyticsContext = createContext<AnalyticsContextType>({
 
 export default function AnalyticsProvider({ children }: AnalyticsProviderProps) {
   const { data: session, status } = useSession();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [isAnalyticsOptedIn, setIsAnalyticsOptedIn] = useState(true);
   const initialized = useRef(false);
+  const trackedPathRef = useRef<string | null>(null);
 
   // Automatically update the Analytics internal user ID when the session loads
   useEffect(() => {
@@ -33,75 +37,45 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
   }, [status, session]);
 
   useEffect(() => {
-    // Prevent duplicate initialization in React StrictMode unless the session email just loaded
-    if (initialized.current && session?.user?.email === Analytics.getCurrentUserId()) {
-      return;
-    }
-    // Update if the email just became available
-    if (initialized.current && session?.user?.email) {
-      Analytics.identify(session.user.email);
-      return;
-    }
+    let beforeUnloadBound = false;
+    let sessionId: string | null = null;
 
-    const initAnalytics = async () => {
-      // Load preference from localStorage
+    const initializeAnalytics = async () => {
       const storedOptIn = localStorage.getItem('analyticsOptedIn');
-      // Default to true if not set
-      let analyticsOptedIn = true;
-      if (storedOptIn !== null) {
-        analyticsOptedIn = storedOptIn === 'true';
-      } else {
+      const analyticsOptedIn = storedOptIn === null ? true : storedOptIn === 'true';
+      if (storedOptIn === null) {
         localStorage.setItem('analyticsOptedIn', 'true');
       }
-
       setIsAnalyticsOptedIn(analyticsOptedIn);
 
-      if (analyticsOptedIn) {
-        initAnalytics2();
-      }
-    }
-
-    const initAnalytics2 = async () => {
-      // Mark as initialized to prevent duplicates
-      initialized.current = true;
-
-      // Get persistent user ID or use session email if available
-      const userId = (session?.user?.email) || await Analytics.getPersistentUserId();
-
-      // Initialize analytics
+      const userId = session?.user?.email || await Analytics.getPersistentUserId();
       await Analytics.init(userId);
 
-      // Get device info
+      if (!analyticsOptedIn) {
+        initialized.current = false;
+        return;
+      }
+
       const deviceInfo = await Analytics.getDeviceInfo();
-
-      // Store platform info if needed (skipping implementation details for local store)
-
-      // Identify user
       await Analytics.identify(userId, {
         app_version: '0.1.1',
         platform: deviceInfo.platform,
         os_version: deviceInfo.os_version,
         architecture: deviceInfo.architecture,
-        first_seen: new Date().toISOString(),
         user_agent: navigator.userAgent,
       });
 
-      // Start analytics session
-      const sessionId = await Analytics.startSession(userId);
-      if (sessionId) {
-        await Analytics.trackSessionStarted(sessionId);
+      if (!initialized.current) {
+        sessionId = await Analytics.startSession(userId);
+        if (sessionId) {
+          await Analytics.trackSessionStarted(sessionId);
+        }
+        await Analytics.checkAndTrackFirstLaunch();
+        await Analytics.trackAppStarted();
+        await Analytics.checkAndTrackDailyUsage();
+        initialized.current = true;
       }
 
-      // Check and track first launch
-      await Analytics.checkAndTrackFirstLaunch();
-
-      // Track app started
-      await Analytics.trackAppStarted();
-
-      // Check and track daily usage
-      await Analytics.checkAndTrackDailyUsage();
-
-      // Set up cleanup on page unload
       const handleBeforeUnload = async () => {
         if (sessionId) {
           await Analytics.trackSessionEnded(sessionId);
@@ -110,19 +84,44 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
       };
 
       window.addEventListener('beforeunload', handleBeforeUnload);
+      beforeUnloadBound = true;
 
-      // Cleanup function
       return () => {
         window.removeEventListener('beforeunload', handleBeforeUnload);
-        if (sessionId) {
-          Analytics.trackSessionEnded(sessionId);
-        }
-        Analytics.cleanup();
       };
     };
 
-    initAnalytics().catch(console.error);
-  }, [session?.user?.email]); // Re-run if email loads but keep inner initialized.current check so we don't spam
+    let cleanupFn: (() => void) | undefined;
+    initializeAnalytics()
+      .then((cleanup) => {
+        cleanupFn = cleanup;
+      })
+      .catch(console.error);
+
+    return () => {
+      if (cleanupFn) {
+        cleanupFn();
+      } else if (beforeUnloadBound) {
+        window.onbeforeunload = null;
+      }
+    };
+  }, [session?.user?.email]);
+
+  useEffect(() => {
+    if (!isAnalyticsOptedIn || !initialized.current) {
+      return;
+    }
+
+    const url = searchParams?.toString()
+      ? `${pathname}?${searchParams.toString()}`
+      : pathname;
+
+    if (trackedPathRef.current === url) {
+      return;
+    }
+    trackedPathRef.current = url;
+    Analytics.trackPageView(url).catch(console.error);
+  }, [isAnalyticsOptedIn, pathname, searchParams]);
 
   // Separate effect to handle re-initialization when analytics is toggled
   useEffect(() => {

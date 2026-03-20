@@ -52,7 +52,7 @@ def test_host_skill_override_parses_fenced_markdown(monkeypatch):
     policy = stats["host_policy"]
     assert policy["role_mode"] == "chairperson"
     assert abs(policy["min_confidence"] - 0.67) < 1e-6
-    assert abs(policy["event_threshold_overrides"]["open_question"] - 0.73) < 1e-6
+    assert abs(policy["event_threshold_overrides"]["open_discussion"] - 0.73) < 1e-6
 
 
 def test_host_skill_override_infers_role_from_natural_markdown(monkeypatch):
@@ -114,10 +114,25 @@ def test_host_pin_and_dismiss_update_state(monkeypatch):
 async def test_ingest_transcript_host_emits_suggestion_and_intervention(monkeypatch):
     engine = _make_engine(monkeypatch)
 
-    async def fake_generate(*args, **kwargs):
-        return '{"events":[{"event_type":"urgency_risk","title":"Decision needed","content":"Time is running out without a clear decision.","confidence":0.92,"priority":"high"}]}'
+    async def fake_reason():
+        engine._temp_suggestions.append(
+            HostSuggestion(
+                id="test-123",
+                event_type="urgency_risk",
+                title="Decision needed",
+                content="Time is running out without a clear decision.",
+                confidence=0.92,
+                timestamp="2026-03-20T00:00:00Z",
+                metadata={"priority": "high"},
+            )
+        )
+        return [{"collected": True}]
 
-    monkeypatch.setattr(aip, "generate_content_text_async", fake_generate)
+    monkeypatch.setattr(engine, "_reason_host_events", fake_reason)
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(engine, "_supplement_host_events_from_heuristics", AsyncMock())
 
     payload = await engine.ingest_transcript_host(
         text="We are still debating and no decision is made.",
@@ -134,10 +149,15 @@ async def test_ingest_transcript_host_emits_suggestion_and_intervention(monkeypa
 async def test_ingest_transcript_host_handles_invalid_json(monkeypatch):
     engine = _make_engine(monkeypatch)
 
-    async def fake_generate(*args, **kwargs):
-        return "not-json"
+    async def fake_reason():
+        engine._stats["parse_failures"] += 1
+        return []
 
-    monkeypatch.setattr(aip, "generate_content_text_async", fake_generate)
+    monkeypatch.setattr(engine, "_reason_host_events", fake_reason)
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(engine, "_supplement_host_events_from_heuristics", AsyncMock())
 
     payload = await engine.ingest_transcript_host(
         text="random discussion",

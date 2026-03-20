@@ -27,8 +27,15 @@ export default function SharedNotesPage() {
     fetchShared();
   }, []);
 
-  const handleNoteClick = (meetingId: string) => {
-    router.push(`/meeting-details?id=${meetingId}&shared=true`);
+  const handleNoteClick = (meetingId: string, shareToken?: string | null) => {
+    const params = new URLSearchParams({
+      id: meetingId,
+      shared: 'true',
+    });
+    if (shareToken) {
+      params.set('token', shareToken);
+    }
+    router.push(`/meeting-details?${params.toString()}`);
   };
 
   return (
@@ -62,7 +69,7 @@ export default function SharedNotesPage() {
             return (
               <div
                 key={note.id}
-                onClick={() => handleNoteClick(note.meeting_id)}
+                onClick={() => handleNoteClick(note.meeting_id, note.share_token)}
                 className={`flex items-center p-5 rounded-xl border transition-all cursor-pointer hover:shadow-md
                   ${isUnread ? 'bg-white border-blue-200 shadow-sm relative' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}
               >

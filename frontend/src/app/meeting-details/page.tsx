@@ -100,7 +100,10 @@ function MeetingDetailsContent() {
 
     try {
       const isShared = searchParams.get('shared') === 'true';
-      const url = isShared ? `/api/sharing/${meetingId}` : `/get-meeting/${meetingId}`;
+      const shareToken = searchParams.get('token');
+      const url = isShared
+        ? (shareToken ? `/api/sharing/token/${encodeURIComponent(shareToken)}` : `/api/sharing/${meetingId}`)
+        : `/get-meeting/${meetingId}`;
       const response = await authFetch(url);
       
       if (!response.ok) {
@@ -118,7 +121,10 @@ function MeetingDetailsContent() {
         }
         
         // Also trigger the "viewed" endpoint in the background
-        authFetch(`/api/sharing/${meetingId}/viewed`, { method: 'PATCH' })
+        const viewedUrl = shareToken
+          ? `/api/sharing/token/${encodeURIComponent(shareToken)}/viewed`
+          : `/api/sharing/${meetingId}/viewed`;
+        authFetch(viewedUrl, { method: 'PATCH' })
           .then(() => {
             if (refetchSharedNotes) refetchSharedNotes();
           })
@@ -140,7 +146,10 @@ function MeetingDetailsContent() {
     if (!meetingId || meetingId === 'intro-call' || !serverAddress) return;
     try {
       const isShared = searchParams.get('shared') === 'true';
-      const url = isShared ? `/api/sharing/${meetingId}` : `/get-summary/${meetingId}`;
+      const shareToken = searchParams.get('token');
+      const url = isShared
+        ? (shareToken ? `/api/sharing/token/${encodeURIComponent(shareToken)}` : `/api/sharing/${meetingId}`)
+        : `/get-summary/${meetingId}`;
       const response = await authFetch(url);
       
       if (!response.ok) {

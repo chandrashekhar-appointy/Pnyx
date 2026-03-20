@@ -4,10 +4,12 @@ import { Info, Loader2 } from 'lucide-react';
 import { AnalyticsContext } from './AnalyticsProvider';
 import { Analytics } from '@/lib/analytics';
 import AnalyticsDataModal from './AnalyticsDataModal';
+import { useSession } from 'next-auth/react';
 
 
 export default function AnalyticsConsentSwitch() {
   const { setIsAnalyticsOptedIn, isAnalyticsOptedIn } = useContext(AnalyticsContext);
+  const { data: session } = useSession();
   const [isProcessing, setIsProcessing] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
@@ -36,48 +38,30 @@ export default function AnalyticsConsentSwitch() {
     setIsProcessing(true);
 
     try {
-      localStorage.setItem('analytics_opted_in', String(enabled));
+      localStorage.setItem('analyticsOptedIn', String(enabled));
 
       if (enabled) {
-        // Full analytics initialization (same as AnalyticsProvider)
-        const userId = await Analytics.getPersistentUserId();
+        const userId =
+          session?.user?.email || (await Analytics.getPersistentUserId());
 
-        // Initialize analytics
-        await Analytics.init();
+        await Analytics.enable();
 
-        // Identify user with enhanced properties immediately after init
         await Analytics.identify(userId, {
           app_version: '0.1.1',
           platform: 'web',
-          first_seen: new Date().toISOString(),
           os: navigator.platform,
           user_agent: navigator.userAgent,
         });
 
-        // Start analytics session with the same user ID
-        await Analytics.startSession(userId);
-
-        // Track app started (re-enabled)
+        const sessionId = await Analytics.startSession(userId);
+        if (sessionId) {
+          await Analytics.trackSessionStarted(sessionId);
+        }
         await Analytics.trackAppStarted();
-
-        // Track that user enabled analytics
-        try {
-          Analytics.track('analytics_enabled');
-        } catch (error) {
-          console.error('Failed to track analytics enabled:', error);
-        }
-
-        console.log('Analytics re-enabled successfully');
+        await Analytics.track('analytics_enabled');
       } else {
-        // Track that user disabled analytics BEFORE disabling
-        try {
-          Analytics.track('analytics_disabled');
-        } catch (error) {
-          console.error('Failed to track analytics disabled:', error);
-        }
-
+        await Analytics.track('analytics_disabled');
         await Analytics.disable();
-        console.log('Analytics disabled successfully');
       }
     } catch (error) {
       console.error('Failed to toggle analytics:', error);

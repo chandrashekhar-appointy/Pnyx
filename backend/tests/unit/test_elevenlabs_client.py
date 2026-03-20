@@ -17,6 +17,7 @@ from app.services.audio.manager import StreamingTranscriptionManager
 
 # ── ElevenLabsTranscriptionClient unit tests ─────────────────────────────
 
+
 class TestElevenLabsTranscriptionClient:
     """Tests for ElevenLabsTranscriptionClient."""
 
@@ -67,6 +68,8 @@ class TestElevenLabsTranscriptionClient:
 
 # ── StreamingTranscriptionManager provider tests ─────────────────────────
 
+
+@patch("app.services.audio.manager.TenVAD", MagicMock())
 class TestManagerProviderSupport:
     """Tests that StreamingTranscriptionManager works with different clients."""
 
@@ -80,9 +83,7 @@ class TestManagerProviderSupport:
 
     def test_manager_accepts_elevenlabs_client(self):
         """Manager should work with ElevenLabsTranscriptionClient."""
-        el_client = ElevenLabsTranscriptionClient(
-            api_key="test-el-key", mode="batch"
-        )
+        el_client = ElevenLabsTranscriptionClient(api_key="test-el-key", mode="batch")
         manager = StreamingTranscriptionManager(
             el_client, meeting_context={"title": "Test"}
         )
@@ -101,6 +102,7 @@ class TestManagerProviderSupport:
 
 
 # ── Provider selection tests ─────────────────────────────────────────────
+
 
 class TestProviderSelection:
     """Tests for provider selection logic in audio router."""

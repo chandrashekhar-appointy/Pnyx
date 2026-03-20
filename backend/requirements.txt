@@ -27,8 +27,8 @@ python-jose[cryptography]>=3.3.0
 # torch  # optional: only needed for Silero fallback, current path uses TenVAD
 # torchaudio  # optional: currently unused
 ten-vad
-asyncpg==0.29.0
-psycopg2-binary==2.9.9
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
 google-cloud-storage>=2.14.0
 # tavily-python>=0.3.0  # optional: currently unused
 celery>=5.4.0

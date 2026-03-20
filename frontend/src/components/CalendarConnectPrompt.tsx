@@ -79,14 +79,19 @@ export function CalendarConnectPrompt() {
 
   const handleConnect = async () => {
     try {
-      const response = await authFetch('/api/calendar/google/connect?request_write_scope=false', {
+      const response = await authFetch('/api/calendar/google/connect', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_write_scope: false })
       });
       if (!response.ok) throw new Error('Failed to get auth URL');
       const data = await response.json();
-      if (data.auth_url) {
-        window.location.href = data.auth_url;
+      const authorizationUrl = data.authorization_url || data.auth_url;
+      if (authorizationUrl) {
+        window.location.href = authorizationUrl;
+        return;
       }
+      throw new Error('Calendar OAuth response missing authorization URL');
     } catch (error) {
       console.error('Failed to connect calendar:', error);
     }

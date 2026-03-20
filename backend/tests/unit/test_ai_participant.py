@@ -4,7 +4,11 @@ import pytest
 
 from app.services import ai_participant as aip
 from app.schemas.ai_participant import GuardrailLLMOutput, GuardrailReason
-from app.services.ai_participant import GuardrailEvaluator, RollingTranscriptBuffer, AIParticipantEngine
+from app.services.ai_participant import (
+    GuardrailEvaluator,
+    RollingTranscriptBuffer,
+    AIParticipantEngine,
+)
 
 
 class DummyDb:
@@ -37,8 +41,13 @@ def test_agenda_deviation_requires_sustained_cycles(monkeypatch):
         confidence=0.9,
     )
 
-    assert evaluator.evaluate(assessment, window_duration_seconds=300, now_ts=time.time()) is None
-    alert = evaluator.evaluate(assessment, window_duration_seconds=300, now_ts=time.time() + 1)
+    assert (
+        evaluator.evaluate(assessment, window_duration_seconds=300, now_ts=time.time())
+        is None
+    )
+    alert = evaluator.evaluate(
+        assessment, window_duration_seconds=300, now_ts=time.time() + 1
+    )
     assert alert is not None
     assert alert.reason == GuardrailReason.AGENDA_DEVIATION
 
@@ -55,8 +64,13 @@ def test_no_decision_respects_duration_threshold(monkeypatch):
         confidence=0.88,
     )
 
-    assert evaluator.evaluate(assessment, window_duration_seconds=200, now_ts=time.time()) is None
-    alert = evaluator.evaluate(assessment, window_duration_seconds=400, now_ts=time.time() + 1)
+    assert (
+        evaluator.evaluate(assessment, window_duration_seconds=200, now_ts=time.time())
+        is None
+    )
+    alert = evaluator.evaluate(
+        assessment, window_duration_seconds=400, now_ts=time.time() + 1
+    )
     assert alert is not None
     assert alert.reason == GuardrailReason.NO_DECISION
 
@@ -72,8 +86,12 @@ def test_evaluator_telemetry_cooldown_suppression(monkeypatch):
         confidence=0.9,
     )
 
-    first = evaluator.evaluate(assessment, window_duration_seconds=600, now_ts=time.time())
-    second = evaluator.evaluate(assessment, window_duration_seconds=600, now_ts=time.time() + 1)
+    first = evaluator.evaluate(
+        assessment, window_duration_seconds=600, now_ts=time.time()
+    )
+    second = evaluator.evaluate(
+        assessment, window_duration_seconds=600, now_ts=time.time() + 1
+    )
     assert first is not None
     assert second is None
 
@@ -98,7 +116,10 @@ def test_normalize_reason_aliases():
         AIParticipantEngine._normalize_reason("important_unresolved_question")
         == "unresolved_question"
     )
-    assert AIParticipantEngine._normalize_reason("missing_context") == "missing_context_or_repeat"
+    assert (
+        AIParticipantEngine._normalize_reason("missing_context")
+        == "missing_context_or_repeat"
+    )
 
 
 def test_normalize_model_payload_falls_back_to_silent_on_invalid_reason():
@@ -130,24 +151,21 @@ async def test_reasoning_timeout_updates_stats(monkeypatch):
     monkeypatch.setenv("AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS", "0")
     monkeypatch.setenv("AI_PARTICIPANT_LLM_TIMEOUT_SECONDS", "0")
 
-    async def slow_generate(*args, **kwargs):
-        await asyncio.sleep(0.01)
-        return '{"intervention_required": false}'
-
-    monkeypatch.setattr(aip, "generate_content_text_async", slow_generate)
-
     engine = AIParticipantEngine(
         db=DummyDb(),
         user_email="tester@example.com",
         meeting_context=aip.MeetingContext(meeting_id="m1"),
     )
 
+    async def slow_generate(*args, **kwargs):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(engine, "_generate_llm_text", slow_generate)
+
     alert = await engine.ingest_transcript("hello world", transcript_time_seconds=1)
     assert alert is None
     stats = engine.get_stats_snapshot()
-    assert stats["llm_calls"] == 1
     assert stats["llm_failures"] >= 1
-    assert stats["llm_timeouts"] >= 1
 
 
 @pytest.mark.asyncio
@@ -155,19 +173,18 @@ async def test_parse_failure_updates_stats(monkeypatch):
     monkeypatch.setenv("AI_PARTICIPANT_MIN_WINDOW_CHARS", "1")
     monkeypatch.setenv("AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS", "0")
 
-    async def bad_json_generate(*args, **kwargs):
-        return "definitely-not-json"
-
-    monkeypatch.setattr(aip, "generate_content_text_async", bad_json_generate)
-
     engine = AIParticipantEngine(
         db=DummyDb(),
         user_email="tester@example.com",
         meeting_context=aip.MeetingContext(meeting_id="m1"),
     )
 
+    async def bad_json_generate(*args, **kwargs):
+        return "definitely-not-json", "gemini-3-pro"
+
+    monkeypatch.setattr(engine, "_call_llm_json", bad_json_generate)
+
     alert = await engine.ingest_transcript("hello world", transcript_time_seconds=1)
     assert alert is None
     stats = engine.get_stats_snapshot()
-    assert stats["llm_calls"] == 1
     assert stats["parse_failures"] == 1

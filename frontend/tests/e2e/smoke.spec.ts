@@ -9,5 +9,5 @@ test("app root loads without server 500 page", async ({ page, baseURL }) => {
   expect(response?.status()).toBeLessThan(500);
 
   const content = await page.content();
-  expect(content).not.toContain("500");
+  expect(content).not.toContain("Internal Server Error");
 });

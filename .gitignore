@@ -86,3 +86,4 @@ pnyx-docs/migrate_gcp_project
 .opencode
 AUDIT_EVIDENCE.md
 backend/temp.env
+frontend/test-results/

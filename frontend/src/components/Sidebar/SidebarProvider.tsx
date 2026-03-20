@@ -208,30 +208,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    try {
-      setIsSearching(true);
-      const response = await authFetch('/search-context', { // Use relative URL with authFetch
-        method: 'POST',
-        body: JSON.stringify({ query, n_results: 10 })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (data.message) {
-        console.warn('Search context message:', data.message);
-      }
-      
-      // Fallback logic for empty array since semantic search is disabled
-      setSearchResults(data.results || []);
-    } catch (error) {
-      console.error('Error searching transcripts:', error);
-      setSearchResults([]);
-    } finally {
-      setIsSearching(false);
-    }
+    // Semantic transcript search is currently disabled.
+    // Keep sidebar search working as a title-only filter.
+    setSearchResults([]);
+    setIsSearching(false);
   };
 
   // Summary polling management

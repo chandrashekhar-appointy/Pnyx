@@ -286,7 +286,9 @@ class GuardrailEvaluator:
         self._last_publish_at = now_ts
         self._metrics["published"] += 1
         by_reason = self._metrics.setdefault("published_by_reason", {})
-        by_reason[assessment.reason.value] = int(by_reason.get(assessment.reason.value) or 0) + 1
+        by_reason[assessment.reason.value] = (
+            int(by_reason.get(assessment.reason.value) or 0) + 1
+        )
 
         return GuardrailAlert(
             id=str(uuid.uuid4()),
@@ -311,7 +313,9 @@ class GuardrailEvaluator:
 
     def get_metrics_snapshot(self) -> Dict[str, Any]:
         payload = dict(self._metrics)
-        payload["published_by_reason"] = dict(self._metrics.get("published_by_reason") or {})
+        payload["published_by_reason"] = dict(
+            self._metrics.get("published_by_reason") or {}
+        )
         return payload
 
 
@@ -326,9 +330,12 @@ class AIParticipantEngine:
         self.user_email = user_email
         self.meeting_context = meeting_context
 
-        self.enabled = _clean_env_value(
-            os.getenv("AI_PARTICIPANT_ENABLED", "true"), "true"
-        ).lower() == "true"
+        self.enabled = (
+            _clean_env_value(
+                os.getenv("AI_PARTICIPANT_ENABLED", "true"), "true"
+            ).lower()
+            == "true"
+        )
         self.provider = _normalize_provider_name(
             os.getenv("AI_PARTICIPANT_PROVIDER", "gemini"), "gemini"
         )
@@ -339,11 +346,13 @@ class AIParticipantEngine:
                     self.provider, DEFAULT_PROVIDER_MODELS["gemini"]
                 ),
             ),
-            DEFAULT_PROVIDER_MODELS.get(self.provider, DEFAULT_PROVIDER_MODELS["gemini"]),
+            DEFAULT_PROVIDER_MODELS.get(
+                self.provider, DEFAULT_PROVIDER_MODELS["gemini"]
+            ),
         )
-        fallback_models = _clean_env_value(os.getenv(
-            "AI_PARTICIPANT_FALLBACK_MODELS", ""
-        ), "")
+        fallback_models = _clean_env_value(
+            os.getenv("AI_PARTICIPANT_FALLBACK_MODELS", ""), ""
+        )
         self.fallback_models = [
             m.strip() for m in fallback_models.split(",") if (m or "").strip()
         ]
@@ -379,10 +388,9 @@ class AIParticipantEngine:
         self._host_event_last_published_at: Dict[str, float] = {}
         self._host_event_last_signature: Dict[str, str] = {}
         self._host_state = MeetingHostState(meeting_id=self.meeting_context.meeting_id)
-        default_skill_markdown = (
-            os.getenv("AI_HOST_DEFAULT_SKILL_MARKDOWN", "").strip()
-            or SYSTEM_HOST_SKILLS.get("facilitator", "")
-        )
+        default_skill_markdown = os.getenv(
+            "AI_HOST_DEFAULT_SKILL_MARKDOWN", ""
+        ).strip() or SYSTEM_HOST_SKILLS.get("facilitator", "")
         self._active_skill_markdown = default_skill_markdown
         self._active_skill_definition = parse_skill_markdown(default_skill_markdown)
         self._host_policy = self._load_policy_from_skill(
@@ -428,15 +436,23 @@ class AIParticipantEngine:
                 "- Use `**` for bold emphasis\n"
                 "- Use `- ` for bullet points\n"
                 "Your goal is to make the meeting summary visually structured and professional."
-            )
+            ),
         )
 
         @self.agent.tool
-        async def add_decision(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
+        async def add_decision(
+            ctx: RunContext[AIParticipantEngine],
+            title: str,
+            content: str,
+            confidence: float,
+            priority: str = "medium",
+        ) -> str:
             """Record a commitment or decision agreed upon by participants."""
             engine = ctx.deps
             title = await engine._ensure_english_text(title, preserve_markdown=False)
-            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            content = await engine._ensure_english_text(
+                content, preserve_markdown=False
+            )
             if not content.strip():
                 return "FAILURE: Decision content is empty."
             if engine._has_similar_host_item("decision_candidate", title, content):
@@ -448,7 +464,7 @@ class AIParticipantEngine:
                 "title": title,
                 "content": content,
                 "confidence": confidence,
-                "priority": priority
+                "priority": priority,
             }
             suggestion = engine._build_host_suggestion(event)
             if suggestion:
@@ -457,11 +473,19 @@ class AIParticipantEngine:
             return "FAILURE: Decision did not meet confidence threshold."
 
         @self.agent.tool
-        async def add_discussion(ctx: RunContext[AIParticipantEngine], title: str, content: str, confidence: float, priority: str = "medium") -> str:
+        async def add_discussion(
+            ctx: RunContext[AIParticipantEngine],
+            title: str,
+            content: str,
+            confidence: float,
+            priority: str = "medium",
+        ) -> str:
             """Record an unresolved question or active debate."""
             engine = ctx.deps
             title = await engine._ensure_english_text(title, preserve_markdown=False)
-            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            content = await engine._ensure_english_text(
+                content, preserve_markdown=False
+            )
             if not content.strip():
                 return "FAILURE: Discussion content is empty."
             if engine._has_similar_host_item("open_discussion", title, content):
@@ -472,7 +496,7 @@ class AIParticipantEngine:
                 "title": title,
                 "content": content,
                 "confidence": confidence,
-                "priority": priority
+                "priority": priority,
             }
             suggestion = engine._build_host_suggestion(event)
             if suggestion:
@@ -481,7 +505,9 @@ class AIParticipantEngine:
             return "FAILURE: Discussion did not meet confidence threshold."
 
         @self.agent.tool
-        async def update_summary(ctx: RunContext[AIParticipantEngine], summary_markdown: str) -> str:
+        async def update_summary(
+            ctx: RunContext[AIParticipantEngine], summary_markdown: str
+        ) -> str:
             """
             Update the cumulative meeting summary.
             IMPORTANT: Use rich Markdown with:
@@ -500,19 +526,28 @@ class AIParticipantEngine:
             summary_markdown = summary_markdown.strip()
             if not summary_markdown or len(summary_markdown) < 20:
                 return "FAILURE: Summary too short or empty."
-            
+
             engine._host_state.meeting_summary = summary_markdown
             return "SUCCESS: Summary updated with rich formatting."
 
         @self.agent.tool
-        async def add_action_item(ctx: RunContext[AIParticipantEngine], owner: str, task: str, due_date: Optional[str] = None) -> str:
+        async def add_action_item(
+            ctx: RunContext[AIParticipantEngine],
+            owner: str,
+            task: str,
+            due_date: Optional[str] = None,
+        ) -> str:
             """Record a specific task assigned to a participant (Participant Action)."""
             engine = ctx.deps
             task = await engine._ensure_english_text(task, preserve_markdown=False)
-            due_date = await engine._ensure_english_text(due_date or "", preserve_markdown=False)
+            due_date = await engine._ensure_english_text(
+                due_date or "", preserve_markdown=False
+            )
             if not task.strip():
                 return "FAILURE: Action item task is empty."
-            if engine._has_similar_host_item("follow_up_needed", f"Action for {owner}", task):
+            if engine._has_similar_host_item(
+                "follow_up_needed", f"Action for {owner}", task
+            ):
                 return f"SKIP: Action item '{task}' is already recorded."
 
             event = {
@@ -521,7 +556,7 @@ class AIParticipantEngine:
                 "content": f"**Task**: {task}\n**Due**: {due_date or 'TBD'}",
                 "confidence": 0.9,
                 "priority": "high",
-                "metadata": {"owner": owner, "due_date": due_date}
+                "metadata": {"owner": owner, "due_date": due_date},
             }
             suggestion = engine._build_host_suggestion(event)
             if suggestion:
@@ -532,14 +567,22 @@ class AIParticipantEngine:
             return "FAILURE: Action item did not meet requirements."
 
         @self.agent.tool
-        async def add_insight(ctx: RunContext[AIParticipantEngine], title: str, content: str, insight_type: str = "general", confidence: float = 0.8) -> str:
+        async def add_insight(
+            ctx: RunContext[AIParticipantEngine],
+            title: str,
+            content: str,
+            insight_type: str = "general",
+            confidence: float = 0.8,
+        ) -> str:
             """
             Record a strategic observation, risk, or participation insight.
             Use this for 'Guardrails' like agenda drift or engagement drops.
             """
             engine = ctx.deps
             title = await engine._ensure_english_text(title, preserve_markdown=False)
-            content = await engine._ensure_english_text(content, preserve_markdown=False)
+            content = await engine._ensure_english_text(
+                content, preserve_markdown=False
+            )
             if not content.strip():
                 return "FAILURE: Insight content is empty."
 
@@ -547,13 +590,13 @@ class AIParticipantEngine:
             event_type = engine._normalize_host_event_type(insight_type) or "ai_insight"
             if engine._has_similar_host_item(event_type, title, content):
                 return "SKIP: This insight was recently shared."
-            
+
             event = {
                 "event_type": event_type,
                 "title": title,
                 "content": content,
                 "confidence": confidence,
-                "priority": "medium"
+                "priority": "medium",
             }
             suggestion = engine._build_host_suggestion(event)
             if suggestion:
@@ -568,21 +611,31 @@ class AIParticipantEngine:
         await self.load_runtime_config()
         api_key = await self._get_provider_api_key()
         if not api_key:
-            return None # Fallback to default or error
+            return None  # Fallback to default or error
 
         try:
             if self.provider == "gemini":
-                return GeminiModel(self.model_name, provider=GoogleGLAProvider(api_key=api_key))
+                return GeminiModel(
+                    self.model_name, provider=GoogleGLAProvider(api_key=api_key)
+                )
             elif self.provider == "openai":
-                return OpenAIModel(self.model_name, provider=OpenAIProvider(api_key=api_key))
+                return OpenAIModel(
+                    self.model_name, provider=OpenAIProvider(api_key=api_key)
+                )
             elif self.provider == "anthropic":
-                return AnthropicModel(self.model_name, provider=AnthropicProvider(api_key=api_key))
+                return AnthropicModel(
+                    self.model_name, provider=AnthropicProvider(api_key=api_key)
+                )
             elif self.provider == "groq":
-                return GroqModel(self.model_name, provider=GroqProvider(api_key=api_key))
+                return GroqModel(
+                    self.model_name, provider=GroqProvider(api_key=api_key)
+                )
             elif self.provider == "openrouter":
                 return OpenAIModel(
-                    self.model_name, 
-                    provider=OpenAIProvider(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+                    self.model_name,
+                    provider=OpenAIProvider(
+                        api_key=api_key, base_url="https://openrouter.ai/api/v1"
+                    ),
                 )
         except Exception as e:
             logger.error(f"[AIParticipant] Failed to initialize pydantic-ai model: {e}")
@@ -648,7 +701,7 @@ class AIParticipantEngine:
                     metadata = json.loads(metadata)
                 except Exception:
                     return False
-            
+
             if not isinstance(metadata, dict):
                 return False
 
@@ -662,14 +715,14 @@ class AIParticipantEngine:
                     state_data = json.loads(state_data)
                 except Exception:
                     return False
-            
+
             if not isinstance(state_data, dict):
                 return False
 
             # Safety: Ensure meeting_id matches to prevent cross-session leaks if IDs were recycled
             self._host_state = MeetingHostState.model_validate(state_data)
             self._host_state.meeting_id = self.meeting_context.meeting_id
-            
+
             logger.info(
                 "[AIParticipant] State restored for session=%s summary_len=%s pinned=%s suggestions=%s",
                 session_id,
@@ -791,10 +844,13 @@ class AIParticipantEngine:
             self._temp_suggestions = []
             await self._reason_host_events()
             await self._supplement_host_events_from_heuristics(self.buffer.get_text())
-            
-            if not self._temp_suggestions and not (self._host_state.meeting_summary or "").strip():
+
+            if (
+                not self._temp_suggestions
+                and not (self._host_state.meeting_summary or "").strip()
+            ):
                 # If agent did nothing, try heuristic fallback
-                await self._build_fallback_host_events(
+                self._build_fallback_host_events(
                     transcript_window=self.buffer.get_text(),
                     reason="agent_noop",
                 )
@@ -818,9 +874,11 @@ class AIParticipantEngine:
                 card = self._build_intervention_from_suggestion(suggestion, now_ts)
                 if card is not None:
                     self._host_state.intervention_history.insert(0, card)
-                    self._host_state.intervention_history = self._host_state.intervention_history[
-                        : self._host_policy.max_intervention_history
-                    ]
+                    self._host_state.intervention_history = (
+                        self._host_state.intervention_history[
+                            : self._host_policy.max_intervention_history
+                        ]
+                    )
                     self._host_state.counters["intervened"] = (
                         int(self._host_state.counters.get("intervened") or 0) + 1
                     )
@@ -882,9 +940,7 @@ class AIParticipantEngine:
             # Run the agentic observer
             # It will call tools like add_decision and update_summary
             result = await self.agent.run(
-                self._build_host_prompt(transcript_window),
-                deps=self,
-                model=model
+                self._build_host_prompt(transcript_window), deps=self, model=model
             )
             logger.info("[AIParticipant] Agent run complete.")
             # The tools have updated self._temp_suggestions, we don't need to return list of dicts anymore
@@ -892,7 +948,10 @@ class AIParticipantEngine:
             return [{"collected": True}] if self._temp_suggestions else []
         except Exception as e:
             self._stats["llm_failures"] += 1
-            logger.error(f"[AIParticipant] Agent failed during host reasoning: {e}", exc_info=True)
+            logger.error(
+                f"[AIParticipant] Agent failed during host reasoning: {e}",
+                exc_info=True,
+            )
             return self._build_fallback_host_events(
                 transcript_window=transcript_window,
                 reason="agent_error",
@@ -999,21 +1058,31 @@ class AIParticipantEngine:
 
         key = ""
         if self.provider == "gemini":
-            key = _clean_env_value(os.getenv("GEMINI_API_KEY", ""), "") or _clean_env_value(os.getenv("GOOGLE_API_KEY", ""), "")
+            key = _clean_env_value(
+                os.getenv("GEMINI_API_KEY", ""), ""
+            ) or _clean_env_value(os.getenv("GOOGLE_API_KEY", ""), "")
             if not key:
-                key = (await self.db.get_api_key("gemini", user_email=self.user_email)) or ""
+                key = (
+                    await self.db.get_api_key("gemini", user_email=self.user_email)
+                ) or ""
         elif self.provider == "openai":
             key = _clean_env_value(os.getenv("OPENAI_API_KEY", ""), "")
             if not key:
-                key = (await self.db.get_api_key("openai", user_email=self.user_email)) or ""
+                key = (
+                    await self.db.get_api_key("openai", user_email=self.user_email)
+                ) or ""
         elif self.provider == "anthropic":
             key = _clean_env_value(os.getenv("ANTHROPIC_API_KEY", ""), "")
             if not key:
-                key = (await self.db.get_api_key("claude", user_email=self.user_email)) or ""
+                key = (
+                    await self.db.get_api_key("claude", user_email=self.user_email)
+                ) or ""
         elif self.provider == "openrouter":
             key = _clean_env_value(os.getenv("OPENROUTER_API_KEY", ""), "")
             if not key:
-                key = (await self.db.get_user_api_key(self.user_email, "openrouter")) or ""
+                key = (
+                    await self.db.get_user_api_key(self.user_email, "openrouter")
+                ) or ""
 
         key = key.strip()
         if not key and not self._missing_key_logged:
@@ -1037,7 +1106,9 @@ class AIParticipantEngine:
         description = self.meeting_context.description or ""
         agenda_text = self.meeting_context.agenda_text or ""
         participant_names = self.meeting_context.participant_names or []
-        participant_line = ", ".join(participant_names[:25]) if participant_names else "None"
+        participant_line = (
+            ", ".join(participant_names[:25]) if participant_names else "None"
+        )
         current_summary = self._host_state.meeting_summary or "None"
 
         return f"""
@@ -1078,13 +1149,17 @@ Recent transcript window:
         description = self.meeting_context.description or ""
         agenda_text = self.meeting_context.agenda_text or ""
         participant_names = self.meeting_context.participant_names or []
-        participant_line = ", ".join(participant_names[:25]) if participant_names else "None"
+        participant_line = (
+            ", ".join(participant_names[:25]) if participant_names else "None"
+        )
 
         policy = self._host_policy
         role = policy.role_mode.value
         skill_definition = self._active_skill_definition or {}
         skill_name = str(skill_definition.get("name") or role.title())
-        skill_description = str(skill_definition.get("description") or "").strip() or "None"
+        skill_description = (
+            str(skill_definition.get("description") or "").strip() or "None"
+        )
         skill_role = str(skill_definition.get("role") or "").strip() or "None"
         skill_goals = skill_definition.get("goals") or []
         skill_rules = skill_definition.get("rules") or []
@@ -1092,8 +1167,16 @@ Recent transcript window:
 
         pinned_titles = [item.title for item in self._host_state.pinned_items]
         pinned_line = ", ".join(pinned_titles) if pinned_titles else "None"
-        goals_block = "\n".join(f"- {goal_item}" for goal_item in skill_goals) if skill_goals else "- None"
-        rules_block = "\n".join(f"- {rule_item}" for rule_item in skill_rules) if skill_rules else "- None"
+        goals_block = (
+            "\n".join(f"- {goal_item}" for goal_item in skill_goals)
+            if skill_goals
+            else "- None"
+        )
+        rules_block = (
+            "\n".join(f"- {rule_item}" for rule_item in skill_rules)
+            if skill_rules
+            else "- None"
+        )
         custom_types_block = (
             "\n".join(f"- {event_type}" for event_type in allowed_custom_types)
             if allowed_custom_types
@@ -1210,7 +1293,8 @@ Recent transcript window:
             if candidate_title and candidate_title == existing_title:
                 return True
             if existing_content and (
-                candidate_content in existing_content or existing_content in candidate_content
+                candidate_content in existing_content
+                or existing_content in candidate_content
             ):
                 return True
         return False
@@ -1400,7 +1484,9 @@ Recent transcript window:
         except Exception:
             return raw
 
-    def _extract_candidate_host_events(self, transcript_window: str) -> List[Dict[str, Any]]:
+    def _extract_candidate_host_events(
+        self, transcript_window: str
+    ) -> List[Dict[str, Any]]:
         lines = [
             " ".join(re.sub(r"^\[\d{2}:\d{2}\]\s*", "", line).split()).strip()
             for line in str(transcript_window or "").splitlines()
@@ -1508,7 +1594,10 @@ Recent transcript window:
                 continue
             if not current_topic:
                 current_topic = " ".join(str(event.get("title") or "").split()).strip()
-            if event.get("event_type") == "open_discussion" and content not in unresolved_items:
+            if (
+                event.get("event_type") == "open_discussion"
+                and content not in unresolved_items
+            ):
                 unresolved_items.append(content)
 
         if current_topic:
@@ -1542,7 +1631,9 @@ Recent transcript window:
                 self._apply_policy_numeric(policy, key, parsed[key])
 
         if "allow_interruptions" in parsed:
-            policy.allow_interruptions = str(parsed["allow_interruptions"]).strip().lower() in {
+            policy.allow_interruptions = str(
+                parsed["allow_interruptions"]
+            ).strip().lower() in {
                 "1",
                 "true",
                 "yes",
@@ -1552,9 +1643,7 @@ Recent transcript window:
         forbidden = parsed.get("forbidden_actions")
         if forbidden:
             policy.forbidden_actions = [
-                v.strip()
-                for v in str(forbidden).split(",")
-                if v and v.strip()
+                v.strip() for v in str(forbidden).split(",") if v and v.strip()
             ]
 
         for key, raw_value in parsed.items():
@@ -1577,7 +1666,10 @@ Recent transcript window:
         lower = text.lower()
 
         # Role inference from human-readable role/identity sections
-        if any(token in lower for token in ["chairperson", "team lead", "tech lead", "engineering lead"]):
+        if any(
+            token in lower
+            for token in ["chairperson", "team lead", "tech lead", "engineering lead"]
+        ):
             inferred["role_mode"] = "chairperson"
         elif any(token in lower for token in ["advisor", "consultant", "observer"]):
             inferred["role_mode"] = "advisor"
@@ -1589,10 +1681,27 @@ Recent transcript window:
             inferred.setdefault("min_confidence", "0.72")
             inferred.setdefault("threshold_open_discussion", "0.66")
 
-        if any(token in lower for token in ["default to simplicity", "simplicity over clever", "simple over clever"]):
-            inferred["forbidden_actions"] = "overengineered_solutions, shame_participants, legal_advice"
+        if any(
+            token in lower
+            for token in [
+                "default to simplicity",
+                "simplicity over clever",
+                "simple over clever",
+            ]
+        ):
+            inferred["forbidden_actions"] = (
+                "overengineered_solutions, shame_participants, legal_advice"
+            )
 
-        if any(token in lower for token in ["direct and confident", "drive decisions", "time-box", "timebox"]):
+        if any(
+            token in lower
+            for token in [
+                "direct and confident",
+                "drive decisions",
+                "time-box",
+                "timebox",
+            ]
+        ):
             inferred.setdefault("intervention_cooldown_seconds", "90")
             inferred.setdefault("threshold_decision_candidate", "0.65")
 
@@ -1640,7 +1749,9 @@ Recent transcript window:
         except Exception:
             return
 
-    def apply_host_skill_override(self, skill_markdown: str, source: str = "meeting") -> None:
+    def apply_host_skill_override(
+        self, skill_markdown: str, source: str = "meeting"
+    ) -> None:
         skill_text = (skill_markdown or "").strip()
         if not skill_text:
             return
@@ -1661,7 +1772,9 @@ Recent transcript window:
         self._host_policy_source = source
         self._stats["host_policy_source"] = source
 
-    def pin_suggestion(self, suggestion_id: str, actor: Optional[str] = None) -> Optional[HostSuggestion]:
+    def pin_suggestion(
+        self, suggestion_id: str, actor: Optional[str] = None
+    ) -> Optional[HostSuggestion]:
         suggestion_id = str(suggestion_id or "").strip()
         if not suggestion_id:
             return None
@@ -1689,13 +1802,19 @@ Recent transcript window:
 
         self._host_state.suggested_items = remaining
         self._host_state.pinned_items.insert(0, match)
-        self._host_state.pinned_items = self._host_state.pinned_items[: self._host_policy.max_pinned_items]
-        self._host_state.counters["pinned"] = int(self._host_state.counters.get("pinned") or 0) + 1
+        self._host_state.pinned_items = self._host_state.pinned_items[
+            : self._host_policy.max_pinned_items
+        ]
+        self._host_state.counters["pinned"] = (
+            int(self._host_state.counters.get("pinned") or 0) + 1
+        )
         self._host_state.updated_at = datetime.utcnow().isoformat()
         self._stats["host_suggestions_pinned"] += 1
         return match
 
-    def dismiss_suggestion(self, suggestion_id: str, actor: Optional[str] = None) -> bool:
+    def dismiss_suggestion(
+        self, suggestion_id: str, actor: Optional[str] = None
+    ) -> bool:
         suggestion_id = str(suggestion_id or "").strip()
         if not suggestion_id:
             return False
@@ -1714,22 +1833,32 @@ Recent transcript window:
         self._host_state.suggested_items = remaining
         if suggestion_id not in self._host_state.dismissed_item_ids:
             self._host_state.dismissed_item_ids.insert(0, suggestion_id)
-            self._host_state.dismissed_item_ids = self._host_state.dismissed_item_ids[:200]
-        self._host_state.counters["dismissed"] = int(self._host_state.counters.get("dismissed") or 0) + 1
+            self._host_state.dismissed_item_ids = self._host_state.dismissed_item_ids[
+                :200
+            ]
+        self._host_state.counters["dismissed"] = (
+            int(self._host_state.counters.get("dismissed") or 0) + 1
+        )
         self._host_state.updated_at = datetime.utcnow().isoformat()
         self._stats["host_suggestions_dismissed"] += 1
 
         if actor:
             self._host_state.last_response_outcomes.insert(0, f"dismissed_by:{actor}")
-            self._host_state.last_response_outcomes = self._host_state.last_response_outcomes[:50]
+            self._host_state.last_response_outcomes = (
+                self._host_state.last_response_outcomes[:50]
+            )
         return True
 
-    def record_feedback(self, suggestion_id: str, feedback: str, actor: Optional[str] = None) -> None:
+    def record_feedback(
+        self, suggestion_id: str, feedback: str, actor: Optional[str] = None
+    ) -> None:
         entry = f"feedback:{suggestion_id}:{feedback}"
         if actor:
             entry += f":{actor}"
         self._host_state.last_response_outcomes.insert(0, entry[:300])
-        self._host_state.last_response_outcomes = self._host_state.last_response_outcomes[:50]
+        self._host_state.last_response_outcomes = (
+            self._host_state.last_response_outcomes[:50]
+        )
         self._host_state.updated_at = datetime.utcnow().isoformat()
 
     def get_host_state_snapshot(self) -> Dict[str, Any]:
