@@ -12,13 +12,16 @@ from zoneinfo import ZoneInfo
 # Import from core.encryption
 try:
     from ..core.encryption import encrypt_key, decrypt_key
+    from ..services.document_storage import DocumentStorageService
 except ImportError:
     # Fallback for relative imports during local testing/script execution
     try:
         from ...core.encryption import encrypt_key, decrypt_key
+        from ...services.document_storage import DocumentStorageService
     except ImportError:
         # Last resort if running from inside app/
         from core.encryption import encrypt_key, decrypt_key
+        from services.document_storage import DocumentStorageService
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -128,7 +131,8 @@ class DatabaseManager:
                     result = await conn.execute(
                         """
                         UPDATE summary_processes 
-                        SET status = $1, updated_at = $2, start_time = $3, error = NULL, result = NULL
+                        SET status = $1, updated_at = $2, start_time = $3, error = NULL,
+                            result_object_path = NULL, result_sha256 = NULL, result_byte_size = NULL
                         WHERE meeting_id = $4
                         """,
                         "PENDING",
@@ -175,6 +179,33 @@ class DatabaseManager:
     ):
         """Update a process status and result"""
         now = datetime.utcnow()
+        storage_meta: Optional[Dict] = None
+        if result:
+            # E2EE: Check if encryption is enabled for the meeting owner
+            public_key = None
+            try:
+                async with self._get_connection() as conn:
+                    owner_email = await conn.fetchval(
+                        "SELECT owner_id FROM meetings WHERE id = $1", meeting_id
+                    )
+                    if owner_email:
+                        is_enabled = await self.get_user_encryption_enabled(owner_email)
+                        if is_enabled:
+                            user_info = await self.get_user_credits(owner_email)
+                            if user_info:
+                                public_key = user_info.get("encryption_public_key")
+            except Exception as e:
+                logger.warning(f"Failed to check encryption status in update_process: {e}")
+
+            storage_meta = await DocumentStorageService.save_summary_result(
+                meeting_id, result, public_key=public_key
+            )
+            
+            # If encrypted, merge encryption metadata
+            if storage_meta.get("encryption"):
+                metadata = (metadata or {}).copy()
+                metadata["encryption"] = metadata.get("encryption") or {}
+                metadata["encryption"]["summary"] = storage_meta["encryption"]
 
         try:
             async with self._get_connection() as conn:
@@ -184,11 +215,16 @@ class DatabaseManager:
                     param_idx = 3  # Start at $3
 
                     if result:
-                        # Postgres JSONB handles dicts natively with asyncpg
-                        update_fields.append(f"result = ${param_idx}")
+                        update_fields.append(f"result_object_path = ${param_idx}")
+                        params.append(storage_meta["path"] if storage_meta else None)
+                        param_idx += 1
+                        update_fields.append(f"result_sha256 = ${param_idx}")
+                        params.append(storage_meta["sha256"] if storage_meta else None)
+                        param_idx += 1
+                        update_fields.append(f"result_byte_size = ${param_idx}")
                         params.append(
-                            json.dumps(result)
-                        )  # Store as JSON string for JSONB
+                            storage_meta["byte_size"] if storage_meta else None
+                        )
                         param_idx += 1
 
                     if error:
@@ -237,15 +273,14 @@ class DatabaseManager:
                 f"Database connection error in update_process: {str(e)}", exc_info=True
             )
             raise
-
     async def save_transcript(
         self,
         meeting_id: str,
         transcript_text: str,
-        model: str,
-        model_name: str,
-        chunk_size: int,
-        overlap: int,
+        model: str = "gemini",
+        model_name: str = "gemini-1.5-pro",
+        chunk_size: int = 10000,
+        overlap: int = 500,
     ):
         """Save transcript data"""
         if not meeting_id or not meeting_id.strip():
@@ -256,29 +291,64 @@ class DatabaseManager:
         now = datetime.utcnow()
 
         try:
+            # E2EE: Check if encryption is enabled for the meeting owner
+            public_key = None
+            try:
+                async with self._get_connection() as conn:
+                    owner_email = await conn.fetchval(
+                        "SELECT owner_id FROM meetings WHERE id = $1", meeting_id
+                    )
+                    if owner_email:
+                        is_enabled = await self.get_user_encryption_enabled(owner_email)
+                        if is_enabled:
+                            user_info = await self.get_user_credits(owner_email)
+                            if user_info:
+                                public_key = user_info.get("encryption_public_key")
+            except Exception as e:
+                logger.warning(f"Failed to check encryption status in save_transcript: {e}")
+
+            storage_meta = await DocumentStorageService.save_full_transcript(
+                meeting_id=meeting_id,
+                transcript_text=transcript_text,
+                model=model,
+                model_name=model_name,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                public_key=public_key,
+            )
             async with self._get_connection() as conn:
                 async with conn.transaction():
                     # Postgres upsert using ON CONFLICT
                     await conn.execute(
                         """
-                        INSERT INTO full_transcripts (meeting_id, transcript_text, model, model_name, chunk_size, overlap, created_at)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        INSERT INTO full_transcripts (
+                            meeting_id, model, model_name, chunk_size, overlap,
+                            created_at, transcript_object_path, transcript_sha256, transcript_byte_size, transcript_preview, metadata
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                         ON CONFLICT (meeting_id) 
                         DO UPDATE SET 
-                            transcript_text = EXCLUDED.transcript_text,
                             model = EXCLUDED.model,
                             model_name = EXCLUDED.model_name,
                             chunk_size = EXCLUDED.chunk_size,
                             overlap = EXCLUDED.overlap,
-                            created_at = EXCLUDED.created_at
+                            created_at = EXCLUDED.created_at,
+                            transcript_object_path = EXCLUDED.transcript_object_path,
+                            transcript_sha256 = EXCLUDED.transcript_sha256,
+                            transcript_byte_size = EXCLUDED.transcript_byte_size,
+                            transcript_preview = EXCLUDED.transcript_preview,
+                            metadata = EXCLUDED.metadata
                     """,
                         meeting_id,
-                        transcript_text,
                         model,
                         model_name,
                         chunk_size,
                         overlap,
                         now,
+                        storage_meta.get("final_path"),
+                        storage_meta.get("sha256"),
+                        storage_meta.get("byte_size"),
+                        storage_meta.get("preview", "")[:500],
+                        json.dumps(storage_meta.get("encryption_wrapper") or {}),
                     )
 
                     logger.info(
@@ -307,22 +377,17 @@ class DatabaseManager:
                     meeting_id,
                 )
 
-                await conn.execute(
-                    """
-                    UPDATE full_transcripts
-                    SET meeting_name = $1
-                    WHERE meeting_id = $2
-                """,
-                    meeting_name,
-                    meeting_id,
-                )
+                # Migration 022 removed meeting_name from full_transcripts as it was redundant.
+                # Only the title in meetings table needs to be updated.
+                pass
 
     async def get_transcript_data(self, meeting_id: str):
         """Get transcript/summary process data for a meeting"""
         async with self._get_connection() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT meeting_id, status, result, error, start_time, end_time, metadata
+                SELECT meeting_id, status, result_object_path,
+                       error, start_time, end_time, metadata
                 FROM summary_processes 
                 WHERE meeting_id = $1
                 ORDER BY start_time DESC
@@ -334,12 +399,9 @@ class DatabaseManager:
             if row:
                 # Convert Record to dict
                 data = dict(row)
-                # Handle JSONB fields if they are strings (asyncpg might return dict directly if jsonb)
-                if isinstance(data.get("result"), str):
-                    try:
-                        data["result"] = json.loads(data["result"])
-                    except:
-                        pass
+                data["result"] = await DocumentStorageService.load_summary_result(
+                    data.get("result_object_path")
+                )
                 if isinstance(data.get("metadata"), str):
                     try:
                         data["metadata"] = json.loads(data["metadata"])
@@ -395,12 +457,8 @@ class DatabaseManager:
         meeting_id: str,
         transcript: str,
         timestamp: str,
-        summary: str = "",
-        action_items: str = "",
-        key_points: str = "",
         audio_start_time: float = None,
         audio_end_time: float = None,
-        duration: float = None,
         source: str = "live",
         speaker: str = None,
         speaker_confidence: float = None,
@@ -412,19 +470,15 @@ class DatabaseManager:
                 await conn.execute(
                     """
                     INSERT INTO transcript_segments (
-                        meeting_id, transcript, timestamp, summary, action_items, key_points,
-                        audio_start_time, audio_end_time, duration, source, speaker, speaker_confidence
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        meeting_id, transcript, timestamp,
+                        audio_start_time, audio_end_time, source, speaker, speaker_confidence
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                     meeting_id,
                     transcript,
                     timestamp,
-                    summary,
-                    action_items,
-                    key_points,
                     audio_start_time,
                     audio_end_time,
-                    duration,
                     source,
                     speaker,
                     speaker_confidence,
@@ -447,12 +501,8 @@ class DatabaseManager:
                         meeting_id,
                         t.text,
                         t.timestamp,
-                        "",  # summary
-                        "",  # action_items
-                        "",  # key_points
                         t.audio_start_time,
                         t.audio_end_time,
-                        t.duration,
                         "web_client",  # source
                         None,  # speaker
                         None,  # speaker_confidence
@@ -463,9 +513,9 @@ class DatabaseManager:
                 await conn.executemany(
                     """
                     INSERT INTO transcript_segments (
-                        meeting_id, transcript, timestamp, summary, action_items, key_points,
-                        audio_start_time, audio_end_time, duration, source, speaker, speaker_confidence
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        meeting_id, transcript, timestamp,
+                        audio_start_time, audio_end_time, source, speaker, speaker_confidence
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
                     data,
                 )
@@ -512,6 +562,16 @@ class DatabaseManager:
 
                     # Calculate confidence metrics from content
                     confidence_metrics = self._calculate_confidence_metrics(content)
+                    storage_meta = await DocumentStorageService.save_transcript_version(
+                        meeting_id=meeting_id,
+                        version_num=version_num,
+                        source=source,
+                        content=content,
+                        is_authoritative=is_authoritative,
+                        created_by=created_by,
+                        alignment_config=alignment_config,
+                        confidence_metrics=confidence_metrics,
+                    )
 
                     # If making this authoritative, demote previous
                     if is_authoritative:
@@ -525,21 +585,24 @@ class DatabaseManager:
                         )
 
                     # Insert new version
-                    await conn.execute(
-                        """
-                        INSERT INTO transcript_versions (
-                            meeting_id, version_num, source, content_json,
-                            is_authoritative, created_by, alignment_config, confidence_metrics
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        await conn.execute(
+                            """
+                            INSERT INTO transcript_versions (
+                            meeting_id, version_num, source,
+                            is_authoritative, created_by, alignment_config, confidence_metrics,
+                            content_object_path, content_sha256, content_byte_size
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                         meeting_id,
                         version_num,
                         source,
-                        json.dumps(content, default=str),  # Handle datetimes
                         is_authoritative,
                         created_by,
                         json.dumps(alignment_config or {}),
                         json.dumps(confidence_metrics),
+                        storage_meta["path"],
+                        storage_meta["sha256"],
+                        storage_meta["byte_size"],
                     )
 
                     logger.info(
@@ -631,9 +694,9 @@ class DatabaseManager:
     ) -> Optional[List[Dict]]:
         """Get the content of a specific transcript version."""
         async with self._get_connection() as conn:
-            content_json = await conn.fetchval(
+            row = await conn.fetchrow(
                 """
-                SELECT content_json
+                SELECT content_object_path
                 FROM transcript_versions
                 WHERE meeting_id = $1 AND version_num = $2
             """,
@@ -641,10 +704,12 @@ class DatabaseManager:
                 version_num,
             )
 
-            if content_json:
-                if isinstance(content_json, str):
-                    return json.loads(content_json)
-                return content_json
+            if row:
+                object_path = row["content_object_path"]
+                if object_path:
+                    return await DocumentStorageService.load_transcript_version_content(
+                        object_path
+                    )
             return None
 
     async def delete_transcript_version(
@@ -704,7 +769,7 @@ class DatabaseManager:
                 # Get transcripts
                 transcripts = await conn.fetch(
                     """
-                    SELECT id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, speaker_confidence, source, alignment_state
+                    SELECT id, transcript, timestamp, audio_start_time, audio_end_time, speaker, speaker_confidence, source, alignment_state
                     FROM transcript_segments
                     WHERE meeting_id = $1
                       AND (source IS NULL OR source != 'diarized')
@@ -731,7 +796,6 @@ class DatabaseManager:
                             "timestamp": t["timestamp"],
                             "audio_start_time": t["audio_start_time"],
                             "audio_end_time": t["audio_end_time"],
-                            "duration": t["duration"],
                             "speaker": t["speaker"],
                             "speaker_confidence": t["speaker_confidence"],
                             "source": t["source"],
@@ -750,13 +814,17 @@ class DatabaseManager:
             async with self._get_connection() as conn:
                 row = await conn.fetchrow(
                     """
-                    SELECT transcript_text
+                    SELECT transcript_object_path
                     FROM full_transcripts
                     WHERE meeting_id = $1
                 """,
                     meeting_id,
                 )
-                return row["transcript_text"] if row else None
+                if not row:
+                    return None
+                return await DocumentStorageService.load_full_transcript_text(
+                    row["transcript_object_path"]
+                )
         except Exception as e:
             logger.error(f"Error getting full transcript: {str(e)}")
             return None
@@ -885,12 +953,9 @@ class DatabaseManager:
 
         column_name = provider_map[provider]
 
+        encrypted_key = encrypt_key(api_key)
         try:
             async with self._get_connection() as conn:
-                # Check if row exists, if not insert default, then update
-                # Or just Upsert with COALESCE for other fields?
-                # Simpler: Upsert a new row if not exists, then update specific column
-
                 # Ensure row 1 exists
                 await conn.execute("""
                     INSERT INTO settings (id, provider, model, whisperModel)
@@ -899,13 +964,11 @@ class DatabaseManager:
                 """)
 
                 # Update specific key
-                # Note: We can't use dynamic column name in execute params, must be f-string safely
-                # column_name is from a safe whitelist above.
                 await conn.execute(
                     f"""
                     UPDATE settings SET "{column_name}" = $1 WHERE id = '1'
                 """,
-                    api_key,
+                    encrypted_key,
                 )
 
                 logger.info(f"Successfully saved API key for provider: {provider}")
@@ -939,7 +1002,7 @@ class DatabaseManager:
             val = await conn.fetchval(
                 f"SELECT \"{column_name}\" FROM settings WHERE id = '1'"
             )
-            return val if val else ""
+            return decrypt_key(val) if val else ""
 
     async def save_user_api_key(self, user_email: str, provider: str, api_key: str):
         """Save an encrypted API key for a specific user."""
@@ -1410,6 +1473,7 @@ class DatabaseManager:
     async def save_calendar_oauth_state(
         self, state: str, user_email: str, code_verifier: str, expires_at: datetime
     ):
+        encrypted_verifier = encrypt_key(code_verifier)
         async with self._get_connection() as conn:
             await conn.execute(
                 """
@@ -1418,7 +1482,7 @@ class DatabaseManager:
             """,
                 state,
                 user_email,
-                code_verifier,
+                encrypted_verifier,
                 expires_at,
                 datetime.utcnow(),
             )
@@ -1447,7 +1511,7 @@ class DatabaseManager:
                 return {
                     "state": row["state"],
                     "user_email": row["user_email"],
-                    "code_verifier": row["code_verifier"],
+                    "code_verifier": decrypt_key(row["code_verifier"]),
                 }
 
     async def upsert_calendar_integration(
@@ -2349,6 +2413,96 @@ class DatabaseManager:
                 meeting_id,
             )
 
+    async def delete_old_recording_chunks(self, days: int = 3):
+        """Purge old operational data and recording chunks"""
+        try:
+            async with self._get_connection() as conn:
+                # 1. recording_chunks
+                await conn.execute(
+                    """
+                    DELETE FROM recording_chunks
+                    WHERE session_id IN (
+                        SELECT session_id FROM recording_sessions 
+                        WHERE status IN ('finalized', 'failed', 'completed')
+                        AND updated_at < NOW() - ($1 || ' days')::interval
+                    )
+                    """,
+                    str(days),
+                )
+                
+                # 2. diarization_chunk_jobs (Purge after 1 day)
+                await conn.execute(
+                    """
+                    DELETE FROM diarization_chunk_jobs
+                    WHERE created_at < NOW() - interval '1 day'
+                """
+                )
+
+                # 3. calendar_reminder_deliveries (Purge after 14 days)
+                await conn.execute(
+                    """
+                    DELETE FROM calendar_reminder_deliveries
+                    WHERE sent_at < NOW() - interval '14 days'
+                """
+                )
+
+                # 4. calendar_events (Purge past events after 1 day)
+                await conn.execute(
+                    """
+                    DELETE FROM calendar_events
+                    WHERE end_time < NOW() - interval '1 day'
+                """
+                )
+
+                logger.info(f"Cleanup performed: Purged old operational data older than {days} days")
+        except Exception as e:
+            logger.error(f"Error in data cleanup: {str(e)}")
+
+    async def upsert_meeting_credit_usage(
+        self,
+        meeting_id: str,
+        user_email: str,
+        credits_used_delta: int,
+        balance_after: Optional[int] = None,
+        finalize: bool = False,
+    ) -> None:
+        if not meeting_id or not user_email or credits_used_delta <= 0:
+            return
+
+        async with self._get_connection() as conn:
+            # Check if meeting exists first to avoid FK violation
+            exists = await conn.fetchval("SELECT 1 FROM meetings WHERE id = $1", meeting_id)
+            if not exists:
+                logger.warning(f"Skipping meeting_credit_usage update: meeting {meeting_id} not found in meetings table")
+                return
+
+            await conn.execute(
+                """
+                INSERT INTO meeting_credit_usage (
+                    meeting_id, user_email, credits_used, last_balance_after,
+                    started_at, ended_at, created_at, updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, CURRENT_TIMESTAMP,
+                    CASE WHEN $5 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (meeting_id, user_email) DO UPDATE SET
+                    credits_used = meeting_credit_usage.credits_used + EXCLUDED.credits_used,
+                    last_balance_after = COALESCE(EXCLUDED.last_balance_after, meeting_credit_usage.last_balance_after),
+                    ended_at = CASE
+                        WHEN $5 THEN CURRENT_TIMESTAMP
+                        ELSE meeting_credit_usage.ended_at
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                meeting_id,
+                user_email,
+                int(credits_used_delta),
+                balance_after,
+                finalize,
+            )
+
     async def upsert_diarization_chunk_job(
         self,
         meeting_id: str,
@@ -2361,10 +2515,16 @@ class DatabaseManager:
         error_message: Optional[str] = None,
         result_json: Optional[Dict] = None,
     ):
-        now = datetime.utcnow()
-        started_at = now if status == "processing" else None
-        completed_at = now if status in ("completed", "failed") else None
         async with self._get_connection() as conn:
+            # Check if meeting exists first to avoid FK violation
+            exists = await conn.fetchval("SELECT 1 FROM meetings WHERE id = $1", meeting_id)
+            if not exists:
+                logger.warning(f"Skipping diarization_chunk_job update: meeting {meeting_id} not found in meetings table")
+                return
+
+            now = datetime.utcnow()
+            started_at = now if status == "processing" else None
+            completed_at = now if status in ("completed", "failed") else None
             await conn.execute(
                 """
                 INSERT INTO diarization_chunk_jobs (
@@ -2470,10 +2630,10 @@ class DatabaseManager:
                 # 2. Search full_transcripts table
                 chunk_rows = await conn.fetch(
                     """
-                    SELECT m.id, m.title, ft.transcript_text
+                    SELECT m.id, m.title, ft.transcript_preview
                     FROM meetings m
                     JOIN full_transcripts ft ON m.id = ft.meeting_id
-                    WHERE LOWER(ft.transcript_text) LIKE $1
+                    WHERE LOWER(COALESCE(ft.transcript_preview, '')) LIKE $1
                     AND m.id NOT IN (SELECT DISTINCT meeting_id FROM transcript_segments WHERE LOWER(transcript) LIKE $2)
                     ORDER BY m.created_at DESC
                 """,
@@ -2508,7 +2668,7 @@ class DatabaseManager:
                     results.append(format_match(row, "transcript"))
 
                 for row in chunk_rows:
-                    results.append(format_match(row, "transcript_text"))
+                    results.append(format_match(row, "transcript_preview"))
 
                 return results
 
@@ -2741,3 +2901,51 @@ class DatabaseManager:
                 user_email.strip().lower(),
                 now,
             )
+
+    async def save_user_encryption_key(self, user_email: str, public_key: str):
+        """Save the user's public encryption key (SPKI format)"""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_credits SET encryption_public_key = $1 WHERE user_email = $2",
+                public_key,
+                user_email.strip().lower(),
+            )
+
+    async def delete_user_encryption_key(self, user_email: str):
+        """Clear the user's encryption key"""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_credits SET encryption_public_key = NULL WHERE user_email = $1",
+                user_email.strip().lower(),
+            )
+    async def get_user_encryption_enabled(self, user_email: str) -> bool:
+        """Check if encryption is enabled for a user"""
+        async with self._get_connection() as conn:
+            row = await conn.fetchval(
+                "SELECT encryption_enabled FROM user_credits WHERE user_email = $1",
+                user_email,
+            )
+            return bool(row)
+
+    async def set_user_encryption_enabled(self, user_email: str, enabled: bool):
+        """Update encryption enabled status for a user"""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_credits SET encryption_enabled = $1 WHERE user_email = $2",
+                enabled,
+                user_email,
+            )
+
+    async def get_user_credits(self, user_email: str) -> Optional[Dict[str, Any]]:
+        """Get credit and encryption info for a user"""
+        async with self._get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT weekly_quota, purchased_credits, admin_bonus_credits, 
+                       is_unlimited, encryption_enabled, encryption_public_key
+                FROM user_credits 
+                WHERE user_email = $1
+                """,
+                user_email.strip().lower(),
+            )
+            return dict(row) if row else None

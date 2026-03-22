@@ -9,7 +9,7 @@ graph TD
     A[User Types Message] --> B[Frontend React State]
     B --> C[Backend API]
     C --> D{Storage Decision}
-    D -->|Meeting Data| E[(SQLite DB)]
+    D -->|Meeting Data| E[(Postgres DB)]
     D -->|Embeddings| F[(ChromaDB)]
     D -->|Chat History| G[In-Memory Only]
     
@@ -20,7 +20,7 @@ graph TD
 
 ---
 
-## 📦 Layer 1: SQLite Database (Persistent)
+## 📦 Layer 1: PostgreSQL Database (Persistent)
 
 **Location**: `/app/data/meeting_minutes.db` (inside Docker)
 
@@ -121,7 +121,7 @@ sequenceDiagram
     participant U as User
     participant FE as Frontend (React)
     participant BE as Backend (FastAPI)
-    participant DB as SQLite
+    participant DB as Postgres
     participant VDB as ChromaDB
     participant LLM as Groq API
 
@@ -287,7 +287,7 @@ results = collection.query(
 
 | Data Type | Storage | Persists After | Limit |
 |-----------|---------|----------------|-------|
-| **Meeting Transcripts** | SQLite | Forever | Disk space |
+| **Meeting Transcripts** | Postgres | Forever | Disk space |
 | **Embeddings** | ChromaDB | Forever | Disk space |
 | **Chat Conversations** | React State | Page refresh | 50 messages |
 | **Linked Meeting IDs** | React State | Page refresh | Unlimited |
@@ -350,7 +350,7 @@ CREATE TABLE chat_messages (
 - ❌ NOT all 38 meetings (only what you link)
 
 **Data Retention**:
-- **Local (Your Server)**: Forever in SQLite + ChromaDB
+- **Local (Your Server)**: Forever in Postgres + ChromaDB
 - **Groq Cloud**: 30 days (their policy), then deleted
 - **Chat History**: Browser session only (not sent to Groq in future requests)
 
@@ -370,7 +370,7 @@ CREATE TABLE chat_messages (
 
 ## 🎯 Key Takeaways
 
-1. **Three Storage Layers**: SQLite (transcripts), ChromaDB (embeddings), React (chat)
+1. **Three Storage Layers**: Postgres (transcripts), ChromaDB (embeddings), React (chat)
 2. **Chat Memory Limit**: 10 messages, in-memory only
 3. **Token Budget**: ~2,500 tokens for context, ~4,000 for response
 4. **Search Limit**: Top 5 chunks from linked meetings

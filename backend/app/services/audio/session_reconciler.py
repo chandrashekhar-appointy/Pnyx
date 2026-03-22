@@ -38,6 +38,9 @@ class AudioSessionReconciler:
         self.repair_lookback_hours = int(
             os.getenv("AUDIO_SESSION_REPAIR_LOOKBACK_HOURS", "24")
         )
+        self.cleanup_chunks_days = int(
+            os.getenv("AUDIO_SESSION_CLEANUP_CHUNKS_DAYS", "3")
+        )
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
@@ -118,6 +121,12 @@ class AudioSessionReconciler:
 
         if self.repair_enabled:
             await self._repair_recent_sessions()
+
+        if self.cleanup_chunks_days > 0:
+            try:
+                await self.db.delete_old_recording_chunks(days=self.cleanup_chunks_days)
+            except Exception as exc:
+                logger.error("[AudioReconciler] Failed purging old chunks: %s", exc)
 
     async def _repair_recent_sessions(self):
         started_after = datetime.utcnow() - timedelta(hours=self.repair_lookback_hours)

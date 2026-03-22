@@ -13,9 +13,13 @@ import {
   appendStreamingTranscript,
   getPersistentRecordingClient,
   setPersistentRecordingClient,
+  setPartialTranscript,
 } from '@/lib/recordingSessionStore';
 import { GroqApiKeyDialog } from './GroqApiKeyDialog';
 import { authFetch } from '@/lib/api';
+import { KeyManager } from '@/lib/crypto/key_manager';
+import { MeetingJournal } from '@/lib/audio-streaming/MeetingJournal';
+import { toast } from 'sonner';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -146,8 +150,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           onContextApplied?.(applied);
         }
       },
-      onPartial: () => {
-        // Partial transcripts are intentionally ignored in the UI.
+      onPartial: (text: string) => {
+        setPartialTranscript(text);
       },
       onGuardrailAlert: (alert: NonNullable<Parameters<NonNullable<typeof onGuardrailAlert>>[0]>) => {
         if (!storeOnly) {
@@ -205,6 +209,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           segment_finalize_latency_seconds: metadata?.segment_finalize_latency_seconds,
           boundary_score: metadata?.boundary_score,
         });
+
+        // E2EE: Save to local IndexedDB
+        if (initialSessionId || audioClientRef.current?.getSessionId()) {
+          const mid = initialSessionId || audioClientRef.current?.getSessionId() || 'unknown';
+          MeetingJournal.saveSegment({
+            meetingId: mid,
+            index: Date.now(), // or a proper counter
+            text,
+            startTime: timing?.start || 0
+          });
+        }
       },
       onError: (error: Error, code?: string) => {
         console.error('❌ Streaming error:', error, 'Code:', code);
@@ -321,6 +336,21 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     startAckHandledRef.current = false;
 
     try {
+      // E2EE: Ensure Key Pair exists
+      let keys = await KeyManager.getKeyPair();
+      if (!keys) {
+        console.log('🔐 Generating new E2EE Key Pair...');
+        keys = await KeyManager.generateKeyPair();
+        await KeyManager.storeKeyPair(keys);
+        
+        // Send Public Key to server
+        const spki = await KeyManager.exportPublicKey(keys.publicKey);
+        await authFetch('/api/user/encryption-key', {
+          method: 'POST',
+          body: JSON.stringify({ public_key: spki })
+        });
+      }
+
       // Create new streaming audio client (uses Groq Whisper)
       const client = new AudioStreamClient(wsUrl);
       audioClientRef.current = client;
@@ -343,11 +373,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         throw new Error('Authentication is still initializing. Please try again in a moment.');
       }
 
+      // Encryption check is now handled on-demand in settings
+      // and enforced on the backend during finalization.
+
       await client.start(buildStreamingCallbacks(), stableSessionId, stableSessionId, authToken);
 
       console.log('✅ Real-time streaming started');
-
-      Analytics.trackButtonClick('start_recording_streaming', 'recording_controls');
     } catch (error) {
       console.error('❌ Failed to start streaming transcription:', error);
 
@@ -432,12 +463,36 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsStopping(true);
 
     try {
-      // Stop the streaming audio client
-      await audioClientRef.current?.stop();
+      // E2EE: Trigger encrypted finalization
+      const currentClient = audioClientRef.current;
+      const mid = initialSessionId || currentClient?.getSessionId();
+      
+      await currentClient?.stop();
       audioClientRef.current = null;
       setPersistentRecordingClient(null);
       onHostClientReady?.(null);
       console.log('✅ Streaming stopped');
+
+      if (mid) {
+        const segments = await MeetingJournal.getTranscript(mid);
+        if (segments.length > 0) {
+          console.log('🔐 Sending encrypted finalization payload...');
+          await authFetch(`/api/audio/meetings/${mid}/finalize-encrypted`, {
+            method: 'POST',
+            body: JSON.stringify({
+              meeting_id: mid,
+              transcript_segments: segments.map(s => ({
+                meetingId: s.meetingId,
+                index: s.index,
+                text: s.text,
+                startTime: s.startTime
+              }))
+            })
+          });
+          // Optional: Clear journal after success
+          // await MeetingJournal.clearMeeting(mid);
+        }
+      }
 
       setIsProcessing(false);
       onRecordingStop(true);

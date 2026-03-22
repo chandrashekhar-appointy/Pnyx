@@ -12,6 +12,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import Analytics from '@/lib/analytics';
+import { toast } from 'sonner';
 
 export function CalendarConnectPrompt() {
   const { data: session, status } = useSession();
@@ -51,6 +53,10 @@ export function CalendarConnectPrompt() {
                 });
                 
                 if (syncRes.ok) {
+                  await Analytics.trackCalendarConnectCompleted({
+                    source: 'nextauth_sync',
+                    provider: 'google',
+                  });
                   console.log('Calendar synced successfully!');
                   setIsLoading(false);
                   return; // Don't show modal
@@ -79,6 +85,11 @@ export function CalendarConnectPrompt() {
 
   const handleConnect = async () => {
     try {
+      await Analytics.trackCalendarConnectStarted({
+        source: 'calendar_connect_prompt',
+        provider: 'google',
+        request_write_scope: false,
+      });
       const response = await authFetch('/api/calendar/google/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,6 +105,9 @@ export function CalendarConnectPrompt() {
       throw new Error('Calendar OAuth response missing authorization URL');
     } catch (error) {
       console.error('Failed to connect calendar:', error);
+      toast.error('Failed to connect calendar', {
+        description: error instanceof Error ? error.message : 'Please try again later',
+      });
     }
   };
 

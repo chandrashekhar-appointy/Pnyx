@@ -1928,6 +1928,7 @@ async def get_summary(meeting_id: str, current_user: User = Depends(get_current_
                     "prompt_version": metadata.get("notes_prompt_version"),
                     "diarized_available": diarized_available,
                     "recommend_regenerate_with_diarized": recommend_regenerate_with_diarized,
+                    "encryption": metadata.get("encryption"),
                 },
             }
         )

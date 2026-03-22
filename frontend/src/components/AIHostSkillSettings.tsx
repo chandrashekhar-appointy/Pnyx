@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface StyleItem {
   id: string;
@@ -29,6 +30,7 @@ export function AIHostSkillSettings() {
   const [draftMarkdown, setDraftMarkdown] = useState('');
   const [draftActive, setDraftActive] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  const hasTrackedAskBeforeMeetingRef = useRef(false);
   const [askBeforeMeeting, setAskBeforeMeeting] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('ai_host_ask_before_meeting') === 'true';
@@ -67,6 +69,11 @@ export function AIHostSkillSettings() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem('ai_host_ask_before_meeting', askBeforeMeeting ? 'true' : 'false');
+    if (!hasTrackedAskBeforeMeetingRef.current) {
+      hasTrackedAskBeforeMeetingRef.current = true;
+      return;
+    }
+    Analytics.trackSettingsChanged('ai_host_ask_before_meeting', askBeforeMeeting ? 'enabled' : 'disabled');
   }, [askBeforeMeeting]);
 
   useEffect(() => {
@@ -104,6 +111,7 @@ export function AIHostSkillSettings() {
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.detail || 'Failed to create style');
         }
+        await Analytics.trackSettingsChanged('ai_host_style_created', draftName || 'custom');
         toast.success('Custom AI Participant style created');
       } else if (selectedStyle && selectedStyle.source === 'user') {
         const res = await authFetch(`/api/user/ai-host-styles/${selectedStyle.id}`, {
@@ -118,6 +126,7 @@ export function AIHostSkillSettings() {
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.detail || 'Failed to update style');
         }
+        await Analytics.trackSettingsChanged('ai_host_style_updated', selectedStyle.id);
         toast.success('Custom AI Participant style updated');
       }
       await loadStyles();
@@ -145,6 +154,7 @@ export function AIHostSkillSettings() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.detail || 'Failed to set default style');
       }
+      await Analytics.trackSettingsChanged('ai_host_default_style', styleId);
       toast.success('Default AI Participant style updated');
       await loadStyles();
     } catch (error) {
@@ -166,6 +176,7 @@ export function AIHostSkillSettings() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.detail || 'Failed to delete style');
       }
+      await Analytics.trackSettingsChanged('ai_host_style_deleted', selectedStyle.id);
       toast.success('Custom AI Participant style deleted');
       await loadStyles();
     } catch (error) {

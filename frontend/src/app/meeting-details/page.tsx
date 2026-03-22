@@ -107,6 +107,15 @@ function MeetingDetailsContent() {
       const response = await authFetch(url);
       
       if (!response.ok) {
+        if (!isShared && response.status === 404) {
+          setMeetingDetails(null);
+          setMeetingSummary(null);
+          setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
+          await refetchMeetings();
+          router.replace('/');
+          router.refresh();
+          return;
+        }
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
@@ -138,9 +147,10 @@ function MeetingDetailsContent() {
       }
     } catch (error) {
       console.error('Error fetching meeting details:', error);
+      setMeetingDetails(null);
       setError("Failed to load meeting details");
     }
-  }, [meetingId, setCurrentMeeting, serverAddress, searchParams]);
+  }, [meetingId, setCurrentMeeting, serverAddress, searchParams, refetchMeetings, router]);
 
     const fetchMeetingSummary = useCallback(async () => {
     if (!meetingId || meetingId === 'intro-call' || !serverAddress) return;

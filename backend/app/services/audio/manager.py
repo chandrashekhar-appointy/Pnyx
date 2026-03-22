@@ -434,6 +434,7 @@ class StreamingTranscriptionManager:
         on_partial: Optional[Callable] = None,
         on_final: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
+        on_before_transcription: Optional[Callable] = None,
     ):
         """
         Process incoming audio chunk with client-provided timestamp for precision.
@@ -445,6 +446,9 @@ class StreamingTranscriptionManager:
             on_partial: Callback for partial transcripts
             on_final: Callback for final transcripts
             on_error: Callback for error messages
+            on_before_transcription: Optional async callback invoked once per
+                                   actual transcription request. Return False
+                                   to skip the provider call.
         """
         # Calculate chunk duration early so timestamp normalization can use it.
         # 16kHz, 16-bit (2 bytes) = 32000 bytes/sec
@@ -628,6 +632,11 @@ class StreamingTranscriptionManager:
                 # Get window and transcribe
                 window_bytes = self.buffer.get_window_bytes()
                 self.last_transcription_time = current_time
+
+                if on_before_transcription:
+                    should_transcribe = await on_before_transcription()
+                    if should_transcribe is False:
+                        return
 
                 # Transcribe with AsyncGroq — no thread pool needed.
                 prompt = self._construct_prompt()
@@ -905,12 +914,22 @@ class StreamingTranscriptionManager:
         hallucinations = {
             "you",
             "thank you.",
+            "thank you",
+            "thanks.",
+            "thanks",
+            "bye.",
+            "bye",
+            "goodbye.",
+            "goodbye",
+            "see you next time.",
             "thanks for watching",
+            "thanks for watching.",
             "watching",
             "subtitles by",
             "amara.org",
             "mbc",
             "foreign",
+            "foreign.",
             "so machen wir government",
             "so machen wir",
             "sous-titrage",
@@ -999,15 +1018,14 @@ class StreamingTranscriptionManager:
             self.last_partial_text = text
 
         # Emit partial
-        # REMOVED: User requested no partial transcription
-        # if on_partial:
-        #     await on_partial(
-        #         {
-        #             "text": text,
-        #             "confidence": confidence,
-        #             "is_stable": self.same_text_count >= 2,
-        #         }
-        #     )
+        if on_partial:
+            await on_partial(
+                {
+                    "text": text,
+                    "confidence": confidence,
+                    "is_stable": self.same_text_count >= 2,
+                }
+            )
 
         # SMART TIMER TRIGGER LOGIC
         is_complete_sentence = self._is_complete_sentence(text)

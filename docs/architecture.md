@@ -37,7 +37,7 @@ Meeting Co-Pilot is a web-based collaborative meeting assistant. It combines a F
 │       │                                                                  │
 │       ↓                                                                  │
 │  ┌─────────┐  ┌──────────┐                                              │
-│  │ SQLite  │  │ Partial/ │                                              │
+│  │ Postgres│  │ Partial/ │                                              │
 │  │ Storage │  │ Final    │ → WebSocket JSON response to browser         │
 │  └─────────┘  └──────────┘                                              │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -64,7 +64,7 @@ Meeting Co-Pilot is a web-based collaborative meeting assistant. It combines a F
 * **SimpleVAD**: Amplitude-based voice activity detection (threshold 0.08).
 * **RollingAudioBuffer**: 6-second window with 5-second slide (1s overlap).
 * **GroqTranscriptionClient**: Sends audio to Groq Whisper API (whisper-large-v3).
-* **Database**: SQLite for meeting metadata, transcripts, and summaries.
+* **Database**: PostgreSQL for meeting metadata, transcripts, and summaries.
 * **LLM Integration**: pydantic-ai for Claude, OpenAI, Groq, and Ollama.
 
 **Key Files**:
@@ -158,7 +158,7 @@ def _remove_overlap(self, new_text: str) -> str:
 
 ### Backend
 - **Framework**: FastAPI (Python 3.11+)
-- **Database**: SQLite (aiosqlite)
+- **Database**: PostgreSQL (asyncpg)
 - **Transcription**: Groq Whisper Large v3 API
 - **Audio Processing**: SimpleVAD + RollingAudioBuffer
 - **LLM**: pydantic-ai (Claude, OpenAI, Groq, Ollama)

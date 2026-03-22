@@ -185,6 +185,8 @@ export default function Home() {
     setRecordingElapsedSeconds,
     audioTimelineOffsetSeconds,
     setAudioTimelineOffsetSeconds,
+    partialTranscript,
+    setPartialTranscript,
   } = usePersistentRecordingSession();
 
   const [showSummary, setShowSummary] = useState(false);
@@ -303,6 +305,12 @@ export default function Home() {
         }
 
         const ageMinutes = (Date.now() - latest.timestamp) / 1000 / 60;
+        Analytics.trackRecordingRecoveryDetected({
+          recovery_id: recoveredId,
+          pending_count: pending.length,
+          age_minutes: Math.round(ageMinutes),
+          auto_restore_candidate: ageMinutes < 5,
+        });
 
         // If backup is fresh (< 5 mins), auto-restore seamlessly
         if (ageMinutes < 5) {
@@ -318,6 +326,11 @@ export default function Home() {
 
           toast.success('Session Restored', {
             description: 'Your meeting context has been automatically restored.'
+          });
+          Analytics.trackRecordingRecoveryRestored({
+            recovery_id: recoveredId,
+            source: 'auto',
+            transcript_count: latest.transcripts.length,
           });
         } else {
           // Old backup: Prompt user
@@ -393,6 +406,11 @@ export default function Home() {
     const recoveredId = data.sessionId || data.meetingId;
     setPendingRecoveryId(recoveredId);
     setCurrentSessionId(recoveredId);
+    Analytics.trackRecordingRecoveryRestored({
+      recovery_id: recoveredId,
+      source: 'manual',
+      transcript_count: data.transcripts.length,
+    });
     toast.success('Restored unsaved meeting', { description: 'Please try saving again.' });
   };
 
@@ -419,6 +437,7 @@ export default function Home() {
   const meetingTitleRef = useRef<string>(meetingTitle);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
   const pendingRecoveryIdRef = useRef<string | null>(pendingRecoveryId);
+  const trackedMeetingStartRef = useRef<string | null>(null);
   const audioTimelineOffsetRef = useRef<number>(audioTimelineOffsetSeconds);
 
   const isUserAtBottomRef = useRef<boolean>(true);
@@ -877,6 +896,11 @@ export default function Home() {
   }, []);
 
   const handleHostSuggestion = useCallback((suggestion: AIHostSuggestion) => {
+    Analytics.trackAIParticipantInteraction('suggestion_received', {
+      suggestion_id: suggestion.id,
+      event_type: suggestion.event_type,
+      confidence: suggestion.confidence,
+    });
     setHostSuggestionQueue((prev) => {
       const deduped = prev.filter((item) => item.id !== suggestion.id);
       return [suggestion, ...deduped].slice(0, 8);
@@ -904,6 +928,9 @@ export default function Home() {
   }, []);
 
   const pinHostSuggestion = useCallback((suggestionId: string) => {
+    Analytics.trackAIParticipantInteraction('suggestion_pinned', {
+      suggestion_id: suggestionId,
+    });
     setHostSuggestionQueue((prev) => {
       let matched: AIHostSuggestion | null = null;
       const next = prev.filter((item) => {
@@ -925,6 +952,9 @@ export default function Home() {
   }, []);
 
   const dismissHostSuggestion = useCallback((suggestionId: string) => {
+    Analytics.trackAIParticipantInteraction('suggestion_dismissed', {
+      suggestion_id: suggestionId,
+    });
     setHostSuggestionQueue((prev) => prev.filter((item) => item.id !== suggestionId));
     hostClientRef.current?.dismissHostSuggestion(suggestionId);
   }, []);
@@ -1341,7 +1371,6 @@ export default function Home() {
       }
 
       setIsMeetingActive(true);
-      Analytics.trackButtonClick('start_recording', 'home_page');
 
       // Show recording notification if enabled
       await showRecordingNotification();
@@ -1447,6 +1476,16 @@ export default function Home() {
       const meetingId = data.meeting_id;
 
       console.log('✅ [Web Audio] Meeting saved with ID:', meetingId);
+      await Analytics.trackMeetingSaved(meetingId, {
+        transcript_count: freshTranscripts.length,
+        template_id: defaultTemplate,
+        title_length: (meetingTitle || 'Web Audio Meeting').length,
+        recovered_session: Boolean(pendingRecoveryIdRef.current || pendingRecoveryId),
+      });
+      await Analytics.trackMeetingCompleted(meetingId, {
+        transcript_count: freshTranscripts.length,
+        template_id: defaultTemplate,
+      });
 
       // Store transcript for LLM post-processing
       const fullTranscript = freshTranscripts.map(t => t.text).join('\n');
@@ -1467,6 +1506,15 @@ export default function Home() {
         title: meetingTitle || 'Web Audio Meeting'
       });
 
+      // Reset persistent live-session state after a successful save so
+      // returning to the home page starts from a clean slate.
+      setPartialTranscript('');
+      setTranscripts([]);
+      setMeetingTitle('+ New Call');
+      setRecordingElapsedSeconds(0);
+      setAudioTimelineOffsetSeconds(0);
+      setIsPaused(false);
+
       toast.success('Recording saved! Generating meeting notes...', {
         description: `Notes are being generated automatically based on ${defaultTemplate} template.`,
         duration: 5000,
@@ -1483,6 +1531,11 @@ export default function Home() {
       console.error('❌ [Web Audio] Failed to save meeting:', error);
 
       if (error instanceof AuthError) {
+        await Analytics.trackMeetingSaveFailed({
+          reason: 'auth_error',
+          title_length: (meetingTitle || 'Untitled Meeting').length,
+          transcript_count: transcriptsRef.current.length,
+        });
         // Save to recovery
         const freshTranscripts = transcriptsRef.current;
         const recoveryId = currentSessionIdRef.current || pendingRecoveryIdRef.current || `recovery-${Date.now()}`;
@@ -1505,6 +1558,11 @@ export default function Home() {
           duration: 10000
         });
       } else {
+        await Analytics.trackMeetingSaveFailed({
+          reason: error instanceof Error ? error.message : 'unknown_error',
+          title_length: (meetingTitle || 'Untitled Meeting').length,
+          transcript_count: transcriptsRef.current.length,
+        });
         toast.error('Failed to save recording', {
           description: error instanceof Error ? error.message : 'Unknown error'
         });
@@ -1749,14 +1807,26 @@ export default function Home() {
     setMeetingTitle(event.meeting_title);
     setCurrentMeeting({ id: currentMeeting?.id || 'intro-call', title: event.meeting_title });
     setShowCalendarPicker(false);
+    await Analytics.trackCalendarMeetingLinked({
+      calendar_event_id: event.event_id,
+      attendee_count: event.attendees?.length || 0,
+      has_meeting_link: Boolean(event.meeting_link),
+      source: 'meeting_start_picker',
+    });
     await syncMeetingTitleToBackend(event.meeting_title);
     toast.success(`Connected to ${event.meeting_title}`);
   }, [currentMeeting?.id, syncMeetingTitleToBackend]);
 
   const handleClearCalendarMeeting = useCallback(() => {
+    if (selectedCalendarEvent) {
+      Analytics.trackCalendarMeetingUnlinked({
+        calendar_event_id: selectedCalendarEvent.event_id,
+        source: 'meeting_start_picker',
+      });
+    }
     setSelectedCalendarEvent(null);
     toast.info('Calendar meeting disconnected');
-  }, []);
+  }, [selectedCalendarEvent]);
 
   const getSummaryStatusMessage = (status: SummaryStatus) => {
     switch (status) {
@@ -2029,6 +2099,13 @@ export default function Home() {
 
       const timeLabel = minutes ? `last ${minutes} minutes` : 'entire meeting';
       console.log(`[CatchUp] Summarizing ${timeLabel}: ${limitedTranscriptEntries.length} transcripts`);
+      await Analytics.trackCatchUpRequested(minutes, {
+        transcript_count: limitedTranscriptEntries.length,
+        meeting_elapsed_seconds: Math.max(
+          recordingElapsedSeconds,
+          getTranscriptElapsedSeconds(transcripts)
+        ),
+      });
 
       // The catch-up endpoint currently only supports gemini and groq
       const supportedProviders = ['gemini', 'groq'];
@@ -2827,6 +2904,7 @@ export default function Home() {
                 <div ref={transcriptContainerRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
                   <TranscriptView
                     transcripts={transcripts}
+                    partialTranscript={partialTranscript}
                     isRecording={isRecording}
                     isPaused={isPaused}
                     activeDuration={recordingElapsedSeconds}
@@ -2926,6 +3004,13 @@ export default function Home() {
                     meetingName={meetingTitle}
                     onSessionIdReceived={(sessionId) => {
                       setCurrentSessionId(sessionId);
+                      if (trackedMeetingStartRef.current !== sessionId) {
+                        trackedMeetingStartRef.current = sessionId;
+                        Analytics.trackMeetingStarted(
+                          sessionId,
+                          meetingTitle || 'Untitled Meeting'
+                        );
+                      }
                       // Upgrade temporary recovery ids once backend confirms live session id.
                       setPendingRecoveryId((prev) => {
                         if (!prev) return prev;

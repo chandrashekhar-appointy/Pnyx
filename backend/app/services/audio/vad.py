@@ -1,6 +1,6 @@
 """
 Simple Voice Activity Detection (VAD) based on audio amplitude.
-Fast and lightweight alternative to Silero VAD for MVP.
+Fast and lightweight alternative to Silero VAD.
 """
 
 import numpy as np
@@ -14,7 +14,7 @@ class SimpleVAD:
     Amplitude-based Voice Activity Detection.
 
     Detects speech by measuring audio energy/volume.
-    Fast and simple - perfect for MVP. Can upgrade to Silero later.
+    Fast and simple. Can upgrade to Silero later if more complexity is needed.
     """
 
     def __init__(self, threshold: float = 0.02, sample_rate: int = 16000):

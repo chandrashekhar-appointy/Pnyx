@@ -194,9 +194,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       // If not recording, navigate to home page and set flag to start recording automatically
       sessionStorage.setItem('autoStartRecording', 'true');
       router.push('/');
-
-      // Track recording initiation from sidebar
-      Analytics.trackButtonClick('start_recording', 'sidebar');
     }
     // The actual recording start/stop is handled in the Home component
   };

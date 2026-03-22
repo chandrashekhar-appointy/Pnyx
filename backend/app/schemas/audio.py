@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,3 +42,15 @@ class StreamingSessionHealthResponse(BaseModel):
     active_connections: int
     runtime: StreamingSessionRuntime = Field(default_factory=StreamingSessionRuntime)
     manager_stats: Dict[str, Any] = Field(default_factory=dict)
+
+class TranscriptSegment(BaseModel):
+    meetingId: str
+    index: int
+    text: str
+    speaker: Optional[str] = None
+    startTime: float
+
+class EncryptedFinalizeRequest(BaseModel):
+    meeting_id: str
+    transcript_segments: List[TranscriptSegment]
+    trigger_diarization: bool = False

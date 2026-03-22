@@ -5,6 +5,7 @@ import { Calendar, Link2, Unlink2 } from "lucide-react";
 import { authFetch } from "@/lib/api";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import Analytics from "@/lib/analytics";
 
 type CalendarStatus = {
   provider: string;
@@ -74,6 +75,10 @@ export function CalendarIntegrationSettings() {
     const params = new URLSearchParams(window.location.search);
     const calendarStatus = params.get("calendar");
     if (calendarStatus === "connected") {
+      Analytics.trackCalendarConnectCompleted({
+        source: "calendar_settings_callback",
+        provider: "google",
+      });
       toast.success("Google Calendar connected");
     } else if (calendarStatus === "error") {
       const reason = params.get("reason") || "unknown_error";
@@ -84,6 +89,11 @@ export function CalendarIntegrationSettings() {
   const handleConnect = async () => {
     try {
       setIsSubmitting(true);
+      await Analytics.trackCalendarConnectStarted({
+        source: "calendar_settings",
+        provider: "google",
+        request_write_scope: settings.writeback_enabled,
+      });
       const response = await authFetch("/api/calendar/google/connect", {
         method: "POST",
         body: JSON.stringify({ request_write_scope: settings.writeback_enabled }),
@@ -109,6 +119,7 @@ export function CalendarIntegrationSettings() {
         body: JSON.stringify({ provider: "google" }),
       });
       if (!response.ok) throw new Error("Failed to disconnect");
+      await Analytics.trackSettingsChanged("calendar_disconnected", "google");
       toast.success("Calendar disconnected");
       await loadData();
     } catch (error) {
@@ -127,6 +138,13 @@ export function CalendarIntegrationSettings() {
         body: JSON.stringify(settings),
       });
       if (!response.ok) throw new Error("Failed to save settings");
+      await Analytics.trackSettingsChanged("calendar_settings_saved", JSON.stringify({
+        reminders_enabled: settings.reminders_enabled,
+        attendee_reminders_enabled: settings.attendee_reminders_enabled,
+        reminder_offset_minutes: settings.reminder_offset_minutes,
+        recap_enabled: settings.recap_enabled,
+        writeback_enabled: settings.writeback_enabled,
+      }));
       toast.success("Calendar automation settings saved");
       await loadData();
     } catch (error) {
@@ -152,6 +170,9 @@ export function CalendarIntegrationSettings() {
         const detail = await response.text();
         throw new Error(detail || "Failed to send reminder");
       }
+      await Analytics.trackFeatureUsedEnhanced("calendar_test_reminder_sent", {
+        meeting_title_length: (testMeetingTitle || "Calendar Reminder Test").length,
+      });
       toast.success("Reminder email sent to your host email");
     } catch (error) {
       console.error("Failed to send test reminder:", error);

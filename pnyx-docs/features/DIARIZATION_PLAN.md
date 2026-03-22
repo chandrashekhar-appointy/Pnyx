@@ -147,7 +147,7 @@ graph TD
 | Feature | Original Plan | Implemented Architecture |
 | :--- | :--- | :--- |
 | **Transcription Source** | Deepgram Real-time | **Groq (Whisper Large v3)** for lower latency & higher accuracy. |
-| **Diarization Timing** | Post-Meeting | **Post-Meeting (Confirmed).** Real-time was deemed too expensive/complex for MVP. |
+| **Diarization Timing** | Post-Meeting | **Post-Meeting (Confirmed).** Real-time was deemed too expensive/complex for Initial Production Release. |
 | **Diarization Logic** | Native Provider Text | **Hybrid "Gold Standard":** Uses Whisper for text + Deepgram for speakers. |
 | **Audio Storage** | Single File | **Chunked PCM:** Better reliability against crashes. |
 | **VAD** | WebRTC VAD | **TenVAD / SileroVAD:** Significantly higher accuracy. |

@@ -55,7 +55,7 @@ Meeting Co-Pilot is a web-based collaborative meeting assistant forked from Meet
 Meeting Co-Pilot is a web-based application.
 - **Frontend**: Next.js (React) application with AudioWorklet for real-time audio capture.
 - **Backend**: Python FastAPI server with WebSocket streaming, VAD, and Groq Whisper API.
-- **Database**: SQLite for meeting storage.
+- **Database**: PostgreSQL for meeting storage.
 
 ## Installation
 

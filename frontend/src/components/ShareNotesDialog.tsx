@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface ShareNotesDialogProps {
   isOpen: boolean;
@@ -40,6 +41,11 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
       });
       
       if (res.ok) {
+        await Analytics.trackNotesShared('email', {
+          meeting_id: meetingId,
+          share_summary: shareSummary,
+          share_transcript: shareTranscript,
+        });
         toast.success('Notes shared successfully');
         if (onShared) onShared();
         onClose();

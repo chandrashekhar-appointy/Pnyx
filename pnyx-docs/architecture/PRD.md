@@ -77,7 +77,7 @@ The original vision was a "Google Docs for Meetings" — multi-user, real-time s
 **The Reality:** We have built a **"Super-Powered Recorder"** — a single-host tool that records, transcribes, and provides AI assistance.
 
 **Why the change?**
-1.  **Technical Complexity:** Real-time multi-user state sync (CRDTs/OT) was too high-risk for MVP.
+1.  **Technical Complexity:** Real-time multi-user state sync (CRDTs/OT) was too high-risk for Initial Production Release.
 2.  **Use Case Clarity:** 95% of users just want *better notes*, not another collaboration tool to manage during a meeting.
 3.  **Performance:** Browser-based audio handling + multi-user streaming introduced unacceptable latency.
 
@@ -114,7 +114,7 @@ We are NOT building Zoom/Teams/Meet. We augment meetings, not host them.
 No integration with Google Calendar, Outlook, etc. Meetings are started manually.
 
 **NG3**: System audio capture (online meetings)
-We focus on room microphone for on-site meetings. Capturing Zoom/Teams audio requires a desktop app (out of scope for MVP).
+We focus on room microphone for on-site meetings. Capturing Zoom/Teams audio requires a desktop app (out of scope for Initial Production Release).
 
 **NG4**: Mobile app or mobile browser support
 Desktop/laptop browser only. All participants use laptops.
@@ -159,7 +159,7 @@ Summary: Session management is mostly new—Meetily is single-user; we need mult
 | FR1.4 | Participants enter display name on join | ⭐ NEW | Simple join screen with name input |
 | FR1.5 | Host can see list of joined participants | ⭐ NEW | Participant list component + WebSocket tracking |
 | FR1.6 | Host can end the meeting session | 🔧 MODIFY | Meetily has stop recording; extend to broadcast end to all |
-| FR1.7 | Session persists after end for access | ✅ KEEP | Meetily already stores meetings in SQLite |
+| FR1.7 | Session persists after end for access | ✅ KEEP | Meetily already stores meetings in PostgreSQL |
 
 ### FR2: Audio Capture & Transcription
 
@@ -338,7 +338,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 | Risk Category | Desktop (Tauri) | Web-based | Mitigation |
 |---------------|----------------|-----------|------------|
 | Technical Risk | 🔴 HIGH - Less familiar stack | 🟢 LOW - Standard web stack | Use Web to reduce risk |
-| Timeline Risk | 🔴 HIGH - 40% longer dev time | 🟢 LOW - Rapid development | Use Web to meet MVP deadline |
+| Timeline Risk | 🔴 HIGH - 40% longer dev time | 🟢 LOW - Rapid development | Use Web to meet Initial Production Release deadline |
 | Adoption Risk | 🔴 HIGH - Install friction | 🟢 LOW - Zero-friction joining | Use Web to maximize trials |
 | Maintenance | 🟡 MED - OS updates / versions | 🟢 LOW - Single version | Use Web to reduce support |
 
@@ -364,7 +364,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 
 **Cons**:
 - ❌ High Friction: High drop-off rate due to installation requirements
-- ❌ Slower Dev: Rust/Tauri overhead extends the MVP timeline significantly
+- ❌ Slower Dev: Rust/Tauri overhead extends the Initial Production Release timeline significantly
 
 ---
 
@@ -470,7 +470,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 |-----------|--------|------------------------|-------------------|
 | Backend | FastAPI (Python) | Node.js, Go, Rust | Strong AI/ML ecosystem, rapid development |
 | Frontend | Next.js (React) | Vite + React, SvelteKit | Already used in Meetily, production-proven |
-| Database | SQLite | PostgreSQL, MongoDB | Used for MVP speed; simple to migrate to PostgreSQL if scaling is required |
+| Database | PostgreSQL | PostgreSQL, MongoDB | Used for Production; PostgreSQL's hybrid nature (Relational + JSONB + Vectors) offers a superior unified architecture. |
 | Vector Database | ChromaDB / LanceDB | Pinecone, pgvector | Embedded, no external server required |
 | Real-time Communication | WebSocket | SSE, Polling | Bidirectional communication for Q&A |
 | Transcription | Whisper.cpp | Cloud APIs | Local processing, privacy-first |
@@ -564,7 +564,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 - Error handling and edge cases
 - Basic testing
 
-**Deliverable**: Complete MVP ready for demo
+**Deliverable**: Complete Initial Production Release ready for demo
 
 ### Total Effort Estimate
 
@@ -598,7 +598,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 | **Phase 5: Post-Meeting & Polish** | 3-4 days | - | - | 5 days | 📋 Planned | Export, history, UI polish, production-ready |
 
 **Total Duration**: 25 working days (5 weeks) including buffer
-**MVP Demo-Ready**: January 24, 2025 (end of Phase 3)
+**Initial Production Release Demo-Ready**: January 24, 2025 (end of Phase 3)
 **Production-Ready**: February 7, 2025 (end of Phase 5)
 
 ### Milestone Schedule
@@ -609,7 +609,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 | **M1: Web Audio Working** | ✅ Jan 5, 2026 | Single-user web recording functional | Browser can capture audio, stream to Whisper, display real-time transcript |
 | **M1.5: Groq Streaming** | ✅ Jan 5, 2026 | Real-time streaming transcription | Continuous PCM streaming to Groq Whisper API with 1-2s latency |
 | **M2: Multi-User Sessions** | ⏸️ SKIPPED | Collaborative sessions functional | Deferred - single-user AI features are priority |
-| **M3: MVP Demo** | ⚠️ **PARTIAL** | Core AI features are partially stable | "Catch Me Up" is done; Q&A requires more work. |
+| **M3: Initial Production Release Demo** | ⚠️ **PARTIAL** | Core AI features are partially stable | "Catch Me Up" is done; Q&A requires more work. |
 | **M4: Full Feature Set** | ✅ **COMPLETE** | Cross-meeting context is implemented | Can link meetings and search across transcriptions. |
 | **M5: Production Launch** | 🔜 **NEXT** | Polished and production-ready | The stabilization plan must be completed first. |
 
@@ -636,7 +636,7 @@ The original Meetily project is built as a Tauri-based desktop application. This
 - "Catch Me Up" with time-range selection
 - Real-time Q&A (private to participant)
 - Decision/Action extraction
-- **Deliverable**: ⭐ **MVP Demo-Ready**
+- **Deliverable**: ⭐ **Initial Production Release Demo-Ready**
 
 **Week 5** (Jan 26-30, 2025) - *Phase 4: Context*
 - ChromaDB integration

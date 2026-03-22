@@ -112,13 +112,14 @@ async def delete_meeting(
         )
 
     try:
-        # Delete audio file from Storage (Local or GCP)
+        # Delete audio file and other artifacts from Storage (Local or GCP)
         try:
-            await StorageService.delete_file(f"{data.meeting_id}/recording.wav")
-            # Remove any remaining artifacts under the meeting prefix (chunks, metadata, etc.)
+            # Prefix 1: {meeting_id}/* (Audio, original files)
             await StorageService.delete_prefix(f"{data.meeting_id}/")
+            # Prefix 2: meetings/{meeting_id}/* (Transcripts, notes, versions)
+            await StorageService.delete_prefix(f"meetings/{data.meeting_id}/")
         except Exception as e:
-            logger.warning(f"Failed to delete audio file for {data.meeting_id}: {e}")
+            logger.warning(f"Failed to delete storage artifacts for {data.meeting_id}: {e}")
 
         success = await db.delete_meeting(data.meeting_id)
         if success:

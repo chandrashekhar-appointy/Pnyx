@@ -1,6 +1,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { authFetch } from '@/lib/api';
+import Analytics from '@/lib/analytics';
 
 export interface DiarizationStatus {
   meeting_id: string;
@@ -35,6 +36,7 @@ export function useDiarization(meetingId: string) {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<DiarizationProgress | null>(null);
   const [processingStartedAtMs, setProcessingStartedAtMs] = useState<number | null>(null);
+  const [lastCompletedAt, setLastCompletedAt] = useState<string | null>(null);
 
   const toUserFriendlyError = useCallback((raw: string | null | undefined): string => {
     const message = (raw || '').trim();
@@ -136,6 +138,24 @@ export function useDiarization(meetingId: string) {
     }
   }, [status?.status, status?.error, toUserFriendlyError]);
 
+  useEffect(() => {
+    if (status?.status !== 'completed' || !status.completed_at || status.completed_at === lastCompletedAt) {
+      return;
+    }
+
+    const durationSeconds = processingStartedAtMs
+      ? Math.max(0, Math.round((Date.now() - processingStartedAtMs) / 1000))
+      : undefined;
+
+    Analytics.trackDiarizationCompleted({
+      meeting_id: meetingId,
+      speaker_count: status.speaker_count,
+      provider: status.provider,
+      duration: durationSeconds,
+    });
+    setLastCompletedAt(status.completed_at);
+  }, [status, lastCompletedAt, meetingId, processingStartedAtMs]);
+
   // Separate polling effect
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -175,6 +195,11 @@ export function useDiarization(meetingId: string) {
     setIsDiarizing(true);
     setError(null);
     try {
+      setProcessingStartedAtMs(Date.now());
+      await Analytics.trackDiarizationRequested({
+        meeting_id: meetingId,
+        provider: 'deepgram',
+      });
       const response = await authFetch(`/meetings/${meetingId}/diarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

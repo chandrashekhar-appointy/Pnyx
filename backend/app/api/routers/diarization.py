@@ -27,6 +27,7 @@ try:
         SpeakerSegment,
     )
     from ...services.audio.recorder import AudioRecorder
+    from ...services.document_storage import DocumentStorageService
     from ...services.storage import StorageService
 except (ImportError, ValueError):
     from api.deps import get_current_user
@@ -46,6 +47,7 @@ except (ImportError, ValueError):
         SpeakerSegment,
     )
     from services.audio.recorder import AudioRecorder
+    from services.document_storage import DocumentStorageService
     from services.storage import StorageService
 
 # Initialize
@@ -376,6 +378,19 @@ async def run_diarization_job(meeting_id: str, provider: str, user_email: str):
                     confidence_metrics = db._calculate_confidence_metrics(
                         final_segments
                     )
+                    storage_meta = await DocumentStorageService.save_transcript_version(
+                        meeting_id=meeting_id,
+                        version_num=version_num,
+                        source="diarized",
+                        content=final_segments,
+                        is_authoritative=True,
+                        created_by=user_email,
+                        alignment_config={
+                            "provider": provider,
+                            "alignment_metrics": alignment_metrics,
+                        },
+                        confidence_metrics=confidence_metrics,
+                    )
                     await conn.execute(
                         """
                         UPDATE transcript_versions
@@ -387,14 +402,14 @@ async def run_diarization_job(meeting_id: str, provider: str, user_email: str):
                     await conn.execute(
                         """
                         INSERT INTO transcript_versions (
-                            meeting_id, version_num, source, content_json,
-                            is_authoritative, created_by, alignment_config, confidence_metrics
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                            meeting_id, version_num, source,
+                            is_authoritative, created_by, alignment_config, confidence_metrics,
+                            content_object_path, content_sha256, content_byte_size
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                         """,
                         meeting_id,
                         version_num,
                         "diarized",
-                        json.dumps(final_segments, default=str),
                         True,
                         user_email,
                         json.dumps(
@@ -404,6 +419,9 @@ async def run_diarization_job(meeting_id: str, provider: str, user_email: str):
                             }
                         ),
                         json.dumps(confidence_metrics),
+                        storage_meta["path"],
+                        storage_meta["sha256"],
+                        storage_meta["byte_size"],
                     )
 
                     # 4. Mark job complete atomically with data write

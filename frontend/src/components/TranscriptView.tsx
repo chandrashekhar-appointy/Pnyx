@@ -191,6 +191,7 @@ function getSegmentStyle(state?: string, source?: string): string {
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({
   transcripts,
+  partialTranscript,
   isRecording = false,
   isPaused = false,
   activeDuration,
@@ -440,6 +441,26 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
           </motion.div>
         );
       })}
+
+      {/* Render the live partial transcript, if available */}
+      {isRecording && !isPaused && partialTranscript && partialTranscript.trim() !== '' && (
+        <motion.div
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-3 pl-3 border-l-4 border-gray-300"
+        >
+          <div className="flex items-start gap-2">
+            <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
+              [Live]
+            </span>
+            <div className="flex-1">
+              <div className="text-base text-gray-500 italic leading-relaxed">
+                <span>{cleanStopWords(partialTranscript)}</span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Show listening indicator when recording and has transcripts */}
       {!isStopping && isRecording && !isPaused && !isProcessing && transcripts.length > 0 && (

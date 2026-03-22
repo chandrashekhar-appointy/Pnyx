@@ -4,6 +4,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { Transcript } from '@/types';
 import { MeetingSelector } from './MeetingSelector';
 import { authFetch } from '@/lib/api';
+import Analytics from '@/lib/analytics';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -211,6 +212,21 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
 
             const contextEntries = getStableContextEntries();
             const contextText = getContextFromTranscripts();
+            const querySource = currentTranscripts && currentTranscripts.length > 0 ? 'live' : 'history';
+
+            await Analytics.trackAskAIQuery(querySource, {
+                meeting_id: meetingId,
+                linked_meeting_count: linkedMeetingIds.length,
+                question_length: userMessage.length,
+                model: provider,
+                model_name: modelName,
+            });
+            if (linkedMeetingIds.length > 0) {
+                await Analytics.trackCrossMeetingContextLinked(linkedMeetingIds.length, {
+                    meeting_id: meetingId,
+                    source: 'ask_ai',
+                });
+            }
 
             const response = await authFetch('/chat-meeting', {
                 method: 'POST',

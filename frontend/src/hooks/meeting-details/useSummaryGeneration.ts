@@ -133,17 +133,27 @@ export function useSummaryGeneration({
             modelConfig.model,
             false,
             undefined,
-            errorMessage
+            errorMessage,
+            selectedTemplate
           );
           return;
         }
 
         // Handle successful completion
-        if (pollingResult.status === 'completed' && pollingResult.data) {
-          console.log('✅ Summary generation completed:', pollingResult.data);
-          if (pollingResult.notes_generation) {
-            setNotesGenerationInfo(pollingResult.notes_generation);
-          }
+          if (pollingResult.status === 'completed' && pollingResult.data) {
+            console.log('✅ Summary generation completed:', pollingResult.data);
+            if (pollingResult.notes_generation) {
+              setNotesGenerationInfo(pollingResult.notes_generation);
+              await Analytics.trackCalendarContextFetched(
+                pollingResult.notes_generation.agenda_used ? 'used' : 'not_used',
+                {
+                  meeting_id: meeting.id,
+                  transcript_source: pollingResult.notes_generation.transcript_source,
+                  audio_used: pollingResult.notes_generation.audio_used,
+                  prompt_version: pollingResult.notes_generation.prompt_version,
+                }
+              );
+            }
 
           // Update meeting title if available
           const meetingName = pollingResult.data.MeetingName || pollingResult.meetingName;
@@ -164,7 +174,10 @@ export function useSummaryGeneration({
             await Analytics.trackSummaryGenerationCompleted(
               modelConfig.provider,
               modelConfig.model,
-              true
+              true,
+              undefined,
+              undefined,
+              selectedTemplate
             );
 
             if (isRegeneration && typeof window !== 'undefined') {
@@ -197,7 +210,8 @@ export function useSummaryGeneration({
               modelConfig.model,
               false,
               undefined,
-              'Empty summary generated'
+              'Empty summary generated',
+              selectedTemplate
             );
             return;
           }
@@ -263,7 +277,10 @@ export function useSummaryGeneration({
           await Analytics.trackSummaryGenerationCompleted(
             modelConfig.provider,
             modelConfig.model,
-            true
+            true,
+            undefined,
+            undefined,
+            selectedTemplate
           );
 
           if (meetingName && onMeetingUpdated) {
@@ -294,7 +311,8 @@ export function useSummaryGeneration({
         modelConfig.model,
         false,
         undefined,
-        errorMessage
+        errorMessage,
+        selectedTemplate
       );
     }
   }, [

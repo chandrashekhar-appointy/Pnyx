@@ -26,7 +26,7 @@ import httpx
 
 try:
     from ..deps import get_current_user
-    from ...schemas.audio import StreamingSessionHealthResponse
+    from ...schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest, TranscriptSegment
     from ...schemas.user import User
     from ...db import DatabaseManager
     from ...core.rbac import RBAC
@@ -46,7 +46,7 @@ try:
     from ...services.credit_manager import CreditManager
 except (ImportError, ValueError):
     from api.deps import get_current_user
-    from schemas.audio import StreamingSessionHealthResponse
+    from schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest, TranscriptSegment
     from schemas.user import User
     from db import DatabaseManager
     from core.rbac import RBAC
@@ -183,6 +183,12 @@ AI_PARTICIPANT_INACTIVITY_COOLDOWN_SECONDS = int(
 AI_PARTICIPANT_INACTIVITY_RESET_MIN_CHARS = int(
     os.getenv("AI_PARTICIPANT_INACTIVITY_RESET_MIN_CHARS", "12")
 )
+STREAMING_CREDIT_LEDGER_BATCH_SIZE = int(
+    os.getenv("STREAMING_CREDIT_LEDGER_BATCH_SIZE", "5")
+)
+STREAMING_CREDIT_LEDGER_FLUSH_SECONDS = float(
+    os.getenv("STREAMING_CREDIT_LEDGER_FLUSH_SECONDS", "20")
+)
 
 state_service = get_audio_pipeline_state_service()
 
@@ -306,16 +312,21 @@ async def _persist_runtime_snapshot(
     session_id: str,
     runtime_stats: Optional[Dict[str, Any]],
     manager_stats: Optional[Dict[str, Any]],
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     try:
         runtime_payload = _sanitize_runtime_for_json(runtime_stats or {})
         slo_snapshot = _build_streaming_slo_snapshot(runtime_stats, manager_stats)
+        
+        db_patch = {
+            "streaming_runtime": runtime_payload,
+            "streaming_slo": slo_snapshot,
+        }
+        if extra_metadata:
+            db_patch.update(extra_metadata)
+
         await state_service.db.merge_recording_session_metadata(
-            session_id,
-            {
-                "streaming_runtime": runtime_payload,
-                "streaming_slo": slo_snapshot,
-            },
+            session_id, db_patch
         )
     except Exception as exc:
         logger.debug(
@@ -900,7 +911,7 @@ async def websocket_streaming_audio(
         await websocket.close(code=1008)
         return
     can_manage_ai_host = True
-    if meeting_id:
+    if active_meeting_id:
         try:
             existing_meeting = await db.get_meeting(active_meeting_id)
             if existing_meeting and not await rbac.can(
@@ -915,9 +926,23 @@ async def websocket_streaming_audio(
                 )
                 await websocket.close(code=1008)
                 return
-            can_manage_ai_host = (not existing_meeting) or await rbac.can(
-                current_user, "edit", active_meeting_id
-            )
+
+            # Ensure meeting exists in DB immediately to avoid FK violations and allow tracking
+            if not existing_meeting:
+                await db.save_meeting(
+                    meeting_id=active_meeting_id,
+                    title="Live Meeting",
+                    owner_id=user_email,
+                )
+                logger.info(
+                    f"[Streaming] Created initial meeting record: {active_meeting_id} for user {user_email}"
+                )
+
+            can_manage_ai_host = True  # We just created it or we have edit permission
+            if existing_meeting:
+                can_manage_ai_host = await rbac.can(
+                    current_user, "edit", active_meeting_id
+                )
         except Exception as authz_err:
             logger.error(f"[Streaming] Meeting authorization failed: {authz_err}")
             await websocket.send_json(
@@ -936,6 +961,15 @@ async def websocket_streaming_audio(
         active_connections[session_id] = 0
     active_connections[session_id] += 1
     runtime_stats = _ensure_runtime_stats(session_id)
+    metadata_patch_buffer = {}
+    streaming_credit_usage = {
+        "pending_cost": 0,
+        "weekly": 0,
+        "admin": 0,
+        "purchased": 0,
+        "total": 0,
+        "last_flush_at": time.monotonic(),
+    }
     runtime_stats["connection_count"] = active_connections[session_id]
     runtime_stats["connection_state"] = "initializing"
     runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
@@ -1321,17 +1355,14 @@ async def websocket_streaming_audio(
         runtime_stats["last_ai_guardrail_alert"] = payload
         runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
 
-        metadata_patch = {
+        metadata_patch_buffer.update({
             "ai_guardrail_last_alert": payload,
             "ai_guardrail_last_alert_at": payload["updated_at"],
             "ai_guardrail_alerts_count": runtime_stats["ai_guardrail_alerts_count"],
-        }
+        })
         if ai_stats is not None:
-            metadata_patch["ai_guardrail"] = ai_stats
-
-        await state_service.db.merge_recording_session_metadata(
-            session_id, metadata_patch
-        )
+            metadata_patch_buffer["ai_guardrail"] = ai_stats
+        # The instruction implies that the `state_service.db.merge_recording_session_metadata` call is removed here.
 
     async def _publish_ai_host_suggestion_payload(
         suggestion: Dict[str, Any], ai_stats: Optional[Dict[str, Any]] = None
@@ -1346,16 +1377,14 @@ async def websocket_streaming_audio(
         runtime_stats["last_ai_host_suggestion"] = payload
         runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
 
-        metadata_patch = {
+        metadata_patch_buffer.update({
             "ai_host_last_suggestion": payload,
             "ai_host_last_suggestion_at": payload.get("timestamp"),
             "ai_host_suggestions_count": runtime_stats["ai_host_suggestions_count"],
-        }
+        })
         if ai_stats is not None:
-            metadata_patch["ai_host"] = ai_stats
-        await state_service.db.merge_recording_session_metadata(
-            session_id, metadata_patch
-        )
+            metadata_patch_buffer["ai_host"] = ai_stats
+        # The instruction implies that the `state_service.db.merge_recording_session_metadata` call is removed here.
 
     async def _publish_ai_host_intervention_payload(
         intervention: Dict[str, Any],
@@ -1372,16 +1401,14 @@ async def websocket_streaming_audio(
         runtime_stats["last_ai_host_intervention"] = payload
         runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
 
-        metadata_patch = {
+        metadata_patch_buffer.update({
             "ai_host_last_intervention": payload,
             "ai_host_last_intervention_at": payload.get("timestamp"),
             "ai_host_interventions_count": runtime_stats["ai_host_interventions_count"],
-        }
+        })
         if ai_stats is not None:
-            metadata_patch["ai_host"] = ai_stats
-        await state_service.db.merge_recording_session_metadata(
-            session_id, metadata_patch
-        )
+            metadata_patch_buffer["ai_host"] = ai_stats
+        # The instruction implies that the `state_service.db.merge_recording_session_metadata` call is removed here.
 
     async def _publish_ai_host_state_delta_payload(
         state_delta: Dict[str, Any], ai_stats: Optional[Dict[str, Any]] = None
@@ -1469,6 +1496,75 @@ async def websocket_streaming_audio(
         except Exception:
             pass
 
+    async def flush_streaming_credit_usage(force: bool = False) -> None:
+        pending_cost = int(streaming_credit_usage.get("pending_cost") or 0)
+        if pending_cost <= 0:
+            return
+
+        elapsed = time.monotonic() - float(streaming_credit_usage["last_flush_at"])
+        if (
+            not force
+            and pending_cost < STREAMING_CREDIT_LEDGER_BATCH_SIZE
+            and elapsed < STREAMING_CREDIT_LEDGER_FLUSH_SECONDS
+        ):
+            return
+
+        chunk_user_email = session_context.get(session_id, {}).get("user_email")
+        chunk_meeting_id = session_context.get(session_id, {}).get("meeting_id")
+        if not chunk_user_email:
+            streaming_credit_usage["pending_cost"] = 0
+            streaming_credit_usage["last_flush_at"] = time.monotonic()
+            return
+        if not chunk_meeting_id:
+            chunk_meeting_id = session_id
+
+        await credit_mgr.flush_usage_batch(
+            user_email=chunk_user_email,
+            meeting_id=chunk_meeting_id,
+            usage_credits=pending_cost,
+            weekly=int(streaming_credit_usage["weekly"] or 0),
+            admin=int(streaming_credit_usage["admin"] or 0),
+            purchased=int(streaming_credit_usage["purchased"] or 0),
+            finalize=force,
+        )
+        streaming_credit_usage["pending_cost"] = 0
+        streaming_credit_usage["last_flush_at"] = time.monotonic()
+
+    async def on_before_transcription() -> bool:
+        chunk_user_email = session_context.get(session_id, {}).get("user_email")
+        if not chunk_user_email:
+            return True
+
+        credit_result = await credit_mgr.deduct_credits(
+            user_email=chunk_user_email,
+            cost=CREDIT_COST_PER_CHUNK,
+            reference_id=session_id,
+            log_ledger=False,
+            sync_postgres=False,
+        )
+        if credit_result["allowed"]:
+            streaming_credit_usage["pending_cost"] = int(
+                streaming_credit_usage.get("pending_cost", 0)
+            ) + CREDIT_COST_PER_CHUNK
+            streaming_credit_usage["weekly"] = int(credit_result["weekly"])
+            streaming_credit_usage["admin"] = int(credit_result["admin"])
+            streaming_credit_usage["purchased"] = int(credit_result["purchased"])
+            streaming_credit_usage["total"] = int(credit_result["total"])
+            await flush_streaming_credit_usage(force=False)
+            return True
+
+        try:
+            await websocket.send_json(
+                {
+                    "type": "credit_exhausted",
+                    "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
+                    "remaining": credit_result["total"],
+                }
+            )
+        except Exception:
+            pass
+        return False
+
     # Audio Queue
     audio_queue = asyncio.Queue(maxsize=STREAMING_AUDIO_QUEUE_MAX_CHUNKS)
     dropped_audio_chunks = 0
@@ -1495,30 +1591,6 @@ async def websocket_streaming_audio(
                             runtime_stats.get("max_audio_queue_depth", 0),
                             audio_queue.qsize(),
                         )
-                        # ── Credit check before STT ────────────────
-                        chunk_user_email = session_context.get(session_id, {}).get(
-                            "user_email"
-                        )
-                        if chunk_user_email:
-                            credit_result = await credit_mgr.deduct_credits(
-                                user_email=chunk_user_email,
-                                cost=CREDIT_COST_PER_CHUNK,
-                                reference_id=session_id,
-                            )
-                            if not credit_result["allowed"]:
-                                # Credits exhausted — notify frontend, skip chunk
-                                try:
-                                    await websocket.send_json(
-                                        {
-                                            "type": "credit_exhausted",
-                                            "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
-                                            "remaining": credit_result["total"],
-                                        }
-                                    )
-                                except Exception:
-                                    pass
-                                audio_queue.task_done()
-                                continue
 
                         await current_mgr.process_audio_chunk(
                             audio_data=chunk,
@@ -1526,6 +1598,7 @@ async def websocket_streaming_audio(
                             on_partial=on_partial,
                             on_final=on_final,
                             on_error=on_error,
+                            on_before_transcription=on_before_transcription,
                         )
                 except Exception as e:
                     logger.error(f"[Streaming] Worker transcription error: {e}")
@@ -1675,11 +1748,16 @@ async def websocket_streaming_audio(
                         )
                         last_inactivity_alert_at = now_ts
                 now_ts = time.time()
-                if (now_ts - last_snapshot_persist_at) >= 60:
+                if (now_ts - last_snapshot_persist_at) >= 60 or metadata_patch_buffer:
+                    # Flush accumulated patches + snapshot
+                    combined_patch = dict(metadata_patch_buffer)
+                    metadata_patch_buffer.clear()
+                    
                     await _persist_runtime_snapshot(
                         session_id=session_id,
                         runtime_stats=runtime_stats,
                         manager_stats=mgr_stats,
+                        extra_metadata=combined_patch
                     )
                     last_snapshot_persist_at = now_ts
         except asyncio.CancelledError:
@@ -2110,6 +2188,32 @@ async def websocket_streaming_audio(
         runtime_stats["last_disconnect_at"] = datetime.utcnow().isoformat()
         runtime_stats["last_update_at"] = datetime.utcnow().isoformat()
 
+        # Final metadata flush
+        if metadata_patch_buffer:
+            try:
+                combined_patch = dict(metadata_patch_buffer)
+                metadata_patch_buffer.clear()
+                current_mgr = manager or streaming_managers.get(session_id)
+                mgr_stats = current_mgr.get_stats() if current_mgr else {}
+                
+                await _persist_runtime_snapshot(
+                    session_id=session_id,
+                    runtime_stats=runtime_stats,
+                    manager_stats=mgr_stats,
+                    extra_metadata=combined_patch
+                )
+            except Exception as e:
+                logger.warning(f"[Streaming] Final metadata flush failed for {session_id}: {e}")
+
+        try:
+            await flush_streaming_credit_usage(force=True)
+        except Exception as flush_err:
+            logger.warning(
+                "[Streaming] Failed flushing aggregated credit usage for %s: %s",
+                session_id,
+                flush_err,
+            )
+
         # Cleanup queues and workers
         await audio_queue.put(None)
         try:
@@ -2312,6 +2416,41 @@ async def upload_meeting_recording(
         "meeting_id": meeting_id,
         "status": "processing",
         "message": "File uploaded and processing started",
+    }
+
+
+@router.post("/meetings/{meeting_id}/finalize-encrypted")
+async def finalize_recording_encrypted(
+    meeting_id: str,
+    payload: EncryptedFinalizeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Finalize a recording with Zero-Knowledge encryption.
+    Accepts the transcript from the frontend (IndexedDB).
+    """
+    if not await rbac.can(current_user, "edit", meeting_id):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Convert Pydantic segments to List[Dict] for the service
+    segments = [s.model_dump() for s in payload.transcript_segments]
+
+    post_service = get_post_recording_service()
+    
+    # Run in background to avoid timeout
+    asyncio.create_task(
+        post_service.finalize_recording(
+            meeting_id,
+            trigger_diarization=payload.trigger_diarization,
+            user_email=current_user.email,
+            transcript_payload=segments
+        )
+    )
+
+    return {
+        "status": "processing",
+        "message": "Encrypted finalization started",
+        "meeting_id": meeting_id
     }
 
 
@@ -2791,3 +2930,48 @@ async def reconcile_pipeline_sessions(current_user: User = Depends(get_current_u
         return {"status": "ok"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Reconcile failed: {exc}")
+
+
+@router.get("/meetings/{meeting_id}/artifacts/{filename}")
+async def get_meeting_artifact(
+    meeting_id: str, filename: str, current_user: User = Depends(get_current_user)
+):
+    """Fetch a specific artifact for a meeting from Storage"""
+    from ...core.rbac import RBAC
+    rbac = RBAC(DatabaseManager())
+    if not await rbac.can(current_user, "view", meeting_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Security check: filename must be simple
+    if ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    try:
+        if filename == "transcript.enc.json":
+             from services.document_storage import DocumentStorageService
+             full_path = DocumentStorageService.transcript_path(meeting_id).replace(".json", ".enc.json")
+        elif filename == "summary.enc.json":
+             from services.document_storage import DocumentStorageService
+             full_path = DocumentStorageService.summary_path(meeting_id).replace(".json", ".enc.json")
+        else:
+            # Traditional behavior: simple files in {meeting_id} folder
+            if "/" in filename:
+                raise HTTPException(status_code=400, detail="Invalid filename format")
+            full_path = f"{meeting_id}/{filename}"
+            
+        data = await StorageService.download_file(full_path)
+
+        content_type = "application/octet-stream"
+        if filename.endswith(".json"):
+            content_type = "application/json"
+        elif filename.endswith(".wav"):
+            content_type = "audio/wav"
+        elif filename.endswith(".enc"):
+            content_type = "application/octet-stream"
+
+        from fastapi.responses import Response
+
+        return Response(content=data, media_type=content_type)
+    except Exception as e:
+        logger.error(f"Error fetching artifact {filename} for meeting {meeting_id}: {e}")
+        raise HTTPException(status_code=404, detail="Artifact not found")

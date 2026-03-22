@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { Trash2, Key, CheckCircle2, AlertCircle } from 'lucide-react';
+import Analytics from '@/lib/analytics';
 
 interface PersonalKey {
     provider: string;
@@ -56,6 +57,7 @@ export function PersonalKeysSettings() {
             });
 
             if (response.ok) {
+                await Analytics.trackSettingsChanged('personal_key_saved', provider);
                 toast.success(`Personal key for ${provider} saved!`);
                 setNewKeys({ ...newKeys, [provider]: '' });
                 fetchKeys();
@@ -78,6 +80,7 @@ export function PersonalKeysSettings() {
             });
 
             if (response.ok) {
+                await Analytics.trackSettingsChanged('personal_key_deleted', provider);
                 toast.success(`Personal key for ${provider} removed`);
                 fetchKeys();
             }

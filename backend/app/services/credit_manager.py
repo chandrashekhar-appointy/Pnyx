@@ -278,6 +278,8 @@ class CreditManager:
         cost: int,
         reference_id: Optional[str] = None,
         soft_limit: int = DEFAULT_SOFT_LIMIT,
+        log_ledger: bool = True,
+        sync_postgres: bool = True,
     ) -> Dict:
         """
         Atomically deduct `cost` credits from the user's pools.
@@ -317,17 +319,19 @@ class CreditManager:
         total = weekly + admin + purchased
 
         if allowed:
-            # Log to ledger (best-effort, don't block the caller)
-            await self.ledger.log_transaction(
-                user_email=user_email,
-                change=-cost,
-                source="usage",
-                reference_id=reference_id,
-                balance_after=total,
-            )
+            if log_ledger:
+                # Log to ledger (best-effort, don't block the caller)
+                await self.ledger.log_transaction(
+                    user_email=user_email,
+                    change=-cost,
+                    source="usage",
+                    reference_id=reference_id,
+                    balance_after=total,
+                )
 
-            # Async write-back to Postgres
-            await self._sync_to_postgres(user_email, weekly, admin, purchased)
+            if sync_postgres:
+                # Async write-back to Postgres
+                await self._sync_to_postgres(user_email, weekly, admin, purchased)
 
         logger.debug(
             f"[CreditManager] deduct {cost} for {user_email}: "
@@ -341,6 +345,32 @@ class CreditManager:
             "purchased": purchased,
             "total": total,
         }
+
+    async def flush_usage_batch(
+        self,
+        user_email: str,
+        meeting_id: str,
+        usage_credits: int,
+        weekly: int,
+        admin: int,
+        purchased: int,
+        finalize: bool = False,
+    ) -> None:
+        """
+        Flush an aggregated streaming usage batch to Postgres.
+        """
+        if usage_credits <= 0:
+            return
+
+        total = int(weekly) + int(admin) + int(purchased)
+        await self.db.upsert_meeting_credit_usage(
+            meeting_id=meeting_id,
+            user_email=user_email,
+            credits_used_delta=int(usage_credits),
+            balance_after=total,
+            finalize=finalize,
+        )
+        await self._sync_to_postgres(user_email, int(weekly), int(admin), int(purchased))
 
     async def add_purchased_credits(
         self,

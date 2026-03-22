@@ -17,6 +17,7 @@ try:
         UserAIHostStyleCreateRequest,
         UserAIHostStyleUpdateRequest,
         UserAIHostStyleDefaultRequest,
+        UserEncryptionKeySaveRequest,
     )
     from ...db import DatabaseManager
     from ...services.ai_participant import SYSTEM_HOST_SKILLS
@@ -36,6 +37,7 @@ except (ImportError, ValueError):
         UserAIHostStyleCreateRequest,
         UserAIHostStyleUpdateRequest,
         UserAIHostStyleDefaultRequest,
+        UserEncryptionKeySaveRequest,
     )
     from db import DatabaseManager
     from services.ai_participant import SYSTEM_HOST_SKILLS
@@ -230,6 +232,57 @@ async def delete_user_key(
     except Exception as e:
         logger.error(f"Error deleting user key: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete key")
+
+
+@router.post("/api/user/encryption-key")
+async def save_user_encryption_key(
+    request: UserEncryptionKeySaveRequest, current_user: User = Depends(get_current_user)
+):
+    """Save the user's public encryption key (SPKI format)"""
+    try:
+        await db.save_user_encryption_key(current_user.email, request.public_key)
+        return {"status": "success", "message": "Encryption public key saved"}
+    except Exception as e:
+        logger.error(f"Error saving encryption key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save encryption key")
+
+
+@router.delete("/api/user/encryption-key")
+async def delete_user_encryption_key_api(
+    current_user: User = Depends(get_current_user)
+):
+    """Clear the user's encryption key"""
+    try:
+        await db.delete_user_encryption_key(current_user.email)
+        return {"status": "success", "message": "Encryption key cleared"}
+    except Exception as e:
+        logger.error(f"Error clearing encryption key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to clear key")
+
+
+@router.get("/api/user/encryption-status")
+async def get_encryption_status(current_user: User = Depends(get_current_user)):
+    """Get the current user's encryption enabled status"""
+    try:
+        enabled = await db.get_user_encryption_enabled(current_user.email)
+        return {"enabled": enabled}
+    except Exception as e:
+        logger.error(f"Error getting encryption status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get encryption status")
+
+
+@router.post("/api/user/encryption-status")
+async def set_encryption_status(
+    request: dict, current_user: User = Depends(get_current_user)
+):
+    """Update the current user's encryption enabled status"""
+    enabled = request.get("enabled", False)
+    try:
+        await db.set_user_encryption_enabled(current_user.email, enabled)
+        return {"status": "success", "enabled": enabled}
+    except Exception as e:
+        logger.error(f"Error setting encryption status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to set encryption status")
 
 
 @router.get("/api/user/ai-host-skill", response_model=UserAIHostSkillResponse)

@@ -1,18 +1,20 @@
 'use client';
 
 import React, { useState, useEffect, Suspense } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Key, Calendar, Bot } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Key, Calendar, Bot, Shield } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 // import { TranscriptSettings, TranscriptModelProps } from '@/components/TranscriptSettings';
 // import { RecordingSettings } from '@/components/RecordingSettings';
 // import { PreferenceSettings } from '@/components/PreferenceSettings';
 // import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { PersonalKeysSettings } from '@/components/PersonalKeysSettings';
+import { EncryptionSettings } from '@/components/EncryptionSettings';
 import { CalendarIntegrationSettings } from '@/components/CalendarIntegrationSettings';
 import { AIHostSkillSettings } from '@/components/AIHostSkillSettings';
 import { authFetch } from '@/lib/api';
+import Analytics from '@/lib/analytics';
 
-type SettingsTab = 'general' | 'recording' | 'Transcriptionmodels' | 'summaryModels' | 'personalKeys' | 'calendar' | 'aiHost';
+type SettingsTab = 'general' | 'recording' | 'Transcriptionmodels' | 'summaryModels' | 'personalKeys' | 'encryption' | 'calendar' | 'aiHost';
 
 // Make a dummy type since we commented out the actual import
 type TranscriptModelProps = {
@@ -34,12 +36,16 @@ function SettingsContent() {
   useEffect(() => {
       const tabParam = searchParams.get('tab');
       if (tabParam) {
-      const validTabs: SettingsTab[] = [/* 'general', 'recording', 'Transcriptionmodels', 'summaryModels', */ 'personalKeys', 'calendar', 'aiHost'];
+      const validTabs: SettingsTab[] = [/* 'general', 'recording', 'Transcriptionmodels', 'summaryModels', */ 'personalKeys', 'encryption', 'calendar', 'aiHost'];
       if (validTabs.includes(tabParam as SettingsTab)) {
         setActiveTab(tabParam as SettingsTab);
       }
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    Analytics.trackSettingsChanged('settings_tab', activeTab);
+  }, [activeTab]);
 
   const tabs = [
     // { id: 'general' as const, label: 'General', icon: <Settings2 className="w-4 h-4" /> },
@@ -47,6 +53,7 @@ function SettingsContent() {
     // { id: 'Transcriptionmodels' as const, label: 'Transcription', icon: <DatabaseIcon className="w-4 h-4" /> },
     // { id: 'summaryModels' as const, label: 'Summary', icon: <SparkleIcon className="w-4 h-4" /> },
     { id: 'personalKeys' as const, label: 'Personal Keys', icon: <Key className="w-4 h-4" /> },
+    { id: 'encryption' as const, label: 'Security & Encryption', icon: <Shield className="w-4 h-4" /> },
     { id: 'calendar' as const, label: 'Calendar', icon: <Calendar className="w-4 h-4" /> },
     { id: 'aiHost' as const, label: 'AI Participant', icon: <Bot className="w-4 h-4" /> }
   ];
@@ -125,6 +132,7 @@ function SettingsContent() {
               )} */}
               {/* {activeTab === 'summaryModels' && <SummaryModelSettings />} */}
               {activeTab === 'personalKeys' && <PersonalKeysSettings />}
+              {activeTab === 'encryption' && <EncryptionSettings />}
               {activeTab === 'calendar' && <CalendarIntegrationSettings />}
               {activeTab === 'aiHost' && <AIHostSkillSettings />}
             </div>

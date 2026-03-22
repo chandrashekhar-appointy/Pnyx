@@ -103,3 +103,6 @@ class SyncOAuthRequest(BaseModel):
     token_expires_at: Optional[str] = None
     scopes: List[str]
     external_account_email: str
+
+class UserEncryptionKeySaveRequest(BaseModel):
+    public_key: str

@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react';
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2, Send, CheckCircle, AlertCircle, Clock, XCircle, RotateCcw } from 'lucide-react';
+import Analytics from '@/lib/analytics';
 
 interface FeedbackItem {
   id: string;
@@ -78,6 +79,11 @@ export default function FeedbackPage() {
       });
 
       if (res.ok) {
+        await Analytics.trackFeedbackSubmitted({
+          type: formData.type,
+          title_length: formData.title.trim().length,
+          description_length: formData.description.trim().length,
+        });
         toast.success('Feedback submitted successfully!');
         setFormData({ type: 'general', title: '', description: '' });
         fetchFeedback(); // Refresh list
@@ -101,6 +107,10 @@ export default function FeedbackPage() {
       });
 
       if (res.ok) {
+        await Analytics.trackFeedbackStatusUpdated({
+          feedback_id: id,
+          new_status: newStatus,
+        });
         toast.success('Status updated');
         setFeedbackList(prev => prev.map(item => 
           item.id === id ? { ...item, status: newStatus as any } : item

@@ -561,12 +561,14 @@ export class Analytics {
     modelName: string,
     success: boolean,
     durationSeconds?: number,
-    errorMessage?: string
+    errorMessage?: string,
+    templateName?: string
   ) {
     await this.track('notes_generated', {
       provider: modelProvider,
       model: modelName,
       llm_model: `${modelProvider}_${modelName}`,
+      template_name: templateName,
       success,
       duration: durationSeconds,
       error: errorMessage,
@@ -598,6 +600,192 @@ export class Analytics {
 
   static async trackCustomPromptUsed(length: number) {
     await this.track('custom_prompt_used', { prompt_length: length });
+  }
+
+  static async trackCatchUpRequested(
+    timeRangeMinutes: number | null,
+    properties?: Record<string, any>
+  ) {
+    await this.track('catch_up_requested', {
+      time_range: timeRangeMinutes === null ? 'full_meeting' : `${timeRangeMinutes}m`,
+      ...properties,
+    });
+  }
+
+  static async trackAskAIQuery(
+    source: 'live' | 'history',
+    properties?: Record<string, any>
+  ) {
+    await this.track('ask_ai_query', {
+      source,
+      ...properties,
+    });
+  }
+
+  static async trackAIParticipantInteraction(
+    triggerType: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('ai_participant_interaction', {
+      trigger_type: triggerType,
+      ...properties,
+    });
+  }
+
+  static async trackNotesTemplateSwitched(
+    oldTemplate: string,
+    newTemplate: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('notes_template_switched', {
+      old_template: oldTemplate,
+      new_template: newTemplate,
+      ...properties,
+    });
+  }
+
+  static async trackNotesRefined(
+    promptLength: number,
+    properties?: Record<string, any>
+  ) {
+    await this.track('notes_refined', {
+      prompt_length: promptLength,
+      ...properties,
+    });
+  }
+
+  static async trackCrossMeetingContextLinked(
+    linkedMeetingCount: number,
+    properties?: Record<string, any>
+  ) {
+    await this.track('cross_meeting_context_linked', {
+      linked_meeting_count: linkedMeetingCount,
+      ...properties,
+    });
+  }
+
+  static async trackNotesShared(
+    method: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('notes_shared', {
+      method,
+      ...properties,
+    });
+  }
+
+  static async trackRecordingDownloaded(
+    format?: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('recording_downloaded', {
+      format,
+      ...properties,
+    });
+  }
+
+  static async trackAudioImported(
+    properties?: Record<string, any>
+  ) {
+    await this.track('audio_imported', properties);
+  }
+
+  static async trackDiarizationRequested(
+    properties?: Record<string, any>
+  ) {
+    await this.track('diarization_requested', properties);
+  }
+
+  static async trackDiarizationCompleted(
+    properties?: Record<string, any>
+  ) {
+    await this.track('diarization_completed', properties);
+  }
+
+  static async trackCalendarContextFetched(
+    status: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('calendar_context_fetched', {
+      status,
+      ...properties,
+    });
+  }
+
+  static async trackPnyxBotInvitedViaMail(
+    source: string,
+    meetingType?: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('pnyx_bot_invited_via_mail', {
+      source,
+      meeting_type: meetingType,
+      ...properties,
+    });
+  }
+
+  static async trackCalendarConnectStarted(
+    properties?: Record<string, any>
+  ) {
+    await this.track('calendar_connect_started', properties);
+  }
+
+  static async trackCalendarConnectCompleted(
+    properties?: Record<string, any>
+  ) {
+    await this.track('calendar_connect_completed', properties);
+  }
+
+  static async trackMeetingSaved(
+    meetingId: string,
+    properties?: Record<string, any>
+  ) {
+    await this.track('meeting_saved', {
+      meeting_id: meetingId,
+      ...properties,
+    });
+  }
+
+  static async trackMeetingSaveFailed(
+    properties?: Record<string, any>
+  ) {
+    await this.track('meeting_save_failed', properties);
+  }
+
+  static async trackRecordingRecoveryDetected(
+    properties?: Record<string, any>
+  ) {
+    await this.track('recording_recovery_detected', properties);
+  }
+
+  static async trackRecordingRecoveryRestored(
+    properties?: Record<string, any>
+  ) {
+    await this.track('recording_recovery_restored', properties);
+  }
+
+  static async trackCalendarMeetingLinked(
+    properties?: Record<string, any>
+  ) {
+    await this.track('calendar_meeting_linked', properties);
+  }
+
+  static async trackCalendarMeetingUnlinked(
+    properties?: Record<string, any>
+  ) {
+    await this.track('calendar_meeting_unlinked', properties);
+  }
+
+  static async trackFeedbackSubmitted(
+    properties?: Record<string, any>
+  ) {
+    await this.track('feedback_submitted', properties);
+  }
+
+  static async trackFeedbackStatusUpdated(
+    properties?: Record<string, any>
+  ) {
+    await this.track('feedback_status_updated', properties);
   }
 }
 

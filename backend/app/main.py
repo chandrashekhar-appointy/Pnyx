@@ -85,7 +85,6 @@ app.include_router(calendar.router, tags=["Calendar"])
 app.include_router(admin.router, tags=["Admin"])
 app.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
 app.include_router(sharing.router)
-app.include_router(analytics.router)
 app.include_router(credits.router)
 app.include_router(payments.router)
 

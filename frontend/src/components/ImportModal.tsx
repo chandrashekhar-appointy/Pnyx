@@ -10,6 +10,7 @@ import { Upload, Loader2, FileAudio, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import Analytics from '@/lib/analytics';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -70,6 +71,12 @@ export function ImportModal({ isOpen, onClose }: ImportModalProps) {
       }
 
       const data = await response.json();
+      await Analytics.trackAudioImported({
+        meeting_id: data.meeting_id,
+        file_type: file.type || file.name.split('.').pop()?.toLowerCase() || 'unknown',
+        file_size_bytes: file.size,
+        title_length: title.length,
+      });
       toast.success("File uploaded successfully", {
         description: "Processing started in background"
       });

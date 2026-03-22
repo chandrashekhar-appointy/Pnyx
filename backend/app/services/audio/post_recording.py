@@ -15,7 +15,7 @@ import os
 import shutil
 import json
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 try:
     from .recorder import AudioRecorder
@@ -69,6 +69,7 @@ class PostRecordingService:
         meeting_id: str,
         trigger_diarization: bool = False,
         user_email: Optional[str] = None,
+        transcript_payload: Optional[List[Dict]] = None,
     ) -> Dict:
         """
         Complete post-recording processing pipeline.
@@ -207,10 +208,87 @@ class PostRecordingService:
                         except Exception as e:
                             logger.warning(f"Failed to delete PCM chunks in GCS: {e}")
 
+                    # E2EE Logic: Get user's public key (ONLY IF ENABLED)
+                    public_key_spki = None
+                    if user_email:
+                        is_enabled = await self.db.get_user_encryption_enabled(user_email)
+                        if is_enabled:
+                            user_info = await self.db.get_user_credits(user_email)
+                            if user_info:
+                                public_key_spki = user_info.get("encryption_public_key")
+
+                        if public_key_spki:
+                            from ..encryption_service import EncryptionService
+                            logger.info(f"🔐 E2EE: Encrypting recording and notes for {meeting_id}")
+                            
+                            # 1. Encrypt merged audio
+                            gcp_wav_path = f"{meeting_id}/recording.wav"
+                            audio_data = await StorageService.download_file(gcp_wav_path)
+                            encrypted_audio, audio_wrapper = EncryptionService.encrypt_document(audio_data, public_key_spki)
+                            
+                            # Save encrypted audio AND DELETE PLAINTEXT
+                            await StorageService.upload_file(f"{meeting_id}/recording.enc.wav", encrypted_audio)
+                            await StorageService.delete_file(gcp_wav_path)
+                            
+                            # 2. Process and Encrypt Transcript / Notes
+                            encryption_meta = {
+                                "audio": audio_wrapper,
+                                "transcript": None
+                            }
+                            
+                            # If transcript_payload not provided (e.g. background task), fetch from DB
+                            if not transcript_payload:
+                                meeting_data = await self.db.get_meeting(meeting_id)
+                                if meeting_data and meeting_data.get("transcripts"):
+                                    transcript_payload = meeting_data["transcripts"]
+                                    logger.info(f"📑 E2EE: Fetched {len(transcript_payload)} segments from DB for encryption")
+
+                            if transcript_payload:
+                                transcript_json = json.dumps(transcript_payload).encode('utf-8')
+                                enc_transcript, trans_wrapper = EncryptionService.encrypt_document(transcript_json, public_key_spki)
+                                
+                                await StorageService.upload_file(f"{meeting_id}/transcript.enc.json", enc_transcript)
+                                encryption_meta["transcript"] = trans_wrapper
+                                
+                                # Update database with encryption metadata
+                                async with self.db._get_connection() as conn:
+                                    existing_process = await self.db.get_transcript_data(meeting_id)
+                                    if existing_process:
+                                        current_metadata = existing_process.get("metadata") or {}
+                                        current_metadata["encryption"] = encryption_meta
+                                        await conn.execute(
+                                            "UPDATE summary_processes SET metadata = $1, status = 'completed' WHERE meeting_id = $2",
+                                            json.dumps(current_metadata),
+                                            meeting_id
+                                        )
+                                    else:
+                                        await conn.execute(
+                                            """
+                                            INSERT INTO summary_processes 
+                                            (meeting_id, status, metadata, start_time, end_time)
+                                            VALUES ($1, 'completed', $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                            """,
+                                            meeting_id,
+                                            json.dumps({"encryption": encryption_meta})
+                                        )
+                                
+                                # PURGE PLAINTEXT: Now that it's safely encrypted in storage, remove from DB
+                                await self.db.clear_meeting_transcripts(meeting_id)
+                                logger.info(f"🧹 E2EE: Purged plaintext transcripts for {meeting_id}")
+
+                        # Update meeting title if it was "Untitled"
+                        # (The frontend can provide a title or we can infer it if we dared to decrypt, 
+                        # but we can't. So we rely on the frontend or a non-encrypted summary phase)
+                        logger.info(f"✅ E2EE: Encryption complete for {meeting_id}")
+
+                            # Save meeting metadata encrypted
+                            # ... (add summary logic here if needed)
+
                     result["status"] = "completed"
                     logger.info(f"✅ Post-recording (GCP) complete for {meeting_id}")
 
-                    if trigger_diarization:
+                    if trigger_diarization and not public_key_spki:
+                        # Diarization needs raw audio, so we skip if encrypted for now
                         asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
 
                     return result

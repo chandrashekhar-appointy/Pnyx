@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, X, Check, ArrowRight } from 'lucide-react';
 import { authFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import Analytics from '@/lib/analytics';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -125,6 +126,10 @@ export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRe
         setIsLoading(true);
 
         try {
+            await Analytics.trackNotesRefined(userMessage.length, {
+                meeting_id: meetingId,
+                current_notes_length: currentNotes.length,
+            });
             // Placeholder for streaming response
             setMessages(prev => [...prev, { role: 'assistant', content: '', isRefinement: true }]);
 

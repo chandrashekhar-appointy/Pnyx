@@ -9,6 +9,7 @@ type Updater<T> = T | ((prev: T) => T);
 interface RecordingSessionState {
   meetingTitle: string;
   transcripts: Transcript[];
+  partialTranscript: string;
   isRecording: boolean;
   isPaused: boolean;
   currentSessionId: string | null;
@@ -23,6 +24,7 @@ type Listener = () => void;
 let state: RecordingSessionState = {
   meetingTitle: '+ New Call',
   transcripts: [],
+  partialTranscript: '',
   isRecording: false,
   isPaused: false,
   currentSessionId: null,
@@ -66,6 +68,10 @@ function sortTranscripts(items: Transcript[]): Transcript[] {
     }
     return (a.sequence_id || 0) - (b.sequence_id || 0);
   });
+}
+
+export function setPartialTranscript(text: string) {
+  updateState('partialTranscript', text);
 }
 
 export function appendStreamingTranscript(update: {
@@ -119,6 +125,7 @@ export function appendStreamingTranscript(update: {
 
   state = {
     ...state,
+    partialTranscript: '',
     transcripts: sortTranscripts([...state.transcripts, nextTranscript]),
   };
   emitChange();
@@ -138,6 +145,7 @@ export function usePersistentRecordingSession() {
     ...snapshot,
     setMeetingTitle: (value: Updater<string>) => updateState('meetingTitle', value),
     setTranscripts: (value: Updater<Transcript[]>) => updateState('transcripts', value),
+    setPartialTranscript: (value: Updater<string>) => updateState('partialTranscript', value),
     setIsRecording: (value: Updater<boolean>) => updateState('isRecording', value),
     setIsPaused: (value: Updater<boolean>) => updateState('isPaused', value),
     setCurrentSessionId: (value: Updater<string | null>) => updateState('currentSessionId', value),

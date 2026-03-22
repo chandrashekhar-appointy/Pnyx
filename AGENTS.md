@@ -47,7 +47,7 @@ This file provides guidance to Codex when working with code in this repository.
 │       │                                                                  │
 │       ↓                                                                  │
 │  ┌─────────┐  ┌──────────┐                                              │
-│  │ SQLite  │  │ Partial/ │                                              │
+│  │Postgres │  │ Partial/ │                                              │
 │  │ Storage │  │ Final    │ → WebSocket JSON response to browser         │
 │  └─────────┘  └──────────┘                                              │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -194,7 +194,7 @@ def _remove_overlap(self, new_text: str) -> str:
 
 ### Backend (✅ Complete - Real-Time Streaming)
 - **Framework**: FastAPI (Python 3.11+)
-- **Database**: SQLite (aiosqlite)
+- **Database**: PostgreSQL (asyncpg)
 - **Transcription**: Groq Whisper Large v3 API (cloud, low latency)
 - **Audio Processing**: SimpleVAD + RollingAudioBuffer
 - **LLM**: pydantic-ai (Codex, OpenAI, Groq, Ollama)
@@ -285,7 +285,7 @@ pnpm run dev        # ✅ Use this - runs Next.js at http://localhost:3118
 ┌───────────────────────────────────────┐
 │   Backend (FastAPI)                   │
 │  ┌─────────┐  ┌──────────┐           │
-│  │ SQLite  │  │ Whisper  │           │
+│  │ Postgres│  │ Whisper  │           │
 │  └─────────┘  └──────────┘           │
 └───────────────────────────────────────┘
 ```
@@ -303,7 +303,7 @@ pnpm run dev        # ✅ Use this - runs Next.js at http://localhost:3118
 ┌───────────────────────────────────────┐
 │   Backend (FastAPI)                   │
 │  ┌─────────┐  ┌──────────┐  ┌──────┐│
-│  │ SQLite  │  │ Whisper  │  │Vector││
+│  │Postgres │  │ Whisper  │  │Vector││
 │  │         │  │          │  │  DB  ││
 │  └─────────┘  └──────────┘  └──────┘│
 └───────────────────────────────────────┘
@@ -344,7 +344,7 @@ pnpm run dev        # ✅ Use this - runs Next.js at http://localhost:3118
 - `backend/app/groq_client.py` - Groq Whisper API client
 - `backend/app/vad.py` - Voice Activity Detection
 - `backend/app/rolling_buffer.py` - Sliding window audio buffer
-- `backend/app/db.py` - Database operations
+- `backend/app/db.py` - PostgreSQL database operations
 - `backend/app/summarization.py` - LLM summarization
 
 ### Frontend (✅ Complete - Pure Web)
@@ -388,8 +388,8 @@ const mediaRecorder = new MediaRecorder(stream);
 1. **On-Site Meetings Only**: 95% use case, room microphone sufficient
 2. **No System Audio**: Cannot capture Zoom/Teams (desktop app required)
 3. **Web Browser Only**: Desktop/laptop browsers, no mobile
-4. **Single-Instance Deployment**: No multi-tenant for MVP
-5. **Session-Based Access**: No complex auth for MVP
+4. **Single-Instance Deployment**: Single-instance deployment for the current rollout.
+5. **Session-Based Access**: Session-based access for the current release.
 
 ## Repository Conventions
 
@@ -450,7 +450,7 @@ pnpm run dev
 
 **Backend Architecture** ✅:
 - **FastAPI**: Fully functional on port 5167, WebSocket + HTTP endpoints
-- **Database**: SQLite with complete schema (meetings, transcripts, summary_processes, settings)
+- **Database**: PostgreSQL with complete schema (meetings, transcripts, summary_processes, settings)
 - **LLM Integration**: Working with pydantic-ai (Codex, OpenAI, Groq, Ollama)
 - **Transcription**: Groq Whisper Large v3 API (cloud, ~1-2s latency)
 - **Audio Flow**: Browser PCM → WebSocket → VAD → Buffer → Groq API → Transcript
@@ -529,7 +529,7 @@ End-to-end pipeline verified:
    - Transcripts display on screen
 
 2. **✅ Meeting Storage**
-   - Meetings save to SQLite via HTTP API
+   - Meetings save to PostgreSQL via HTTP API
    - Meeting list loads in sidebar
    - Meeting details page works
    - Transcripts persist correctly

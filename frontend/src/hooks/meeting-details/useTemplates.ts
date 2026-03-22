@@ -30,7 +30,8 @@ export function useTemplates() {
   const handleTemplateSelection = useCallback((templateId: string, templateName: string) => {
     // Only trigger change if actually different
     if (templateId !== selectedTemplate) {
-      previousTemplateRef.current = selectedTemplate;
+      const previousTemplate = selectedTemplate;
+      previousTemplateRef.current = previousTemplate;
       setSelectedTemplate(templateId);
       setTemplateChanged(true);
       // Save template preference to localStorage for future meetings
@@ -39,6 +40,9 @@ export function useTemplates() {
         description: `Using "${templateName}" template`,
       });
       Analytics.trackFeatureUsed('template_selected');
+      Analytics.trackNotesTemplateSwitched(previousTemplate, templateId, {
+        new_template_name: templateName,
+      });
     }
   }, [selectedTemplate]);
 
