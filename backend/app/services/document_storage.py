@@ -69,6 +69,8 @@ class DocumentStorageService:
         raw = await StorageService.download_bytes(path)
         if raw is None:
             return None
+        if path.endswith(".enc.json"):
+            return {"_is_encrypted_payload": True}
         try:
             return json.loads(raw.decode("utf-8"))
         except Exception as exc:

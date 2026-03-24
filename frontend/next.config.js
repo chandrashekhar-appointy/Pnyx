@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   reactStrictMode: false, // Disabled for BlockNote compatibility
   images: {
     unoptimized: true,

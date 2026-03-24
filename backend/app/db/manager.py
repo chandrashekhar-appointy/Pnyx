@@ -426,9 +426,11 @@ class DatabaseManager:
             if row:
                 # Convert Record to dict
                 data = dict(row)
-                data["result"] = await DocumentStorageService.load_summary_result(
-                    data.get("result_object_path")
-                )
+                path = data.get("result_object_path")
+                if path and path.endswith(".enc.json"):
+                    data["result"] = {"_is_encrypted_payload": True}
+                else:
+                    data["result"] = await DocumentStorageService.load_summary_result(path)
                 if isinstance(data.get("metadata"), str):
                     try:
                         data["metadata"] = json.loads(data["metadata"])
