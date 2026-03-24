@@ -251,10 +251,12 @@ async def save_user_encryption_key(
 async def delete_user_encryption_key_api(
     current_user: User = Depends(get_current_user)
 ):
-    """Clear the user's encryption key"""
+    """Clear the user's encryption key and disable encryption"""
     try:
         await db.delete_user_encryption_key(current_user.email)
-        return {"status": "success", "message": "Encryption key cleared"}
+        # Automatically disable encryption when the key is deleted to prevent silent plaintext fallback
+        await db.set_user_encryption_enabled(current_user.email, False)
+        return {"status": "success", "message": "Encryption key cleared and encryption disabled"}
     except Exception as e:
         logger.error(f"Error clearing encryption key: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear key")
@@ -278,8 +280,19 @@ async def set_encryption_status(
     """Update the current user's encryption enabled status"""
     enabled = request.get("enabled", False)
     try:
+        if enabled:
+            # Enforce that the user has a public key uploaded before enabling encryption
+            user_info = await db.get_user_credits(current_user.email)
+            if not user_info or not user_info.get("encryption_public_key"):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot enable encryption without a valid public key registered. Please initialize your encryption key pair first."
+                )
+
         await db.set_user_encryption_enabled(current_user.email, enabled)
         return {"status": "success", "enabled": enabled}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error setting encryption status: {e}")
         raise HTTPException(status_code=500, detail="Failed to set encryption status")

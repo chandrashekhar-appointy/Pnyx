@@ -216,4 +216,42 @@ export class KeyManager {
       encryptedData.buffer as ArrayBuffer
     );
   }
+
+  /**
+   * Decrypt a document (audio or notes) using a Web Worker.
+   * Prevents UI hangs for large files.
+   */
+  static async decryptDocumentAsync(
+    sessionKey: CryptoKey,
+    nonce: Uint8Array,
+    encryptedData: Uint8Array
+  ): Promise<ArrayBuffer> {
+    const sessionKeyRaw = await window.crypto.subtle.exportKey('raw', sessionKey);
+    
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./decryption.worker.ts', import.meta.url));
+      
+      worker.onmessage = (e) => {
+        const { decryptedBuffer, error } = e.data;
+        if (error) {
+          reject(new Error(error));
+        } else {
+          resolve(decryptedBuffer);
+        }
+        worker.terminate();
+      };
+      
+      worker.onerror = (e) => {
+        reject(new Error('Worker error: ' + e.message));
+        worker.terminate();
+      };
+      
+      // Send data to worker, including the buffer as a transferable object
+      worker.postMessage({
+        sessionKeyRaw,
+        nonce,
+        encryptedData
+      }, [sessionKeyRaw, encryptedData.buffer as ArrayBuffer]);
+    });
+  }
 }

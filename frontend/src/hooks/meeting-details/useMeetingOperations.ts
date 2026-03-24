@@ -64,7 +64,7 @@ export function useMeetingOperations({
         const sessionKey = await KeyManager.decryptSessionKey(
           keyPair.privateKey, ephemeralPubKey, kekNonce, wrappedKey
         );
-        const decryptedBuffer = await KeyManager.decryptDocument(
+        const decryptedBuffer = await KeyManager.decryptDocumentAsync(
           sessionKey, nonce, encryptedData
         );
 

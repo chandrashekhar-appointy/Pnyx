@@ -8,14 +8,18 @@ import { Label } from '@/components/ui/label';
 import { KeyManager } from '@/lib/crypto/key_manager';
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
-import { Shield, Download, RefreshCw, Trash2, AlertTriangle, Key, CheckCircle2 } from 'lucide-react';
+import { Shield, Download, RefreshCw, Trash2, AlertTriangle, Key, CheckCircle2, Lock, X } from 'lucide-react';
 import Analytics from '@/lib/analytics';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 export function EncryptionSettings() {
     const [hasKey, setHasKey] = useState<boolean>(false);
     const [isEncryptionEnabled, setIsEncryptionEnabled] = useState<boolean>(false);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
+    const [showBackupModal, setShowBackupModal] = useState(false);
+    const [showDeactivateModal, setShowDeactivateModal] = useState(false);
+    const [hasDownloadedBackup, setHasDownloadedBackup] = useState(false);
 
     useEffect(() => {
         const init = async () => {
@@ -65,6 +69,7 @@ export function EncryptionSettings() {
             URL.revokeObjectURL(url);
             
             toast.success('Private key downloaded. Store it safely!');
+            setHasDownloadedBackup(true);
             Analytics.track('encryption_key_backed_up');
         } catch (error) {
             toast.error('Failed to export private key.');
@@ -72,7 +77,7 @@ export function EncryptionSettings() {
     };
 
     const handleRotateKeys = async () => {
-        if (!confirm('Are you sure you want to rotate your encryption keys? This will generate a new pair. Old meetings will remain encrypted with your old key—make sure you have it backed up!')) {
+        if (hasKey && !confirm('Are you sure you want to rotate your encryption keys? This will generate a new pair. Old meetings will remain encrypted with your old key—make sure you have it backed up!')) {
             return;
         }
 
@@ -85,8 +90,10 @@ export function EncryptionSettings() {
             });
 
             if (response.ok) {
-                toast.success('Encryption keys rotated successfully.');
+                toast.success('Encryption keys generated. Backup required.');
                 setHasKey(true);
+                setHasDownloadedBackup(false);
+                setShowBackupModal(true);
                 Analytics.track('encryption_keys_rotated');
             } else {
                 toast.error('Failed to sync new public key to server.');
@@ -99,10 +106,8 @@ export function EncryptionSettings() {
     };
 
     const handleDeactivate = async () => {
-        if (!confirm('WARNING: This will permanently remove your encryption keys from this browser and the server. You will NOT be able to access existing encrypted meetings unless you have a backup of your private key! Proceed?')) {
-            return;
-        }
-
+        // Proceeding with deactivation (modal already confirmed)
+        setShowDeactivateModal(false);
         setActionLoading(true);
         try {
             // 1. Remove public key from server
@@ -130,7 +135,9 @@ export function EncryptionSettings() {
     const handleToggleEncryption = async (enabled: boolean) => {
         // If enabling for the first time without keys, generate them first.
         if (enabled && !hasKey) {
-            if (!confirm('This will generate a new encryption key pair. Make sure to download your backup once initialized. Continue?')) {
+            // No need for a confirm here if we show the mandatory backup modal later, 
+            // but we should warn them once.
+            if (!confirm('This will generate a secure encryption key pair for your meetings. You must download a backup of this key to avoid losing access to your data. Proceed?')) {
                 return;
             }
             setActionLoading(true);
@@ -141,10 +148,13 @@ export function EncryptionSettings() {
                     body: JSON.stringify({ public_key: keys.publicKey }),
                 });
                 setHasKey(true);
-                toast.success('Encryption keys generated.');
+                setHasDownloadedBackup(false);
+                setShowBackupModal(true);
+                toast.success('Encryption keys generated. Backup required.');
+                // Proceed to update the server status as well
             } catch (error) {
                 toast.error('Failed to generate keys.');
-                return; // Stop if key gen fails
+                return; 
             } finally {
                 setActionLoading(false);
             }
@@ -161,10 +171,17 @@ export function EncryptionSettings() {
                 toast.success(`Encryption for new meetings is now ${enabled ? 'ENABLED' : 'DISABLED'}.`);
                 Analytics.track('encryption_toggle_changed', { enabled });
             } else {
-                toast.error('Failed to update encryption status.');
+                const errorData = await response.json().catch(() => ({}));
+                console.error('Failed to update encryption status:', errorData);
+                toast.error(`Failed to update encryption status: ${errorData.detail || 'Unknown error'}`);
+                // Revert toggle if failed? 
+                // setIsEncryptionEnabled(!enabled);
             }
         } catch (error) {
+            console.error('Network error while updating status:', error);
             toast.error('Network error while updating status.');
+        } finally {
+            setActionLoading(false);
         }
     };
 
@@ -329,7 +346,7 @@ export function EncryptionSettings() {
                                 variant="destructive" 
                                 size="sm" 
                                 className="w-full sm:w-auto h-8 px-4"
-                                onClick={handleDeactivate}
+                                onClick={() => setShowDeactivateModal(true)}
                                 disabled={actionLoading}
                             >
                                 <Trash2 className="mr-2 h-3.5 w-3.5" />
@@ -353,6 +370,92 @@ export function EncryptionSettings() {
                     <li><strong>Opt-in:</strong> We only encrypt meetings recorded while encryption is enabled.</li>
                 </ul>
             </div>
+
+            {/* Mandatory Backup Modal */}
+            <Dialog open={showBackupModal} onOpenChange={(open) => {
+                if (!open && !hasDownloadedBackup) {
+                    toast.error("Download required", {
+                        description: "You must download a backup of your key for safety."
+                    });
+                    return;
+                }
+                setShowBackupModal(open);
+            }}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Lock className="h-5 w-5 text-blue-600" />
+                            Key Backup Required
+                        </DialogTitle>
+                        <DialogDescription>
+                            Your new encryption keys have been generated. Since this is <strong>Zero-Knowledge</strong>, we cannot recover your data if you lose access to this browser.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex gap-3">
+                        <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+                        <div className="text-xs text-amber-800 leading-relaxed">
+                            <p className="font-bold mb-1">IMPORTANT:</p>
+                            Download this file and store it in a password manager or secure cloud storage. Without it, your encrypted meetings are gone forever if you clear your browser data.
+                        </div>
+                    </div>
+                    <DialogFooter className="sm:justify-start flex-col sm:flex-row gap-2">
+                        <Button 
+                            type="button" 
+                            variant="default" 
+                            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700"
+                            onClick={handleBackupKey}
+                        >
+                            <Download className="mr-2 h-4 w-4" />
+                            Download Private Key
+                        </Button>
+                        <Button 
+                            type="button" 
+                            variant="outline" 
+                            className="w-full sm:w-auto"
+                            disabled={!hasDownloadedBackup}
+                            onClick={() => setShowBackupModal(false)}
+                        >
+                            I've saved it
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Deactivate Modal */}
+            <Dialog open={showDeactivateModal} onOpenChange={setShowDeactivateModal}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-red-600">
+                            <AlertTriangle className="h-5 w-5" />
+                            Deactivate Encryption?
+                        </DialogTitle>
+                        <DialogDescription>
+                            This will permanently remove your encryption keys from this browser and the server.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg p-4">
+                        <strong>WARNING:</strong> You will NOT be able to access existing encrypted meetings unless you have a backup of your private key!
+                    </div>
+                    <DialogFooter className="sm:justify-end gap-2 mt-4">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setShowDeactivateModal(false)}
+                            disabled={actionLoading}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="destructive"
+                            onClick={handleDeactivate}
+                            disabled={actionLoading}
+                        >
+                            {actionLoading ? 'Deactivating...' : 'Yes, Deactivate'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
