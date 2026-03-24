@@ -2467,28 +2467,41 @@ async def get_meeting_recording_url(
     try:
         latest_session = await db.get_latest_recording_session_for_meeting(meeting_id)
         preferred_paths = [
-            (f"{meeting_id}/recording.wav", "audio/wav"),
-            (f"{meeting_id}/recording.opus", "audio/ogg"),
-            (f"{meeting_id}/recording.m4a", "audio/mp4"),
+            (f"{meeting_id}/recording.wav", "audio/wav", False),
+            (f"{meeting_id}/recording.opus", "audio/ogg", False),
+            (f"{meeting_id}/recording.m4a", "audio/mp4", False),
+            # E2EE: encrypted audio fallback (plaintext deleted by post_recording)
+            (f"{meeting_id}/recording.enc.wav", "application/octet-stream", True),
         ]
 
         STORAGE_TYPE = os.getenv("STORAGE_TYPE", "local").lower()
         selected_path = None
         selected_mime = None
         selected_format = None
+        is_encrypted = False
 
         # 1) Check configured storage first
-        for path, mime in preferred_paths:
+        for path, mime, encrypted in preferred_paths:
             if await StorageService.check_file_exists(path):
                 selected_path = path
                 selected_mime = mime
                 selected_format = path.split(".")[-1]
+                is_encrypted = encrypted
                 break
 
         # 2) Cross-check fallback storage mode if primary mode missed
         if not selected_path and STORAGE_TYPE == "gcp":
-            for path, mime in preferred_paths:
+            for path, mime, encrypted in preferred_paths:
                 if await StorageService._check_local_exists(path):
+                    if encrypted:
+                        # Encrypted audio must go through artifact endpoint for client-side decryption
+                        return {
+                            "encrypted": True,
+                            "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                            "format": "enc.wav",
+                            "mime_type": "application/octet-stream",
+                            "filename": f"recording-{meeting_id}.enc.wav",
+                        }
                     return {
                         "url": f"/audio/{path}",
                         "expiration": 3600,
@@ -2497,8 +2510,16 @@ async def get_meeting_recording_url(
                         "filename": f"recording-{meeting_id}.{path.split('.')[-1]}",
                     }
         elif not selected_path and STORAGE_TYPE != "gcp":
-            for path, mime in preferred_paths:
+            for path, mime, encrypted in preferred_paths:
                 if await StorageService._check_gcp_exists(path):
+                    if encrypted:
+                        return {
+                            "encrypted": True,
+                            "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                            "format": "enc.wav",
+                            "mime_type": "application/octet-stream",
+                            "filename": f"recording-{meeting_id}.enc.wav",
+                        }
                     fmt = path.split(".")[-1]
                     url = await StorageService._generate_gcp_signed_url(
                         path,
@@ -2530,6 +2551,16 @@ async def get_meeting_recording_url(
                     },
                 )
             raise HTTPException(status_code=404, detail="Recording not found")
+
+        # E2EE: encrypted audio goes through artifact endpoint for client-side decryption
+        if is_encrypted:
+            return {
+                "encrypted": True,
+                "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                "format": "enc.wav",
+                "mime_type": "application/octet-stream",
+                "filename": f"recording-{meeting_id}.enc.wav",
+            }
 
         download_filename = f"recording-{meeting_id}.{selected_format}"
         url = await StorageService.generate_signed_url(
@@ -2947,11 +2978,14 @@ async def get_meeting_artifact(
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     try:
+        try:
+            from ...services.document_storage import DocumentStorageService
+        except (ImportError, ValueError):
+            from services.document_storage import DocumentStorageService
+
         if filename == "transcript.enc.json":
-             from services.document_storage import DocumentStorageService
              full_path = DocumentStorageService.transcript_path(meeting_id).replace(".json", ".enc.json")
         elif filename == "summary.enc.json":
-             from services.document_storage import DocumentStorageService
              full_path = DocumentStorageService.summary_path(meeting_id).replace(".json", ".enc.json")
         else:
             # Traditional behavior: simple files in {meeting_id} folder
@@ -2959,7 +2993,9 @@ async def get_meeting_artifact(
                 raise HTTPException(status_code=400, detail="Invalid filename format")
             full_path = f"{meeting_id}/{filename}"
             
-        data = await StorageService.download_file(full_path)
+        data = await StorageService.download_bytes(full_path)
+        if not data:
+            raise HTTPException(status_code=404, detail="Artifact not found")
 
         content_type = "application/octet-stream"
         if filename.endswith(".json"):

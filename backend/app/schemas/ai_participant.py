@@ -63,6 +63,7 @@ class MeetingHostState(BaseModel):
     suggested_items: List[HostSuggestion] = Field(default_factory=list)
     pinned_items: List[HostSuggestion] = Field(default_factory=list)
     dismissed_item_ids: List[str] = Field(default_factory=list)
+    handled_content_hashes: List[str] = Field(default_factory=list)
     intervention_history: List[HostInterventionCard] = Field(default_factory=list)
     last_response_outcomes: List[str] = Field(default_factory=list)
     counters: Dict[str, int] = Field(default_factory=dict)

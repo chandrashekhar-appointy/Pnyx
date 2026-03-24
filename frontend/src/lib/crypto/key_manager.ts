@@ -1,4 +1,4 @@
-import { openDB, IDBPDatabase } from 'idb';
+// import { openDB, IDBPDatabase } from 'idb';
 
 const DB_NAME = 'pnyx-crypto';
 const STORE_NAME = 'keys';
@@ -10,16 +10,23 @@ export interface KeyPair {
 }
 
 export class KeyManager {
-  private static db: Promise<IDBPDatabase>;
+  private static _db: Promise<any> | null = null;
 
-  static {
-    this.db = openDB(DB_NAME, 1, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME);
-        }
-      },
-    });
+  private static async getDb(): Promise<any> {
+    if (!this._db) {
+      if (typeof window === 'undefined') {
+        return Promise.reject(new Error('IndexedDB is not available on the server'));
+      }
+      const { openDB } = await import('idb');
+      this._db = openDB(DB_NAME, 1, {
+        upgrade(db) {
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
+        },
+      });
+    }
+    return this._db;
   }
 
   /**
@@ -54,7 +61,7 @@ export class KeyManager {
    */
   static async destroyKeys(): Promise<void> {
     console.log('🗝️ KeyManager: Deleting keys from IndexedDB...');
-    const db = await this.db;
+    const db = await this.getDb();
     await db.delete(STORE_NAME, KEY_NAME);
     console.log('✅ KeyManager: Keys deleted.');
   }
@@ -79,7 +86,7 @@ export class KeyManager {
    */
   static async storeKeyPair(pair: KeyPair): Promise<void> {
     console.log('🗝️ KeyManager: Storing key pair in IndexedDB...', { KEY_NAME });
-    const db = await this.db;
+    const db = await this.getDb();
     await db.put(STORE_NAME, pair, KEY_NAME);
     console.log('✅ KeyManager: Key pair stored successfully.');
   }
@@ -89,7 +96,7 @@ export class KeyManager {
    */
   static async getKeyPair(): Promise<KeyPair | null> {
     try {
-      const db = await this.db;
+      const db = await this.getDb();
       const pair = await db.get(STORE_NAME, KEY_NAME);
       console.log('🗝️ KeyManager: Retrieved key pair from IndexedDB:', !!pair);
       return pair || null;

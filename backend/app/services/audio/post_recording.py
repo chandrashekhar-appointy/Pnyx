@@ -223,11 +223,14 @@ class PostRecordingService:
                             
                             # 1. Encrypt merged audio
                             gcp_wav_path = f"{meeting_id}/recording.wav"
-                            audio_data = await StorageService.download_file(gcp_wav_path)
+                            audio_data = await StorageService.download_bytes(gcp_wav_path)
+                            if not audio_data:
+                                logger.error(f"Failed to download audio for encryption: {gcp_wav_path}")
+                                raise ValueError(f"Missing audio file {gcp_wav_path}")
                             encrypted_audio, audio_wrapper = EncryptionService.encrypt_document(audio_data, public_key_spki)
                             
                             # Save encrypted audio AND DELETE PLAINTEXT
-                            await StorageService.upload_file(f"{meeting_id}/recording.enc.wav", encrypted_audio)
+                            await StorageService.upload_bytes(encrypted_audio, f"{meeting_id}/recording.enc.wav")
                             await StorageService.delete_file(gcp_wav_path)
                             
                             # 2. Process and Encrypt Transcript / Notes
@@ -247,7 +250,7 @@ class PostRecordingService:
                                 transcript_json = json.dumps(transcript_payload).encode('utf-8')
                                 enc_transcript, trans_wrapper = EncryptionService.encrypt_document(transcript_json, public_key_spki)
                                 
-                                await StorageService.upload_file(f"{meeting_id}/transcript.enc.json", enc_transcript)
+                                await StorageService.upload_bytes(enc_transcript, f"{meeting_id}/transcript.enc.json")
                                 encryption_meta["transcript"] = trans_wrapper
                                 
                                 # Update database with encryption metadata

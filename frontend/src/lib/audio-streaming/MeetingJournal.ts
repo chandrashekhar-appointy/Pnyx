@@ -1,4 +1,4 @@
-import { openDB, IDBPDatabase } from 'idb';
+// import { openDB, IDBPDatabase } from 'idb';
 
 const DB_NAME = 'pnyx-journal';
 const STORE_NAME = 'segments';
@@ -12,22 +12,29 @@ export interface TranscriptSegment {
 }
 
 export class MeetingJournal {
-  private static db: Promise<IDBPDatabase>;
+  private static _db: Promise<any> | null = null;
 
-  static {
-    this.db = openDB(DB_NAME, 1, {
-      upgrade(db) {
-        // Create an object store with a composite key [meetingId, index]
-        db.createObjectStore(STORE_NAME, { keyPath: ['meetingId', 'index'] });
-      },
-    });
+  private static async getDb(): Promise<any> {
+    if (!this._db) {
+      if (typeof window === 'undefined') {
+        return Promise.reject(new Error('IndexedDB is not available on the server'));
+      }
+      const { openDB } = await import('idb');
+      this._db = openDB(DB_NAME, 1, {
+        upgrade(db) {
+          // Create an object store with a composite key [meetingId, index]
+          db.createObjectStore(STORE_NAME, { keyPath: ['meetingId', 'index'] });
+        },
+      });
+    }
+    return this._db;
   }
 
   /**
    * Save a single transcript segment to IndexedDB.
    */
   static async saveSegment(segment: TranscriptSegment): Promise<void> {
-    const db = await this.db;
+    const db = await this.getDb();
     await db.put(STORE_NAME, segment);
   }
 
@@ -35,7 +42,7 @@ export class MeetingJournal {
    * Retrieve all segments for a specific meeting, sorted by index.
    */
   static async getTranscript(meetingId: string): Promise<TranscriptSegment[]> {
-    const db = await this.db;
+    const db = await this.getDb();
     const tx = db.transaction(STORE_NAME, 'readonly');
     const store = tx.objectStore(STORE_NAME);
     
@@ -44,14 +51,14 @@ export class MeetingJournal {
     const all = await store.getAll();
     return all
       .filter((s: TranscriptSegment) => s.meetingId === meetingId)
-      .sort((a, b) => a.index - b.index);
+      .sort((a: TranscriptSegment, b: TranscriptSegment) => a.index - b.index);
   }
 
   /**
    * Clear all segments for a specific meeting.
    */
   static async clearMeeting(meetingId: string): Promise<void> {
-    const db = await this.db;
+    const db = await this.getDb();
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
     const keys = await store.getAllKeys();

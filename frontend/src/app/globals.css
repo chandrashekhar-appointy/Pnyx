@@ -159,6 +159,48 @@
     overflow: visible !important;
   }
 
+  /* Glassmorphism surface utility */
+  .glass-surface {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  }
+
+  /* Subtle dot-grid background for the main workspace */
+  .dot-grid-bg {
+    background-image: radial-gradient(circle, #cbd5e1 0.8px, transparent 0.8px);
+    background-size: 24px 24px;
+    background-color: #f8fafc;
+  }
+
+  /* Insight chip: floating glassmorphic card */
+  .insight-chip {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+    border-radius: 1rem;
+    transition: box-shadow 0.2s ease, transform 0.15s ease;
+  }
+
+  .insight-chip:hover {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+    transform: translateY(-1px);
+  }
+
+  /* Focus-fade for transcript aging */
+  .focus-fade {
+    transition: opacity 0.4s ease;
+  }
+
+  /* Past insights drawer transition */
+  .drawer-slide {
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+  }
+
   /* Slim scrollbars for intelligence panel sub-sections */
   .panel-scroll::-webkit-scrollbar {
     width: 4px;

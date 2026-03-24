@@ -11,7 +11,7 @@ import { ChatInterface } from '@/components/MeetingDetails/ChatInterface';
 import { Bot, MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
-import { Shield, Key, Download, AlertTriangle, Lock } from 'lucide-react';
+import { Key, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 // Custom hooks
@@ -48,14 +48,14 @@ export default function PageContent({
     summaryDataKeys: summaryData ? Object.keys(summaryData) : null,
     transcriptsCount: meeting.transcripts?.length,
   });
-  
+
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [decryptionError, setDecryptionError] = useState<string | null>(null);
 
   // State
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
-  const [shareDialogState, setShareDialogState] = useState<{isOpen: boolean, meetingId: string}>({isOpen: false, meetingId: ""});
+  const [shareDialogState, setShareDialogState] = useState<{ isOpen: boolean, meetingId: string }>({ isOpen: false, meetingId: "" });
 
   useEffect(() => {
     const handleShowShare = (e: any) => {
@@ -185,7 +185,7 @@ export default function PageContent({
       }
     }
   }, [summaryGeneration.summaryStatus, onMeetingUpdated]);
-  
+
   // E2EE Decryption Effect
   useEffect(() => {
     const attemptDecryption = async () => {
@@ -195,29 +195,42 @@ export default function PageContent({
       const hasTranscript = !!encryption.transcript;
       const hasSummary = !!encryption.summary;
       if (!hasTranscript && !hasSummary) return;
-      
+
       console.log('🔐 E2EE: Encrypted content detected, starting decryption...');
       setIsDecrypting(true);
       setDecryptionError(null);
-      
+
       try {
         const keyPair = await KeyManager.getKeyPair();
         if (!keyPair || !keyPair.privateKey) {
-          setDecryptionError("MISSING_KEY");
-          throw new Error("No encryption key found in this browser.");
+          // No key → hide everything and redirect to settings for key restoration
+          console.warn('🔐 E2EE: No private key found, redirecting to settings...');
+          meetingData.setTranscripts([]);
+          meetingData.setAiSummary(null);
+          toast.error("Encryption key required", {
+            description: "Redirecting to settings to restore your private key..."
+          });
+          router.push('/settings?tab=encryption');
+          return;
         }
-        
+
         // Helper to decrypt a given metadata entry and URL
         const decryptPayload = async (meta: any, url: string) => {
           const response = await authFetch(url);
-          if (!response.ok) throw new Error(`Failed to fetch encrypted artifact: ${url}`);
+          if (!response.ok) {
+            if (response.status === 404) {
+              console.warn(`🔐 E2EE: Encrypted artifact not found (404): ${url}, skipping`);
+              return null; // Gracefully skip missing artifacts
+            }
+            throw new Error(`Failed to fetch encrypted artifact: ${url}`);
+          }
           const encryptedData = new Uint8Array(await response.arrayBuffer());
-          
+
           const ephemeralPubKey = Uint8Array.from(atob(meta.ephemeralPublicKey), c => c.charCodeAt(0));
           const kekNonce = Uint8Array.from(atob(meta.kekNonce), c => c.charCodeAt(0));
           const wrappedKey = Uint8Array.from(atob(meta.wrappedKey), c => c.charCodeAt(0));
           const nonce = Uint8Array.from(atob(meta.nonce), c => c.charCodeAt(0));
-          
+
           const sessionKey = await KeyManager.decryptSessionKey(
             keyPair.privateKey, ephemeralPubKey, kekNonce, wrappedKey
           );
@@ -230,20 +243,35 @@ export default function PageContent({
         // 1. Decrypt Transcript if present and meeting transcripts are empty (purged)
         if (hasTranscript && (!meetingData.transcripts || meetingData.transcripts.length === 0)) {
           console.log('🔐 E2EE: Decrypting full transcript...');
-          const decrypted = await decryptPayload(encryption.transcript, `/api/meetings/${meeting.id}/artifacts/transcript.enc.json`);
-          meetingData.setTranscripts(decrypted);
+          try {
+            const decrypted = await decryptPayload(encryption.transcript, `/api/meetings/${meeting.id}/artifacts/transcript.enc.json`);
+            if (decrypted) {
+              meetingData.setTranscripts(decrypted);
+            }
+          } catch (err: any) {
+            console.error('🔐 E2EE: Transcript decryption failed:', err);
+            // Don't block the page—just log the error for transcript
+          }
         }
 
         // 2. Decrypt Summary if present
         if (hasSummary) {
           console.log('🔐 E2EE: Decrypting AI summary...');
-          const decrypted = await decryptPayload(encryption.summary, `/api/meetings/${meeting.id}/artifacts/summary.enc.json`);
-          // DocumentStorageService structure: { meeting_id, result: { ... } }
-          if (decrypted && decrypted.result) {
-            meetingData.setAiSummary(decrypted.result);
+          try {
+            const decrypted = await decryptPayload(encryption.summary, `/api/meetings/${meeting.id}/artifacts/summary.enc.json`);
+            // DocumentStorageService structure: { meeting_id, result: { ... } }
+            if (decrypted && decrypted.result) {
+              meetingData.setAiSummary(decrypted.result);
+            }
+          } catch (err: any) {
+            console.error('🔐 E2EE: Summary decryption failed:', err);
+            // Show a non-blocking toast instead of overlay
+            toast.error("Could not decrypt meeting notes", {
+              description: err.message || "The encrypted notes could not be decrypted."
+            });
           }
         }
-        
+
         console.log('✅ E2EE: Decryption successful!');
       } catch (err: any) {
         console.error('❌ E2EE Decryption Error:', err);
@@ -255,7 +283,7 @@ export default function PageContent({
         setIsDecrypting(false);
       }
     };
-    
+
     if (notesGenerationInfo) {
       attemptDecryption();
     }
@@ -293,65 +321,19 @@ export default function PageContent({
       className="flex flex-col h-screen bg-gray-50"
     >
       <div className="flex flex-1 overflow-hidden relative">
-        {/* E2EE Decryption Overlay/Prompt */}
-        {decryptionError === "MISSING_KEY" && (
-          <div className="absolute inset-0 z-50 bg-white/95 flex items-center justify-center p-8 text-center backdrop-blur-sm">
-            <div className="max-w-md space-y-6">
-              <div className="p-4 bg-yellow-50 rounded-full w-20 h-20 mx-auto flex items-center justify-center">
-                <Lock className="w-10 h-10 text-yellow-600" />
-              </div>
-              <div className="space-y-2">
-                <h2 className="text-2xl font-bold text-gray-900">Meeting is Encrypted</h2>
-                <p className="text-gray-600">
-                  You need your private key to view this meeting. Your browser data might have been cleared or you are on a new device.
-                </p>
-              </div>
-              <div className="p-6 bg-gray-50 rounded-xl border border-gray-200">
-                <p className="text-sm font-medium text-gray-700 mb-3 text-left">Paste your Private Key to decrypt:</p>
-                <textarea
-                  id="meeting-restore-key"
-                  className="w-full min-h-[100px] text-[11px] font-mono p-3 border rounded-lg bg-white shadow-inner"
-                  placeholder="Paste your base64 private key here..."
-                />
-                <Button 
-                  className="w-full mt-4 bg-blue-600 hover:bg-blue-700 h-11"
-                  onClick={async () => {
-                    const input = document.getElementById('meeting-restore-key') as HTMLTextAreaElement;
-                    const val = input?.value?.trim();
-                    if (!val) {
-                      toast.error("Please paste your key.");
-                      return;
-                    }
-                    try {
-                      const key = await KeyManager.importPrivateKey(val);
-                      await KeyManager.storeKeyPair({ 
-                        privateKey: key, 
-                        publicKey: null as any 
-                      });
-                      toast.success("Key restored! Decrypting...");
-                      window.location.reload();
-                    } catch (e) {
-                      toast.error("Invalid key format.");
-                    }
-                  }}
-                >
-                  <Key className="w-4 h-4 mr-2" />
-                  Unlock & Decrypt
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Don't have your key? You can find it in your <a href="/settings?tab=encryption" className="text-blue-600 underline font-medium">Encryption Settings</a> if you already have it saved.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {decryptionError && decryptionError !== "MISSING_KEY" && (
+        {/* E2EE Decryption Overlay */}
+        {decryptionError && (
           <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center p-8 text-center">
             <AlertTriangle className="w-12 h-12 text-red-500 mb-4" />
             <h3 className="text-xl font-bold text-red-700 mb-2">Decryption Error</h3>
             <p className="text-gray-600 mb-4">{decryptionError}</p>
-            <Button onClick={() => window.location.reload()} variant="outline">Retry</Button>
+            <div className="flex gap-3">
+              <Button onClick={() => window.location.reload()} variant="outline">Retry</Button>
+              <Button onClick={() => router.push('/settings?tab=encryption')} variant="default" className="bg-blue-600 hover:bg-blue-700">
+                <Key className="w-4 h-4 mr-2" />
+                Manage Keys
+              </Button>
+            </div>
           </div>
         )}
 

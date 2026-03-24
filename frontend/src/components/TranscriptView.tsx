@@ -31,6 +31,7 @@ interface SpeakerMap {
 
 interface TranscriptViewProps {
   transcripts: Transcript[];
+  partialTranscript?: string; // Live partial text from streaming transcription
   isRecording?: boolean;
   isPaused?: boolean; // Is recording paused (affects UI indicators)
   activeDuration?: number; // Total active duration in seconds
@@ -314,7 +315,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
       {/* Recording Status Bar - Sticky at top, always visible when recording */}
       <AnimatePresence>
         {isRecording && (
-          <div className="sticky top-4 z-10 bg-white pb-2">
+          <div className="sticky top-4 z-10 bg-white/80 backdrop-blur-sm pb-2">
             <RecordingStatusBar
               isPaused={isPaused}
               isRecording={isRecording}
@@ -370,13 +371,27 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
 
         const segmentStyle = getSegmentStyle(transcript.alignment_state, transcript.source);
 
+        // Focus Mode: calculate distance from the latest segment
+        const totalCount = transcripts.length;
+        const distanceFromEnd = totalCount - 1 - index;
+        // Opacity tiers: recent (0-2) = full, mid (3-7) = 70%, old (8+) = 40%
+        const focusOpacity = isRecording
+          ? distanceFromEnd <= 2
+            ? 'opacity-100'
+            : distanceFromEnd <= 7
+              ? 'opacity-70'
+              : 'opacity-40'
+          : 'opacity-100';
+        // Only show borders/backgrounds on the last 3 segments when recording
+        const focusSegmentStyle = isRecording && distanceFromEnd > 2 ? '' : segmentStyle;
+
         return (
           <motion.div
             key={transcript.id ? `${transcript.id}-${index}` : `transcript-${index}`}
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.15 }}
-            className={`mb-3 ${segmentStyle}`}
+            className={`mb-3 focus-fade ${focusOpacity} ${focusSegmentStyle}`}
           >
             <div className="flex items-start gap-2">
               <Tooltip>
@@ -468,10 +483,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="flex items-center gap-2 mt-4 text-gray-500"
+          className="flex items-center gap-1.5 mt-3 text-gray-400"
         >
-          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-          <span className="text-sm">Listening...</span>
+          <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse"></div>
+          <span className="text-xs">Listening…</span>
         </motion.div>
       )}
 

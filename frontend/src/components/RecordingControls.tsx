@@ -599,7 +599,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             </AlertDescription>
           </Alert>
         )}
-        <div className="flex items-center space-x-3 bg-white rounded-full shadow-lg px-4 py-2">
+        <div className="flex items-center space-x-3 glass-surface rounded-full px-4 py-1.5">
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
@@ -617,7 +617,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           void handleUserStartRequest();
                         }}
                         disabled={isStarting || isProcessing || isRecordingDisabled}
-                        className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
+                        className={`w-10 h-10 flex items-center justify-center ${isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
                           } rounded-full text-white transition-colors relative`}
                       >
                         {isStarting ? (
@@ -632,13 +632,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     </TooltipContent>
                   </Tooltip>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-900">
+                    <p className="text-xs font-semibold text-gray-900">
                       {isStarting ? 'Starting Pnyx...' : 'Start Pnyx'}
                     </p>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-[11px] text-gray-500 leading-tight">
                       {isStarting
-                        ? 'Preparing live recording and transcription. This can take a few seconds.'
-                        : 'Tap the mic to begin recording and live notes.'}
+                        ? 'Preparing live transcription…'
+                        : 'Tap the mic to begin.'}
                     </p>
                   </div>
                 </>
@@ -688,13 +688,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                 </div>
               )}
 
-              <div className="flex items-center space-x-1 mx-2">
+              <div className="flex items-center space-x-0.5 mx-1.5">
                 {barHeights.map((height, index) => (
                   <div
                     key={index}
-                    className="w-1 rounded-full transition-all duration-200 bg-red-500"
+                    className="w-0.5 rounded-full transition-all duration-200 bg-red-400"
                     style={{
-                      height: isRecording ? height : '4px',
+                      height: isRecording ? height : '3px',
                     }}
                   />
                 ))}

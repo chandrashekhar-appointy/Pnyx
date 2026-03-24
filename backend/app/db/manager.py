@@ -246,8 +246,35 @@ class DatabaseManager:
                         param_idx += 1
 
                     if metadata:
+                        # Merge with existing metadata to preserve encryption keys
+                        # (post_recording sets encryption.audio/transcript, notes regen
+                        # should not clobber those when setting encryption.summary)
+                        existing_row = await conn.fetchval(
+                            "SELECT metadata FROM summary_processes WHERE meeting_id = $1",
+                            meeting_id,
+                        )
+                        existing_metadata = {}
+                        if existing_row:
+                            try:
+                                existing_metadata = (
+                                    json.loads(existing_row)
+                                    if isinstance(existing_row, str)
+                                    else existing_row or {}
+                                )
+                            except Exception:
+                                existing_metadata = {}
+
+                        merged_metadata = {**existing_metadata, **metadata}
+                        # Deep-merge the "encryption" sub-dict so that
+                        # audio/transcript wrappers survive a summary-only update
+                        if "encryption" in existing_metadata or "encryption" in metadata:
+                            merged_metadata["encryption"] = {
+                                **(existing_metadata.get("encryption") or {}),
+                                **(metadata.get("encryption") or {}),
+                            }
+
                         update_fields.append(f"metadata = ${param_idx}")
-                        params.append(json.dumps(metadata))
+                        params.append(json.dumps(merged_metadata))
                         param_idx += 1
 
                     if status.upper() in ["COMPLETED", "FAILED"]:
@@ -2454,7 +2481,8 @@ class DatabaseManager:
                 """
                 )
 
-                logger.info(f"Cleanup performed: Purged old operational data older than {days} days")
+                # The original logger.info for overall cleanup is removed as specific logs are added.
+                # logger.info(f"Cleanup performed: Purged old operational data older than {days} days")
         except Exception as e:
             logger.error(f"Error in data cleanup: {str(e)}")
 

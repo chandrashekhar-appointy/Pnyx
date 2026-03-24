@@ -1273,12 +1273,18 @@ Recent transcript window:
     def _normalize_compare_text(value: str) -> str:
         return " ".join(str(value or "").strip().lower().split())
 
+    def _get_content_hash(self, event_type: str, content: str) -> str:
+        """Create a stable hash for a suggestion's type and content."""
+        normalized = self._normalize_compare_text(content)
+        return f"{event_type}:{normalized}"
+
     def _has_similar_host_item(self, event_type: str, title: str, content: str) -> bool:
         candidate_title = self._normalize_compare_text(title)
         candidate_content = self._normalize_compare_text(content)
         if not candidate_content:
             return False
 
+        # Check existing live items
         for item in (
             self._host_state.pinned_items
             + self._host_state.suggested_items
@@ -1297,6 +1303,12 @@ Recent transcript window:
                 or existing_content in candidate_content
             ):
                 return True
+
+        # Check historical handled items (dismissed or pinned in the past)
+        current_hash = self._get_content_hash(event_type, content)
+        if current_hash in self._host_state.handled_content_hashes:
+            return True
+
         return False
 
     def _build_intervention_from_suggestion(
@@ -1805,6 +1817,15 @@ Recent transcript window:
         self._host_state.pinned_items = self._host_state.pinned_items[
             : self._host_policy.max_pinned_items
         ]
+
+        # Add to handled history for deduplication
+        content_hash = self._get_content_hash(match.event_type, match.content)
+        if content_hash not in self._host_state.handled_content_hashes:
+            self._host_state.handled_content_hashes.insert(0, content_hash)
+            self._host_state.handled_content_hashes = (
+                self._host_state.handled_content_hashes[:500]
+            )
+
         self._host_state.counters["pinned"] = (
             int(self._host_state.counters.get("pinned") or 0) + 1
         )
@@ -1819,15 +1840,15 @@ Recent transcript window:
         if not suggestion_id:
             return False
 
+        match: Optional[HostSuggestion] = None
         remaining: List[HostSuggestion] = []
-        removed = False
         for item in self._host_state.suggested_items:
-            if item.id == suggestion_id and not removed:
-                removed = True
+            if item.id == suggestion_id and match is None:
+                match = item
                 continue
             remaining.append(item)
 
-        if not removed:
+        if not match:
             return False
 
         self._host_state.suggested_items = remaining
@@ -1836,6 +1857,15 @@ Recent transcript window:
             self._host_state.dismissed_item_ids = self._host_state.dismissed_item_ids[
                 :200
             ]
+
+        # Add to handled history for deduplication
+        content_hash = self._get_content_hash(match.event_type, match.content)
+        if content_hash not in self._host_state.handled_content_hashes:
+            self._host_state.handled_content_hashes.insert(0, content_hash)
+            self._host_state.handled_content_hashes = (
+                self._host_state.handled_content_hashes[:500]
+            )
+
         self._host_state.counters["dismissed"] = (
             int(self._host_state.counters.get("dismissed") or 0) + 1
         )

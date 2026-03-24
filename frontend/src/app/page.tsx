@@ -8,6 +8,7 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { RecordingControls } from '@/components/RecordingControls';
 import { AISummary } from '@/components/AISummary';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
+import { EncryptionCTABar } from '@/components/EncryptionCTABar';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { TranscriptSettings, TranscriptModelProps } from '@/components/TranscriptSettings';
 import { LanguageSelection } from '@/components/LanguageSelection';
@@ -32,6 +33,7 @@ import {
   ChevronRightCircle,
   GlobeIcon,
   HelpCircle,
+  History as HistoryIcon,
   MessageCircle,
   Settings,
   Sparkles,
@@ -257,6 +259,8 @@ export default function Home() {
   const [hostSuggestionQueue, setHostSuggestionQueue] = useState<AIHostSuggestion[]>([]);
   const [hostStateDelta, setHostStateDelta] = useState<Record<string, unknown> | null>(null);
   const [pinnedHostSuggestions, setPinnedHostSuggestions] = useState<AIHostSuggestion[]>([]);
+  const [pastInsights, setPastInsights] = useState<{type: 'discussion' | 'action' | 'decision'; id?: string; text: string; title?: string; eventType?: string; timestamp: number}[]>([]);
+  const insightTimestampsRef = useRef<Map<string, number>>(new Map());
   const [isTranscriptPanelCollapsed, setIsTranscriptPanelCollapsed] = useState(false);
   const hostClientRef = useRef<AudioStreamClient | null>(null);
   const [meetingGoalInput, setMeetingGoalInput] = useState('');
@@ -1120,27 +1124,117 @@ export default function Home() {
     return merged.slice(0, 8);
   }, [hostSuggestionQueue, unresolvedDiscussionItems, activeHostIntervention, hostStatePinnedItems, pinnedHostSuggestions]);
 
-  const isInsightIntervention = activeHostIntervention &&
-    !CORE_EVENT_TYPES.has(activeHostIntervention.event_type) ? activeHostIntervention : null;
-
   const participantActionsForPanel = useMemo(() => {
     const merged = new Map<string, AIHostSuggestion>();
     
-    // Include both suggested and pinned non-core items
+    const GUARDRAIL_TYPES = new Set(['agenda_deviation', 'no_decision', 'unresolved_question', 'missing_context_or_repeat', 'guardrail', 'agenda_drift', 'off_topic']);
+    
+    // Include both suggested and pinned non-core items, explicitly filtering out guardrails
     hostSuggestionQueue.forEach((item) => {
-      if (!CORE_EVENT_TYPES.has(item.event_type)) {
+      if (!CORE_EVENT_TYPES.has(item.event_type) && !GUARDRAIL_TYPES.has(item.event_type)) {
         merged.set(item.id, { ...item, status: 'suggested' });
       }
     });
     
     [...hostStatePinnedItems, ...pinnedHostSuggestions].forEach((item) => {
-      if (!CORE_EVENT_TYPES.has(item.event_type)) {
+      if (!CORE_EVENT_TYPES.has(item.event_type) && !GUARDRAIL_TYPES.has(item.event_type)) {
         merged.set(item.id, { ...item, status: 'pinned' });
       }
     });
 
     return Array.from(merged.values()).slice(0, 8);
   }, [hostSuggestionQueue, hostStatePinnedItems, pinnedHostSuggestions]);
+
+  // ── Auto-expire: move discussions, decisons & insights to Past Insights after 90s ──
+  const INSIGHT_EXPIRE_MS = 90_000;
+
+  useEffect(() => {
+    const ts = insightTimestampsRef.current;
+    const now = Date.now();
+
+    // Register new discussions
+    discussionsForPanel.forEach((text) => {
+      const key = `disc::${text}`;
+      if (!ts.has(key)) ts.set(key, now);
+    });
+    // Register new suggested or pinned actions/insights
+    participantActionsForPanel.forEach((item) => {
+      const key = `action::${item.id}`;
+      if (!ts.has(key)) ts.set(key, now);
+    });
+    // Register new pinned decisions
+    decisionsForPanel.forEach((item) => {
+      const key = `decision::${item.id}`;
+      if (!ts.has(key)) ts.set(key, now);
+    });
+
+    const interval = setInterval(() => {
+      const currentTime = Date.now();
+      const newlyExpired: typeof pastInsights = [];
+
+      // Check discussions
+      discussionsForPanel.forEach((text) => {
+        const key = `disc::${text}`;
+        const created = ts.get(key);
+        if (created && currentTime - created > INSIGHT_EXPIRE_MS) {
+          newlyExpired.push({ type: 'discussion', text, timestamp: created });
+          ts.delete(key);
+        }
+      });
+
+      // Check actions/insights (suggested and pinned)
+      participantActionsForPanel.forEach((item) => {
+        const key = `action::${item.id}`;
+        const created = ts.get(key);
+        if (created && currentTime - created > INSIGHT_EXPIRE_MS) {
+          newlyExpired.push({ type: 'action', id: item.id, text: item.content, title: item.title, eventType: item.event_type, timestamp: created });
+          ts.delete(key);
+          if (item.status === 'suggested') {
+            setHostSuggestionQueue((prev) => prev.filter((s) => s.id !== item.id));
+          } else {
+            setPinnedHostSuggestions((prev) => prev.filter((s) => s.id !== item.id));
+          }
+        }
+      });
+
+      // Check decisions
+      decisionsForPanel.forEach((item) => {
+        const key = `decision::${item.id}`;
+        const created = ts.get(key);
+        if (created && currentTime - created > INSIGHT_EXPIRE_MS) {
+          newlyExpired.push({ type: 'decision', id: item.id, text: item.content, title: item.title, eventType: item.event_type, timestamp: created });
+          ts.delete(key);
+          setPinnedHostSuggestions((prev) => prev.filter((s) => s.id !== item.id));
+        }
+      });
+
+      if (newlyExpired.length > 0) {
+        setPastInsights((prev) => {
+          const existing = new Set(prev.map(d => `${d.type}::${d.id || d.text}`));
+          const unique = newlyExpired.filter(d => !existing.has(`${d.type}::${d.id || d.text}`));
+          return [...prev, ...unique].slice(-50);
+        });
+      }
+    }, 10_000);
+
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discussionsForPanel, participantActionsForPanel, decisionsForPanel]);
+
+  // Filter out expired items from the active panels
+  const expiredDiscTexts = useMemo(() => new Set(pastInsights.filter(i => i.type === 'discussion').map(i => i.text)), [pastInsights]);
+  const activeDiscussions = useMemo(() => discussionsForPanel.filter(t => !expiredDiscTexts.has(t)), [discussionsForPanel, expiredDiscTexts]);
+
+  const expiredDecisionIds = useMemo(() => new Set(pastInsights.filter(i => i.type === 'decision').map(i => i.id)), [pastInsights]);
+  const activeDecisions = useMemo(() => decisionsForPanel.filter(i => !expiredDecisionIds.has(i.id)), [decisionsForPanel, expiredDecisionIds]);
+
+  const expiredInsightIds = useMemo(() => new Set(pastInsights.filter(i => i.type === 'action').map(i => i.id)), [pastInsights]);
+  const activePinnedInsights = useMemo(() => participantActionsForPanel.filter(i => i.status === 'pinned' && !expiredInsightIds.has(i.id)), [participantActionsForPanel, expiredInsightIds]);
+
+  const totalPastInsightCount = useMemo(() => guardrailAlertHistory.length + pastInsights.length, [guardrailAlertHistory.length, pastInsights.length]);
+
+  const isInsightIntervention = activeHostIntervention &&
+    !CORE_EVENT_TYPES.has(activeHostIntervention.event_type) ? activeHostIntervention : null;
 
   const liveMeetingSummary = useMemo(() => {
     const backendSummary = (hostStateDelta as Record<string, unknown> | null)?.meeting_summary as string | undefined;
@@ -2298,8 +2392,9 @@ export default function Home() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen bg-gray-50"
+      className="flex flex-col h-screen dot-grid-bg"
     >
+      <EncryptionCTABar isRecording={isRecording} />
       {showErrorAlert && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <Alert className="max-w-md mx-4 border-red-200 bg-white shadow-xl">
@@ -2334,11 +2429,13 @@ export default function Home() {
       )}
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
-        <div className="flex-1 border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
+        <div className="flex-1 border-r border-gray-200/60 bg-transparent flex flex-col overflow-y-auto">
           {/* Title area - Sticky header */}
-          <div className="sticky top-0 z-10 bg-white p-4 border-gray-200">
+          <div className={`sticky top-0 z-10 border-gray-200/60 transition-all ${
+            (isMeetingActive || isRecording || transcripts.length > 0) ? 'glass-surface p-4 border-b' : 'p-0 h-0 overflow-hidden'
+          }`}>
             <div className="flex flex-col space-y-3">
-              <SetupRequirements />
+              {/* <SetupRequirements /> */}
               <div className="flex  flex-col space-y-2">
                 {(isMeetingActive || isRecording || transcripts.length > 0) && (
                   <div className="w-full flex flex-col gap-2">
@@ -2390,7 +2487,7 @@ export default function Home() {
                         </select>
                       </div>
                     </div>
-                    {selectedCalendarEvent && (
+                    {/* {selectedCalendarEvent && (
                       <div className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 text-sm font-medium text-blue-800">
@@ -2418,7 +2515,7 @@ export default function Home() {
                           </button>
                         </div>
                       </div>
-                    )}
+                    )} */}
                   </div>
                 )}
                 <div className="flex justify-center items-center space-x-2">
@@ -2531,16 +2628,16 @@ export default function Home() {
           <div className="pb-28">
             <div className="mx-auto w-full max-w-[1200px] px-4 lg:px-6 space-y-4">
               {!isRecording && transcripts.length === 0 && !pendingRecoveryId && !isProcessingStop && !isSavingTranscript && (
-                <div className="flex min-h-[420px] items-center justify-center">
-                  <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50 px-8 py-12 text-center shadow-sm">
+                <div className="flex min-h-[480px] items-center justify-center">
+                  <div className="w-full max-w-2xl rounded-3xl border border-slate-200/60 bg-white/60 backdrop-blur-sm px-10 py-14 text-center shadow-sm">
                     <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-red-50 text-red-500 shadow-sm">
                       <Sparkles className="h-8 w-8" />
                     </div>
-                    <h2 className="mt-6 text-3xl font-semibold tracking-tight text-slate-900">Pnyx is ready when you are</h2>
-                    <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-600">
+                    <h2 className="mt-8 text-3xl font-semibold tracking-tight text-slate-900">Pnyx is ready when you are</h2>
+                    <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-slate-600">
                       Start Pnyx to capture live transcript, decisions, action items, and meeting notes in real time.
                     </p>
-                    <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-xs font-medium text-slate-500">
+                    <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs font-medium text-slate-500">
                       <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">Live transcript</span>
                       <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">AI meeting notes</span>
                       <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5">Action items</span>
@@ -2550,281 +2647,368 @@ export default function Home() {
               )}
               {isRecording && (
                 <>
-                  <LayoutGroup id="host-intelligence-board">
-                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-center justify-between gap-3">
-                          <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                            <CheckCircle2 className="h-6 w-6 text-emerald-600" />
-                            Decisions
-                          </h3>
-                          <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-right">
-                            <p className="text-lg font-semibold text-emerald-800">{decisionsForPanel.length + pendingDecisions.length}</p>
-                            <p className="text-[11px] text-emerald-700">total</p>
-                          </div>
-                        </div>
-                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
-                          <AnimatePresence mode="popLayout">
-                            {/* Pending Decisions mapped here */}
-                            {pendingDecisions.map((item) => (
-                              <motion.div
-                                key={`pending-${item.id}`}
-                                layout
-                                layoutId={item.id}
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -6 }}
-                                className="relative overflow-hidden rounded-lg border-2 border-emerald-100 bg-emerald-50/50 px-3 py-3 shadow-sm transition-all hover:border-emerald-200"
-                              >
-                                <div className="absolute bottom-0 left-0 top-0 w-1 bg-emerald-400"></div>
-                                <div className="flex items-start gap-2">
-                                  <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
-                                  <div className="flex-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <p className="text-sm font-medium text-emerald-900">{item.title}</p>
-                                      <span className="text-[11px] text-emerald-700">
-                                        {Math.round(item.confidence * 100)}%
-                                      </span>
-                                    </div>
-                                    <p className="mt-1 text-xs text-emerald-800">{item.content}</p>
-                                    <div className="mt-2 flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => pinHostSuggestion(item.id)}
-                                        className="rounded-md border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 shadow-sm transition-colors hover:bg-emerald-200"
-                                      >
-                                        Yes, Pin to meeting
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => dismissHostSuggestion(item.id)}
-                                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                                      >
-                                        Dismiss
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                          <AnimatePresence mode="popLayout">
-                            {decisionsForPanel.map((item) => (
-                              <motion.div
-                                key={item.id}
-                                layout
-                                layoutId={item.id}
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -6 }}
-                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"
-                              >
-                                <p className="text-sm font-medium text-emerald-900">{item.title}</p>
-                                <p className="mt-1 text-xs text-emerald-800">{item.content}</p>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                          {decisionsForPanel.length === 0 && pendingDecisions.length === 0 && (
-                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
-                              No confirmed decisions yet.
-                            </p>
-                          )}
-                        </div>
-                      </section>
+                  {/* ───── Dynamic Insight Chips ───── */}
+                  <div className="flex flex-col gap-8 items-center pt-4">
 
-                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-center justify-between gap-3">
-                          <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                            <MessageCircle className="h-6 w-6 text-blue-600" />
-                            Open Discussions
-                          </h3>
-                          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-right">
-                            <p className="text-lg font-semibold text-blue-800">{discussionsForPanel.length}</p>
-                            <p className="text-[11px] text-blue-700">open</p>
-                          </div>
-                        </div>
-                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
-                          {discussionsForPanel.map((item, index) => (
-                            <div key={`${item}-${index}`} className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-                              {item}
-                            </div>
-                          ))}
-                          {discussionsForPanel.length === 0 && (
-                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
-                              No unresolved discussions right now.
-                            </p>
-                          )}
-                        </div>
-                      </section>
-
-                      <section className="xl:col-span-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-center justify-between">
-                          <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                            <Sparkles className="h-6 w-6 text-gray-700" />
-                            Participant Actions
-                          </h3>
-                          <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-right">
-                            <p className="text-lg font-semibold text-indigo-800">{participantActionsForPanel.length + (isInsightIntervention ? 1 : 0)}</p>
-                            <p className="text-[11px] text-indigo-700">active</p>
-                          </div>
-                        </div>
-                        <div className="mt-3 max-h-[280px] overflow-y-auto panel-scroll space-y-2">
-                          {isInsightIntervention && (
-                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                              <div className="mb-1 flex items-center justify-between">
-                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getHostEventBadgeClasses(isInsightIntervention.event_type)}`}>
-                                  {getHostEventLabel(isInsightIntervention.event_type)}
+                    {/* Floating Insight Chips - only appear when data surfaces */}
+                    <AnimatePresence mode="popLayout">
+                      {/* Active Guardrail Alert Chip */}
+                      {activeGuardrailAlert && (
+                        <motion.div
+                          key={`guardrail-${activeGuardrailAlert.id}`}
+                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                          transition={{ duration: 0.3 }}
+                          className="insight-chip w-full max-w-xl px-5 py-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-2">
+                                <AlertCircle className="h-4 w-4 text-rose-500" />
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getGuardrailBadgeClasses(activeGuardrailAlert.reason)}`}>
+                                  {getGuardrailReasonLabel(activeGuardrailAlert.reason)}
                                 </span>
-                                <span className="text-[11px] text-gray-600">
-                                  {Math.round(isInsightIntervention.confidence * 100)}%
+                                <span className="text-[11px] text-gray-400">
+                                  {formatGuardrailTime(activeGuardrailAlert.updated_at || activeGuardrailAlert.timestamp)}
                                 </span>
                               </div>
-                              <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">
-                                {isInsightIntervention.headline}
-                              </p>
-                              <p className="mt-1 text-sm text-gray-800">{isInsightIntervention.body}</p>
+                              <p className="text-sm text-gray-800 leading-relaxed">{activeGuardrailAlert.insight}</p>
                             </div>
-                          )}
-                          <AnimatePresence mode="popLayout">
-                            {participantActionsForPanel.map((item) => (
-                              <motion.div
-                                key={item.id}
-                                layout
-                                layoutId={item.id}
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -6 }}
-                                className="relative overflow-hidden rounded-lg border-2 border-indigo-100 bg-indigo-50/30 px-3 py-3 shadow-sm transition-all hover:border-indigo-200"
-                              >
-                                {/* Subtle highlight bar on the left */}
-                                <div className="absolute bottom-0 left-0 top-0 w-1 bg-indigo-400"></div>
-                                <div className="flex items-start gap-2">
-                                  <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
-                                  <div className="flex-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <p className="text-sm font-medium text-gray-900">{item.title}</p>
-                                      <span className="text-[11px] text-gray-500">
-                                        {Math.round(item.confidence * 100)}%
-                                      </span>
-                                    </div>
-                                    <p className="mt-1 text-xs text-gray-700">{item.content}</p>
-                                    {item.status === 'suggested' && (
-                                      <div className="mt-2 flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={() => pinHostSuggestion(item.id)}
-                                          className="rounded-md border border-indigo-300 bg-indigo-100 px-3 py-1.5 text-[11px] font-semibold text-indigo-800 shadow-sm transition-colors hover:bg-indigo-200"
-                                        >
-                                          Yes, Pin to meeting
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => dismissHostSuggestion(item.id)}
-                                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                                        >
-                                          Dismiss
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                          {!isInsightIntervention && participantActionsForPanel.length === 0 && (
-                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
-                              AI Participant is monitoring and will surface actions when needed.
-                            </p>
-                          )}
-                        </div>
-                      </section>
+                            <span className="rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700 shrink-0">
+                              {Math.round(activeGuardrailAlert.confidence * 100)}%
+                            </span>
+                          </div>
+                        </motion.div>
+                      )}
 
-                      <section className="xl:col-span-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <h3 className="text-2xl font-semibold text-gray-900">Meeting Summary</h3>
-                            <p className="mt-1 text-sm text-gray-500">Rolling AI participant view of the meeting so far.</p>
+                      {/* Pending Decision Chips */}
+                      {pendingDecisions.map((item) => (
+                        <motion.div
+                          key={`decision-${item.id}`}
+                          layout
+                          layoutId={item.id}
+                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                          transition={{ duration: 0.3 }}
+                          className="insight-chip w-full max-w-xl px-5 py-4"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-sm font-medium text-gray-900">{item.title}</p>
+                                <span className="text-[11px] text-gray-400">
+                                  {Math.round(item.confidence * 100)}%
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-gray-600">{item.content}</p>
+                              <div className="mt-3 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => pinHostSuggestion(item.id)}
+                                  className="rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-100"
+                                >
+                                  Pin Decision
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => dismissHostSuggestion(item.id)}
+                                  className="rounded-full border border-gray-200 bg-white px-3 py-1 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </div>
                           </div>
-                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right">
-                            <p className="text-lg font-semibold text-slate-800">Live</p>
-                            <p className="text-[11px] text-slate-600">updated continuously</p>
+                        </motion.div>
+                      ))}
+
+                      {/* Participant Action Chips (non-core insights) */}
+                      {participantActionsForPanel.filter(item => item.status === 'suggested').slice(0, 2).map((item) => (
+                        <motion.div
+                          key={`action-${item.id}`}
+                          layout
+                          layoutId={item.id}
+                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                          transition={{ duration: 0.3 }}
+                          className="insight-chip w-full max-w-xl px-5 py-4"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-sm font-medium text-gray-900">{item.title}</p>
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getHostEventBadgeClasses(item.event_type)}`}>
+                                  {getHostEventLabel(item.event_type)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-gray-600">{item.content}</p>
+                              <div className="mt-3 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => pinHostSuggestion(item.id)}
+                                  className="rounded-full border border-indigo-300 bg-indigo-50 px-3 py-1 text-[11px] font-semibold text-indigo-800 transition-colors hover:bg-indigo-100"
+                                >
+                                  Pin
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => dismissHostSuggestion(item.id)}
+                                  className="rounded-full border border-gray-200 bg-white px-3 py-1 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </div>
                           </div>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+
+                    {/* ───── Always-Visible Pinned Decisions ───── */}
+                    {activeDecisions.length > 0 && (
+                      <div className="w-full max-w-xl">
+                        <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-3">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Pinned Decisions ({activeDecisions.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {activeDecisions.map((item) => (
+                            <motion.div
+                              key={`pinned-dec-${item.id}`}
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="rounded-xl border border-emerald-200 bg-emerald-50/50 px-4 py-3"
+                            >
+                              <p className="text-sm font-medium text-emerald-900">{item.title}</p>
+                              <p className="mt-1 text-xs text-emerald-800">{item.content}</p>
+                            </motion.div>
+                          ))}
                         </div>
-                        <div className="prose prose-sm mt-4 max-h-[280px] overflow-y-auto panel-scroll max-w-none text-gray-700">
+                      </div>
+                    )}
+
+                    {/* ───── Always-Visible Pinned Insights ───── */}
+                    {activePinnedInsights.length > 0 && (
+                      <div className="w-full max-w-xl">
+                        <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-3">
+                          <Sparkles className="h-3.5 w-3.5" />
+                          AI Participant Insights ({activePinnedInsights.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {activePinnedInsights.map((item) => (
+                            <motion.div
+                              key={`pinned-act-${item.id}`}
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="rounded-xl border border-indigo-200 bg-indigo-50/50 px-4 py-3"
+                            >
+                              <p className="text-sm font-medium text-gray-900">{item.title}</p>
+                              <p className="mt-1 text-xs text-gray-700">{item.content}</p>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ───── Open Discussions (visible when active) ───── */}
+                    {activeDiscussions.length > 0 && (
+                      <div className="w-full max-w-xl">
+                        <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700 mb-3">
+                          <MessageCircle className="h-3.5 w-3.5" />
+                          Open Discussions ({activeDiscussions.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {activeDiscussions.map((item, index) => (
+                            <motion.div
+                              key={`disc-${index}`}
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="rounded-xl border border-blue-200 bg-blue-50/50 px-4 py-3 text-sm text-blue-900"
+                            >
+                              {item}
+                            </motion.div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Empty state — everything is calm */}
+                    {!activeGuardrailAlert && pendingDecisions.length === 0 && participantActionsForPanel.filter(i => i.status === 'suggested').length === 0 && activeDecisions.length === 0 && activePinnedInsights.length === 0 && activeDiscussions.length === 0 && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="flex flex-col items-center gap-3 py-16 text-center"
+                      >
+                        <div className="h-12 w-12 rounded-2xl bg-slate-100 flex items-center justify-center">
+                          <Sparkles className="h-6 w-6 text-slate-400" />
+                        </div>
+                        <p className="text-sm text-slate-500">Pnyx is listening — insights will surface here when relevant.</p>
+                      </motion.div>
+                    )}
+
+                    {/* Live Summary (compact) */}
+                    {liveMeetingSummary && liveMeetingSummary !== 'Meeting intelligence will appear here as discussion progresses.' && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="insight-chip w-full max-w-xl px-5 py-4"
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Live Summary</span>
+                        </div>
+                        <div className="prose prose-sm max-w-none text-gray-700 max-h-[180px] overflow-y-auto panel-scroll">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {liveMeetingSummary}
                           </ReactMarkdown>
                         </div>
-                      </section>
+                      </motion.div>
+                    )}
 
-                      <section className="xl:col-span-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <h3 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-                              <AlertCircle className="h-6 w-6 text-rose-600" />
-                              Guardrails
-                            </h3>
-                            <p className="mt-1 text-sm text-gray-500">Alerts when the discussion drifts or decisions stay unresolved.</p>
-                          </div>
-                          <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-right">
-                            <p className="text-lg font-semibold text-rose-700">{guardrailAlertHistory.length}</p>
-                            <p className="text-[11px] text-rose-600">recent</p>
-                          </div>
+                    {/* Past Insights trigger */}
+                    {totalPastInsightCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowGuardrailHistory(true)}
+                        className="text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors flex items-center gap-1.5 mt-2"
+                      >
+                        <HistoryIcon className="h-3.5 w-3.5" />
+                        View Past Insights ({totalPastInsightCount})
+                      </button>
+                    )}
+
+                  </div>
+
+                  {/* ───── Past Insights Drawer (slide-over) ───── */}
+                  <AnimatePresence>
+                    {showGuardrailHistory && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/20 z-40"
+                        onClick={() => setShowGuardrailHistory(false)}
+                      />
+                    )}
+                  </AnimatePresence>
+                  <AnimatePresence>
+                    {showGuardrailHistory && (
+                      <motion.aside
+                        initial={{ x: '100%', opacity: 0 }}
+                        animate={{ x: 0, opacity: 1 }}
+                        exit={{ x: '100%', opacity: 0 }}
+                        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                        className="fixed right-0 top-0 bottom-0 w-[380px] max-w-[90vw] z-50 glass-surface border-l border-gray-200/60 flex flex-col"
+                      >
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200/60">
+                          <h3 className="text-base font-semibold text-gray-900">Past Insights</h3>
+                          <button
+                            type="button"
+                            onClick={() => setShowGuardrailHistory(false)}
+                            className="rounded-full p-1 hover:bg-gray-100 transition-colors"
+                          >
+                            <X className="h-5 w-5 text-gray-500" />
+                          </button>
                         </div>
-                        <div className="mt-4 max-h-[280px] overflow-y-auto panel-scroll space-y-3">
-                          {activeGuardrailAlert ? (
-                            <div className="rounded-2xl border border-rose-300 bg-white px-4 py-4 shadow-sm">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${getGuardrailBadgeClasses(activeGuardrailAlert.reason)}`}>
-                                      {getGuardrailReasonLabel(activeGuardrailAlert.reason)}
-                                    </span>
-                                    {activeGuardrailAlert && (
-                                      <span className="text-[11px] text-gray-500">
-                                        Updated {formatGuardrailTime(activeGuardrailAlert.updated_at || activeGuardrailAlert.timestamp)}
+                        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+                          {/* Guardrail History */}
+                          {guardrailAlertHistory.length > 0 && (
+                            <div>
+                              <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-rose-700 mb-3">
+                                <AlertCircle className="h-3.5 w-3.5" />
+                                Guardrails ({guardrailAlertHistory.length})
+                              </h4>
+                              <div className="space-y-2">
+                                {guardrailAlertHistory.map((item) => (
+                                  <div key={item.id} className="rounded-xl border border-rose-200 bg-white px-3 py-2.5">
+                                    <div className="flex items-center justify-between gap-2 mb-1">
+                                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getGuardrailBadgeClasses(item.reason)}`}>
+                                        {getGuardrailReasonLabel(item.reason)}
                                       </span>
-                                    )}
+                                      <span className="text-[11px] text-gray-400">
+                                        {formatGuardrailTime(item.updated_at || item.timestamp)}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-gray-700 leading-relaxed">{item.insight}</p>
                                   </div>
-                                  <p className="mt-3 text-base font-semibold text-rose-950">
-                                    Active guardrail
-                                  </p>
-                                  <p className="mt-1 text-sm leading-6 text-rose-900">
-                                    {activeGuardrailAlert.insight}
-                                  </p>
-                                </div>
-                                <span className="rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
-                                  {Math.round(activeGuardrailAlert.confidence * 100)}%
-                                </span>
+                                ))}
                               </div>
                             </div>
-                          ) : (
-                            <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-3 text-sm text-gray-400">
-                              No active guardrails right now.
-                            </p>
                           )}
-                          {guardrailAlertHistory.length > 1 && (
-                            <div className="space-y-2">
-                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Recent alerts</p>
-                              {guardrailAlertHistory.slice(1).map((item) => (
-                                <div key={item.id} className="rounded-xl border border-rose-200 bg-white px-3 py-2.5">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getGuardrailBadgeClasses(item.reason)}`}>
-                                      {getGuardrailReasonLabel(item.reason)}
-                                    </span>
-                                    <span className="text-[11px] text-gray-500">
-                                      {formatGuardrailTime(item.updated_at || item.timestamp)}
-                                    </span>
+
+                          {/* Past Decisions */}
+                          {pastInsights.filter(i => i.type === 'decision').length > 0 && (
+                            <div>
+                              <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-3">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Past Decisions ({pastInsights.filter(i => i.type === 'decision').length})
+                              </h4>
+                              <div className="space-y-2">
+                                {pastInsights.filter(i => i.type === 'decision').map((item, idx) => (
+                                  <div key={`past-dec-${idx}`} className="rounded-xl border border-emerald-200 bg-white px-3 py-2.5">
+                                    <p className="text-[11px] font-semibold text-emerald-900 mb-1">{item.title}</p>
+                                    <p className="text-xs text-gray-700 leading-relaxed">{item.text}</p>
                                   </div>
-                                  <p className="mt-1.5 text-xs leading-5 text-gray-700">{item.insight}</p>
-                                </div>
-                              ))}
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Past Discussions */}
+                          {pastInsights.filter(i => i.type === 'discussion').length > 0 && (
+                            <div>
+                              <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700 mb-3">
+                                <MessageCircle className="h-3.5 w-3.5" />
+                                Past Discussions ({pastInsights.filter(i => i.type === 'discussion').length})
+                              </h4>
+                              <div className="space-y-2">
+                                {pastInsights.filter(i => i.type === 'discussion').map((item, idx) => (
+                                  <div key={`past-disc-${idx}`} className="rounded-xl border border-blue-200 bg-white px-3 py-2.5">
+                                    <p className="text-xs text-gray-700 leading-relaxed">{item.text}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* AI Participant Insights (Historical) */}
+                          {pastInsights.filter(i => i.type === 'action').length > 0 && (
+                            <div>
+                              <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-3">
+                                <Sparkles className="h-3.5 w-3.5" />
+                                Past Insights ({pastInsights.filter(i => i.type === 'action').length})
+                              </h4>
+                              <div className="space-y-2">
+                                {pastInsights.filter(i => i.type === 'action').map((item, idx) => (
+                                  <div key={`past-act-${idx}`} className="rounded-xl border border-indigo-200 bg-white px-3 py-2.5">
+                                    {item.title && <p className="text-[11px] font-semibold text-gray-900 mb-1">{item.title}</p>}
+                                    <p className="text-xs text-gray-700 leading-relaxed">{item.text}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Meeting Summary */}
+                          {liveMeetingSummary && (
+                            <div>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-600 mb-3">Meeting Summary</h4>
+                              <div className="prose prose-sm max-w-none text-gray-700">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {liveMeetingSummary}
+                                </ReactMarkdown>
+                              </div>
                             </div>
                           )}
                         </div>
-                      </section>
-                    </div>
-                  </LayoutGroup>
+                      </motion.aside>
+                    )}
+                  </AnimatePresence>
                 </>
               )}
             </div>
@@ -2846,7 +3030,7 @@ export default function Home() {
 
         {(isRecording || transcripts.length > 0) && (
           <aside
-            className={`relative flex border-l border-gray-200 bg-white transition-all duration-300 ${isTranscriptPanelCollapsed ? 'w-8' : 'w-[28%] min-w-[240px] max-w-[420px]'
+            className={`relative flex border-l border-gray-200/40 glass-surface transition-all duration-300 ${isTranscriptPanelCollapsed ? 'w-8' : 'w-[28%] min-w-[240px] max-w-[420px]'
               }`}
           >
             <button
@@ -2971,7 +3155,7 @@ export default function Home() {
                       )}
                     </div> */}
                 {/* )} */}
-                <div className="bg-white rounded-full shadow-lg flex items-center">
+                <div className="glass-surface rounded-full flex items-center">
                   <RecordingControls
                     isRecording={isRecording}
                     onRecordingStop={(success) => handleRecordingStop(success)}
