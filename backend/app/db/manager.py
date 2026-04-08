@@ -3,7 +3,7 @@ import json
 import os
 import asyncio
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List
 import logging
 from contextlib import asynccontextmanager
@@ -33,6 +33,8 @@ class DatabaseManager:
     @classmethod
     async def init_pool(cls, db_url: str):
         if cls._pool is None:
+            if db_url:
+                db_url = db_url.strip('"').strip("'")
             cls._pool = await asyncpg.create_pool(db_url, min_size=5, max_size=20)
             logger.info("✅ Database connection pool initialized")
 
@@ -45,6 +47,9 @@ class DatabaseManager:
 
     def __init__(self):
         self.db_url = os.getenv("DATABASE_URL")
+        if self.db_url:
+            self.db_url = self.db_url.strip('"').strip("'")
+            
         if not self.db_url:
             logger.warning("DATABASE_URL not set in environment.")
 
@@ -517,6 +522,38 @@ class DatabaseManager:
             logger.error(f"Error saving transcript: {str(e)}")
             raise
 
+    async def has_transcript_segments(self, meeting_id: str) -> bool:
+        """Check if a meeting has any transcript segments"""
+        try:
+            async with self._get_connection() as conn:
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM transcript_segments WHERE meeting_id = $1 LIMIT 1",
+                    meeting_id
+                )
+                return bool(row)
+        except Exception as e:
+            logger.error(f"Error checking transcript segments: {str(e)}")
+            return False
+
+    async def get_meeting_audio_duration_seconds(self, meeting_id: str) -> int:
+        """
+        Get the exact duration of recorded audio in seconds by checking the MAX
+        audio_end_time from transcript segments.
+        Returns 0 if no transcripts are found.
+        """
+        try:
+            async with self._get_connection() as conn:
+                max_end = await conn.fetchval(
+                    "SELECT MAX(audio_end_time) FROM transcript_segments WHERE meeting_id = $1",
+                    meeting_id
+                )
+                if max_end:
+                    return int(max_end)
+                return 0
+        except Exception as e:
+            logger.error(f"Error calculating meeting audio duration: {str(e)}")
+            return 0
+
     async def save_meeting_transcripts_batch(self, meeting_id: str, transcripts: list):
         """Batch save transcripts for a meeting"""
         if not transcripts:
@@ -874,12 +911,25 @@ class DatabaseManager:
             )
 
     async def get_all_meetings(self):
-        """Get all meetings with basic information"""
+        """Get all meetings with basic information.
+        
+        Excludes bot-created meetings that have no transcript content.
+        Manual recordings and imports are always returned.
+        """
         async with self._get_connection() as conn:
             rows = await conn.fetch("""
-                SELECT id, title, created_at, owner_id, workspace_id
-                FROM meetings
-                ORDER BY created_at DESC
+                SELECT m.id, m.title, m.created_at, m.owner_id, m.workspace_id
+                FROM meetings m
+                LEFT JOIN transcript_segments ts ON m.id = ts.meeting_id
+                LEFT JOIN full_transcripts ft ON m.id = ft.meeting_id
+                LEFT JOIN meeting_bots b ON m.id = b.meeting_id
+                WHERE (
+                    b.id IS NULL                    -- Not a bot meeting: always show
+                    OR ts.meeting_id IS NOT NULL     -- Bot meeting with transcript segments
+                    OR ft.meeting_id IS NOT NULL     -- Bot meeting with full transcript
+                )
+                GROUP BY m.id, m.title, m.created_at, m.owner_id, m.workspace_id
+                ORDER BY m.created_at DESC
             """)
             return [
                 {
@@ -1650,6 +1700,7 @@ class DatabaseManager:
             "writeback_enabled": False,
             "share_summary": True,
             "share_transcript": False,
+            "auto_join_enabled": False,
         }
 
         async with self._get_connection() as conn:
@@ -1658,7 +1709,8 @@ class DatabaseManager:
                 SELECT reminders_enabled, attendee_reminders_enabled, reminder_offset_minutes,
                        recap_enabled, writeback_enabled,
                        COALESCE(share_summary, TRUE) AS share_summary,
-                       COALESCE(share_transcript, FALSE) AS share_transcript
+                       COALESCE(share_transcript, FALSE) AS share_transcript,
+                       COALESCE(auto_join_enabled, FALSE) AS auto_join_enabled
                 FROM calendar_automation_settings
                 WHERE user_email = $1
             """,
@@ -1674,6 +1726,7 @@ class DatabaseManager:
                 "writeback_enabled": row["writeback_enabled"],
                 "share_summary": row["share_summary"],
                 "share_transcript": row["share_transcript"],
+                "auto_join_enabled": row["auto_join_enabled"],
             }
 
     async def upsert_calendar_automation_settings(
@@ -1686,9 +1739,9 @@ class DatabaseManager:
                 INSERT INTO calendar_automation_settings (
                     user_email, reminders_enabled, attendee_reminders_enabled,
                     reminder_offset_minutes, recap_enabled, writeback_enabled,
-                    share_summary, share_transcript, updated_at
+                    share_summary, share_transcript, auto_join_enabled, updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (user_email) DO UPDATE SET
                     reminders_enabled = EXCLUDED.reminders_enabled,
                     attendee_reminders_enabled = EXCLUDED.attendee_reminders_enabled,
@@ -1697,9 +1750,10 @@ class DatabaseManager:
                     writeback_enabled = EXCLUDED.writeback_enabled,
                     share_summary = EXCLUDED.share_summary,
                     share_transcript = EXCLUDED.share_transcript,
+                    auto_join_enabled = EXCLUDED.auto_join_enabled,
                     updated_at = EXCLUDED.updated_at
                 RETURNING reminders_enabled, attendee_reminders_enabled, reminder_offset_minutes,
-                          recap_enabled, writeback_enabled, share_summary, share_transcript
+                          recap_enabled, writeback_enabled, share_summary, share_transcript, auto_join_enabled
             """,
                 user_email,
                 settings["reminders_enabled"],
@@ -1709,6 +1763,7 @@ class DatabaseManager:
                 settings["writeback_enabled"],
                 settings.get("share_summary", True),
                 settings.get("share_transcript", False),
+                settings.get("auto_join_enabled", False),
                 now,
             )
             return {
@@ -1719,6 +1774,7 @@ class DatabaseManager:
                 "writeback_enabled": row["writeback_enabled"],
                 "share_summary": row["share_summary"],
                 "share_transcript": row["share_transcript"],
+                "auto_join_enabled": row["auto_join_enabled"],
             }
 
     async def get_active_calendar_integrations(
@@ -1884,6 +1940,57 @@ class DatabaseManager:
                     }
                 )
             return reminders
+
+    async def get_due_auto_join_events(self) -> List[Dict]:
+        async with self._get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT e.user_email, e.provider, e.event_id, e.meeting_title, e.meeting_link,
+                       e.start_time
+                FROM calendar_events e
+                JOIN calendar_automation_settings s ON s.user_email = e.user_email
+                -- Deduplicate by checking if a bot was already created for this link 
+                -- within 30 mins of the scheduled start time. 
+                LEFT JOIN meeting_bots b ON b.meeting_url = e.meeting_link 
+                  AND b.created_at >= (e.start_time - INTERVAL '30 minutes')
+                  AND b.created_at <= (e.start_time + INTERVAL '2 hours')
+                WHERE s.auto_join_enabled = TRUE
+                  AND b.id IS NULL
+                  AND e.meeting_link IS NOT NULL
+                  AND e.start_time >= (NOW() - INTERVAL '15 minutes')
+                  AND (e.start_time - INTERVAL '2 minutes') <= NOW()
+                ORDER BY e.start_time ASC
+            """
+            )
+
+            reminders = []
+            for row in rows:
+                reminders.append(
+                    {
+                        "user_email": row["user_email"],
+                        "provider": row["provider"],
+                        "event_id": row["event_id"],
+                        "meeting_title": row["meeting_title"],
+                        "meeting_link": row["meeting_link"],
+                        "start_time": row["start_time"],
+                    }
+                )
+            return reminders
+
+    async def get_active_bot_sessions_older_than_minutes(self, minutes: int = 15) -> List[Dict]:
+        """Find active bot sessions that have exceeded the time limit."""
+        async with self._get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT recall_bot_id, meeting_id, user_email, meeting_url, status, created_at
+                FROM meeting_bots
+                WHERE status IN ('requesting', 'joining', 'recording')
+                  AND created_at < (NOW() - make_interval(mins := $1))
+                ORDER BY created_at ASC
+            """,
+                minutes,
+            )
+            return [dict(row) for row in rows]
 
     async def get_active_calendar_integration_for_user(
         self, user_email: str, provider: str = "google"
@@ -2979,3 +3086,146 @@ class DatabaseManager:
                 user_email.strip().lower(),
             )
             return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Meeting Bots (Recall.ai)
+    # ------------------------------------------------------------------
+
+    async def create_bot_session(
+        self,
+        meeting_id: str,
+        recall_bot_id: str,
+        user_email: str,
+        meeting_url: str,
+        bot_name: str = "Pnyx AI Assistant",
+    ):
+        """Insert a new meeting_bots row."""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO meeting_bots (
+                    meeting_id, recall_bot_id, user_email,
+                    meeting_url, bot_name, status
+                ) VALUES ($1, $2, $3, $4, $5, 'requesting')
+                ON CONFLICT (recall_bot_id) DO UPDATE SET
+                    meeting_id = EXCLUDED.meeting_id,
+                    user_email = EXCLUDED.user_email,
+                    meeting_url = EXCLUDED.meeting_url,
+                    bot_name = EXCLUDED.bot_name,
+                    status = 'requesting',
+                    updated_at = NOW()
+                """,
+                meeting_id,
+                recall_bot_id,
+                user_email,
+                meeting_url,
+                bot_name,
+            )
+            logger.info(
+                "Created bot session: meeting=%s recall_bot_id=%s user=%s",
+                meeting_id,
+                recall_bot_id,
+                user_email,
+            )
+
+    async def update_bot_status(
+        self,
+        recall_bot_id: str,
+        status: str,
+        duration_seconds: Optional[int] = None,
+        error_message: Optional[str] = None,
+    ):
+        """Update bot session status."""
+        async with self._get_connection() as conn:
+            fields = ["status = $1", "updated_at = NOW()"]
+            params: list = [status]
+            idx = 2
+
+            if duration_seconds is not None:
+                fields.append(f"duration_seconds = ${idx}")
+                params.append(duration_seconds)
+                idx += 1
+
+            if error_message is not None:
+                fields.append(f"error_message = ${idx}")
+                params.append(error_message[:1000])
+                idx += 1
+
+            params.append(recall_bot_id)
+            query = (
+                f"UPDATE meeting_bots SET {', '.join(fields)} "
+                f"WHERE recall_bot_id = ${idx}"
+            )
+            await conn.execute(query, *params)
+
+    async def get_bot_session(self, recall_bot_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch bot session by Recall bot ID."""
+        async with self._get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, meeting_id, recall_bot_id, user_email, meeting_url,
+                       status, bot_name, duration_seconds, error_message,
+                       created_at, updated_at
+                FROM meeting_bots WHERE recall_bot_id = $1
+                """,
+                recall_bot_id,
+            )
+            return dict(row) if row else None
+
+    async def get_bot_session_by_meeting(
+        self, meeting_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch the most recent bot session for a meeting."""
+        async with self._get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, meeting_id, recall_bot_id, user_email, meeting_url,
+                       status, bot_name, duration_seconds, error_message,
+                       created_at, updated_at
+                FROM meeting_bots
+                WHERE meeting_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                meeting_id,
+            )
+            return dict(row) if row else None
+
+    async def get_user_bot_usage_seconds(
+        self, user_email: str, days: int = 7
+    ) -> int:
+        """Sum of bot duration_seconds for the user in the last N days."""
+        async with self._get_connection() as conn:
+            since = datetime.utcnow() - timedelta(days=days)
+            result = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(duration_seconds), 0)
+                FROM meeting_bots
+                WHERE user_email = $1
+                  AND created_at >= $2
+                  AND status = 'completed'
+                """,
+                user_email,
+                since,
+            )
+            return int(result)
+
+    async def get_active_bot_sessions_for_user(
+        self, user_email: str
+    ) -> List[Dict[str, Any]]:
+        """Return all bot sessions that are currently active for a user."""
+        async with self._get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT b.id, b.meeting_id, b.recall_bot_id, b.user_email,
+                       b.meeting_url, b.status, b.bot_name, b.created_at,
+                       m.title AS meeting_title
+                FROM meeting_bots b
+                LEFT JOIN meetings m ON m.id = b.meeting_id
+                WHERE b.user_email = $1
+                  AND b.status IN ('requesting', 'joining', 'recording')
+                ORDER BY b.created_at DESC
+                """,
+                user_email,
+            )
+            return [dict(r) for r in rows]

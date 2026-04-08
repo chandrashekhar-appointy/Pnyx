@@ -3011,3 +3011,228 @@ async def get_meeting_artifact(
     except Exception as e:
         logger.error(f"Error fetching artifact {filename} for meeting {meeting_id}: {e}")
         raise HTTPException(status_code=404, detail="Artifact not found")
+
+
+# ------------------------------------------------------------------
+# Bot meeting live transcript WebSocket
+# ------------------------------------------------------------------
+
+
+@router.websocket("/ws/bot-meeting/{meeting_id}")
+async def websocket_bot_meeting(
+    websocket: WebSocket,
+    meeting_id: str,
+):
+    """
+    Live transcript relay for Recall.ai bot meetings.
+
+    Subscribes to multiple Redis Pub/Sub channels for a meeting and
+    forwards each message as JSON to the connected browser client.
+    Channels:
+      - meeting:{meeting_id}:transcript       — partial/final transcripts
+      - meeting:{meeting_id}:bot_status       — bot lifecycle status changes
+      - meeting:{meeting_id}:ai_host_suggestion
+      - meeting:{meeting_id}:ai_host_intervention
+      - meeting:{meeting_id}:ai_host_state_delta
+    """
+    import redis.asyncio as aioredis
+
+    # ── Auth ──────────────────────────────────────────────────────
+    try:
+        auth_token = _extract_websocket_auth_from_protocols(websocket)
+        if auth_token:
+            await websocket.accept(subprotocol="auth")
+        else:
+            await websocket.accept()
+            first_msg = await asyncio.wait_for(websocket.receive(), timeout=5.0)
+            if "text" not in first_msg:
+                await websocket.close(code=1008, reason="Expected authentication message")
+                return
+            auth_data = json.loads(first_msg["text"])
+            if auth_data.get("type") != "authenticate":
+                await websocket.close(code=1008, reason="Expected authentication message")
+                return
+            auth_token = auth_data.get("token")
+
+        current_user = await _authenticate_websocket(auth_token)
+        if not current_user:
+            await websocket.close(code=1008, reason="Authentication required")
+            return
+    except Exception as e:
+        logger.error(f"[BotMeetingWS] Auth failed: {e}")
+        try:
+            await websocket.close(code=1008, reason="Authentication failed")
+        except Exception:
+            pass
+        return
+
+    if not meeting_id or not _is_safe_identifier(meeting_id):
+        await websocket.close(code=1008, reason="Invalid meeting id")
+        return
+
+    user_email = current_user.email
+
+    # ── Verify bot session ownership ─────────────────────────────
+    bot_session = await db.get_bot_session_by_meeting(meeting_id)
+    if not bot_session:
+        await websocket.send_json({"type": "error", "message": "No bot session for this meeting"})
+        await websocket.close(code=1008, reason="No bot session")
+        return
+
+    if bot_session.get("user_email") != user_email:
+        await websocket.send_json({"type": "error", "message": "Permission denied"})
+        await websocket.close(code=1008, reason="Permission denied")
+        return
+
+    # Send initial connected + current status
+    await websocket.send_json({
+        "type": "connected",
+        "meeting_id": meeting_id,
+        "bot_status": bot_session.get("status", "unknown"),
+        "bot_name": bot_session.get("bot_name", "Pnyx AI Assistant"),
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+
+    # ── Redis Pub/Sub subscription ───────────────────────────────
+    redis_url = (
+        os.getenv("REDIS_URL")
+        or os.getenv("CELERY_BROKER_URL")
+        or "redis://localhost:6379/0"
+    )
+    redis_client = aioredis.from_url(redis_url)
+    pubsub = redis_client.pubsub()
+
+    channels = [
+        f"meeting:{meeting_id}:transcript",
+        f"meeting:{meeting_id}:bot_status",
+        f"meeting:{meeting_id}:ai_host_suggestion",
+        f"meeting:{meeting_id}:ai_host_intervention",
+        f"meeting:{meeting_id}:ai_host_state_delta",
+    ]
+
+    try:
+        await pubsub.subscribe(*channels)
+    except Exception as e:
+        logger.error(f"[BotMeetingWS] Redis subscribe failed: {e}")
+        await websocket.send_json({"type": "error", "message": "Failed to subscribe to live feed"})
+        await websocket.close(code=1011, reason="Redis subscription failed")
+        await redis_client.aclose()
+        return
+
+    logger.info(
+        "[BotMeetingWS] Client connected: meeting=%s user=%s channels=%d",
+        meeting_id, user_email, len(channels),
+    )
+
+    # ── Relay loop ───────────────────────────────────────────────
+    # Two concurrent tasks:
+    #   1. Read from Redis pubsub → send to browser
+    #   2. Read from browser (heartbeats / close) → control loop
+
+    bot_completed = False
+
+    async def _redis_relay():
+        nonlocal bot_completed
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                channel_name = (
+                    message["channel"].decode()
+                    if isinstance(message["channel"], bytes)
+                    else message["channel"]
+                )
+                raw_data = (
+                    message["data"].decode()
+                    if isinstance(message["data"], bytes)
+                    else message["data"]
+                )
+                try:
+                    payload = json.loads(raw_data)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {"text": raw_data}
+
+                # Tag with the source channel for the frontend
+                if "transcript" in channel_name:
+                    payload.setdefault("type", "transcript")
+                elif "bot_status" in channel_name:
+                    payload.setdefault("type", "bot_status")
+                    # Check if bot completed
+                    if payload.get("status") in ("completed", "fatal"):
+                        bot_completed = True
+
+                await websocket.send_json(payload)
+
+                if bot_completed:
+                    await websocket.send_json({
+                        "type": "bot_session_ended",
+                        "status": payload.get("status", "completed"),
+                        "meeting_id": meeting_id,
+                    })
+                    return
+        except asyncio.CancelledError:
+            return
+        except WebSocketDisconnect:
+            return
+        except Exception as e:
+            logger.error(f"[BotMeetingWS] Redis relay error: {e}")
+            return
+
+    async def _client_reader():
+        try:
+            while True:
+                message = await asyncio.wait_for(websocket.receive(), timeout=120)
+                if message.get("type") == "websocket.disconnect":
+                    return
+                if "text" in message:
+                    try:
+                        data = json.loads(message["text"])
+                        if data.get("type") == "ping":
+                            await websocket.send_json({"type": "pong"})
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        except asyncio.TimeoutError:
+            logger.info("[BotMeetingWS] Client heartbeat timeout for meeting=%s", meeting_id)
+            return
+        except asyncio.CancelledError:
+            return
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            return
+
+    relay_task = asyncio.create_task(_redis_relay())
+    reader_task = asyncio.create_task(_client_reader())
+
+    try:
+        # Wait for either task to finish
+        done, pending = await asyncio.wait(
+            [relay_task, reader_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+    except Exception as e:
+        logger.error(f"[BotMeetingWS] Unexpected error: {e}")
+    finally:
+        try:
+            await pubsub.unsubscribe(*channels)
+            await pubsub.aclose()
+            await redis_client.aclose()
+        except Exception:
+            pass
+
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+        logger.info(
+            "[BotMeetingWS] Client disconnected: meeting=%s user=%s",
+            meeting_id, user_email,
+        )
+

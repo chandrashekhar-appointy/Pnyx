@@ -28,6 +28,17 @@ interface TranscriptSearchResult {
   timestamp: string;
 };
 
+// Active bot session from backend
+export interface ActiveBotSession {
+  meeting_id: string;
+  meeting_title: string;
+  recall_bot_id: string;
+  status: 'requesting' | 'joining' | 'recording';
+  bot_name: string;
+  user_email: string;
+  created_at: string;
+}
+
 interface SidebarContextType {
   currentMeeting: CurrentMeeting | null;
   setCurrentMeeting: (meeting: CurrentMeeting | null) => void;
@@ -56,7 +67,10 @@ interface SidebarContextType {
   refetchMeetings: () => Promise<void>;
   sharedNotesCount: number;
   refetchSharedNotes: () => Promise<void>;
-
+  // Active bot sessions
+  activeBotSessions: ActiveBotSession[];
+  activeBotMeetingId: string | null;
+  setActiveBotMeetingId: (id: string | null) => void;
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
@@ -82,6 +96,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
   const [activeSummaryPolls, setActiveSummaryPolls] = useState<Map<string, NodeJS.Timeout>>(new Map());
   const [sharedNotesCount, setSharedNotesCount] = useState(0);
+  const [activeBotSessions, setActiveBotSessions] = useState<ActiveBotSession[]>([]);
+  const [activeBotMeetingId, setActiveBotMeetingId] = useState<string | null>(null);
   const { status } = useSession(); // Access Auth Session Check
   const { isRecording: persistentIsRecording } = usePersistentRecordingSession();
 
@@ -141,10 +157,36 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     }
   }, [serverAddress, status]);
 
+  // Poll active bot sessions every 10s
+  const fetchActiveBotSessions = React.useCallback(async () => {
+    if (status === 'authenticated' && serverAddress) {
+      try {
+        const response = await authFetch('/api/meetings/active-bot-sessions', {
+          method: 'GET',
+          preventLogout: true,
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setActiveBotSessions(data || []);
+        }
+      } catch {
+        // Silently fail
+      }
+    }
+  }, [serverAddress, status]);
+
   useEffect(() => {
     fetchMeetings();
     fetchSharedNotesCount();
-  }, [serverAddress, fetchMeetings, fetchSharedNotesCount]);
+    fetchActiveBotSessions();
+  }, [serverAddress, fetchMeetings, fetchSharedNotesCount, fetchActiveBotSessions]);
+
+  // Poll active bot sessions every 10s
+  useEffect(() => {
+    if (status !== 'authenticated' || !serverAddress) return;
+    const interval = setInterval(fetchActiveBotSessions, 10000);
+    return () => clearInterval(interval);
+  }, [status, serverAddress, fetchActiveBotSessions]);
 
   useEffect(() => {
     setIsRecording(persistentIsRecording);
@@ -350,7 +392,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       refetchMeetings: fetchMeetings,
       sharedNotesCount,
       refetchSharedNotes: fetchSharedNotesCount,
-
+      activeBotSessions,
+      activeBotMeetingId,
+      setActiveBotMeetingId,
     }}>
       {children}
     </SidebarContext.Provider>

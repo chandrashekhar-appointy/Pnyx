@@ -411,7 +411,7 @@ export class AudioStreamClient {
   }
 
   /**
-   * Stop streaming
+   * Stop streaming — releases microphone FIRST, then cleans up network.
    */
   async stop(): Promise<void> {
     console.log('[AudioStream] Stopping...');
@@ -420,7 +420,61 @@ export class AudioStreamClient {
     this.userPaused = false;
     this.stopHeartbeat();
     this.stopAudioWatchdog();
-    await this.cleanup();
+
+    // 1. IMMEDIATELY stop the microphone to prevent any further audio capture.
+    //    This ensures the browser mic indicator turns off right away.
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => track.stop());
+      this.mediaStream = null;
+      console.log('[AudioStream] ✅ Microphone released');
+    }
+
+    // 2. Disconnect audio pipeline (no more data flows)
+    if (this.audioWorklet) {
+      try { this.audioWorklet.disconnect(); } catch { /* ignore */ }
+      this.audioWorklet = null;
+    }
+    if (this.silentMonitorGain) {
+      try { this.silentMonitorGain.disconnect(); } catch { /* ignore */ }
+      this.silentMonitorGain = null;
+    }
+    if (this.mediaStreamSource) {
+      try { this.mediaStreamSource.disconnect(); } catch { /* ignore */ }
+      this.mediaStreamSource = null;
+    }
+
+    // 3. Close AudioContext
+    if (this.audioContext) {
+      try { await this.audioContext.close(); } catch { /* ignore */ }
+      this.audioContext = null;
+    }
+
+    // 4. Gracefully close WebSocket (flush + stop handshake)
+    if (this.websocket) {
+      try {
+        if (this.websocket.readyState === WebSocket.OPEN) {
+          const ackPromise = new Promise<void>((resolve, reject) => {
+            this.pendingStopResolve = resolve;
+            this.pendingStopReject = reject;
+          });
+          this.flushQueue();
+          this.websocket.send(JSON.stringify({ type: 'stop' }));
+          await Promise.race([
+            ackPromise,
+            new Promise<void>((resolve) => setTimeout(resolve, 1500))
+          ]);
+          this.websocket.close(1000, 'client-stop');
+        } else {
+          this.websocket.close();
+        }
+      } catch {
+        try { this.websocket.close(); } catch { /* ignore */ }
+      }
+      this.websocket = null;
+    }
+
+    this.pendingStopResolve = null;
+    this.pendingStopReject = null;
     console.log('[AudioStream] ✅ Stopped');
   }
 

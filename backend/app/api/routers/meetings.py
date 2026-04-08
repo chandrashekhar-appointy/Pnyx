@@ -35,9 +35,30 @@ except (ImportError, ValueError):
     from core.rbac import RBAC
     from services.storage import StorageService
 
+from pydantic import BaseModel
+import uuid
+
+class CreateMeetingRequest(BaseModel):
+    title: str = "Live Bot Session"
+
 # Initialize DB and RBAC
 db = DatabaseManager()
 rbac = RBAC(db)
+
+@router.post("/create")
+async def create_meeting(request: CreateMeetingRequest, current_user: User = Depends(get_current_user)):
+    """Create a new empty meeting manually."""
+    try:
+        meeting_id = str(uuid.uuid4())
+        await db.save_meeting(
+            meeting_id=meeting_id,
+            title=request.title,
+            owner_id=current_user.email
+        )
+        return {"meeting_id": meeting_id, "title": request.title}
+    except Exception as e:
+        logger.error(f"Error creating meeting: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/get-meetings", response_model=List[MeetingResponse])

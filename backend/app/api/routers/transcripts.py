@@ -1120,6 +1120,12 @@ async def generate_notes_with_gemini_background(
                 user_email=user_email,
             )
 
+        if not all_json_data:
+            raise ValueError(
+                "LLM generation failed or returned entirely empty content. "
+                "Please check your API keys (e.g., GEMINI_API_KEY) and model configurations."
+            )
+
         # 4. Get template-specific structure
         final_result = get_template_structure(template_id)
         final_result["MeetingName"] = ""

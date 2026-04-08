@@ -84,6 +84,7 @@ class CalendarAutomationSettingsRequest(BaseModel):
     writeback_enabled: bool
     share_summary: bool = True
     share_transcript: bool = False
+    auto_join_enabled: bool = False
 
 
 class CalendarReminderEmailRequest(BaseModel):

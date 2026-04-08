@@ -30,6 +30,12 @@ class CalendarReminderScheduler:
         self.db = DatabaseManager()
         self.oauth = GoogleCalendarOAuthService(self.db)
         self.reminder_email = CalendarReminderEmailService()
+        try:
+            from app.services.recall.manager import RecallManager
+            self.recall_manager = RecallManager(db=self.db)
+        except (ImportError, ValueError):
+            from services.recall.manager import RecallManager
+            self.recall_manager = RecallManager(db=self.db)
         self._task: Optional[asyncio.Task] = None
         self._stopped = asyncio.Event()
         self._interval_seconds = int(os.getenv("CALENDAR_REMINDER_LOOP_SECONDS", "60"))
@@ -198,7 +204,60 @@ class CalendarReminderScheduler:
                 logger.error(
                     f"[CalendarSync] Failed for {integration['user_email']}: {e}"
                 )
+        await self._auto_join_bots()
+        await self._reap_long_running_bots()
         await self._process_due_reminders()
+
+    async def _reap_long_running_bots(self):
+        """Automatically remove bots that have exceeded the 15-minute time limit."""
+        try:
+            # Get bots active for more than 15 minutes
+            overstaying = await self.db.get_active_bot_sessions_older_than_minutes(15)
+            if overstaying:
+                logger.info(f"[Reaper] Found {len(overstaying)} bots to remove (limit=15m)")
+            
+            for bot in overstaying:
+                logger.info(
+                    f"[Reaper] Forcing bot leave for recall_bot_id={bot['recall_bot_id']} "
+                    f"meeting={bot['meeting_id']} (Created: {bot['created_at']})"
+                )
+                await self.recall_manager.remove_bot(bot["recall_bot_id"])
+        except Exception as e:
+            logger.error(f"[Reaper] Error in reaper loop: {e}")
+
+    async def _auto_join_bots(self):
+        due = await self.db.get_due_auto_join_events()
+        if due:
+            logger.info(f"[CalendarReminder] Due auto-join events this cycle: {len(due)}")
+        for event in due:
+            try:
+                meeting_url = event["meeting_link"]
+                user_email = event["user_email"]
+                meeting_title = event.get("meeting_title") or "Auto-Joined Meeting"
+
+                # Use a deterministic meeting ID to prevent duplicate joins for the same event cycle
+                # Format: cal_<event_id>_<start_timestamp>
+                start_ts = int(event["start_time"].timestamp())
+                meeting_id = f"cal_{event['event_id']}_{start_ts}"
+
+                await self.db.save_meeting(
+                    meeting_id=meeting_id,
+                    title=meeting_title,
+                    owner_id=user_email
+                )
+
+                logger.info(f"[CalendarReminder] Auto-joining bot to {meeting_url} for {user_email} (meeting_id={meeting_id})")
+                result = await self.recall_manager.spawn_bot(
+                    meeting_id=meeting_id,
+                    meeting_url=meeting_url,
+                    user_email=user_email,
+                    bot_name="Pnyx AI Assistant"
+                )
+                if result and not result.get("success"):
+                    logger.warning(f"[CalendarReminder] Auto-join failed for {meeting_id}. Cleaning up stranded meeting.")
+                    await self.db.delete_meeting(meeting_id)
+            except Exception as e:
+                logger.error(f"[CalendarReminder] Failed auto_join_bots for event {event['event_id']}: {e}")
 
     async def _acquire_lock(self) -> bool:
         """

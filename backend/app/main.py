@@ -1,6 +1,7 @@
 import logging
 import os
-from fastapi import FastAPI
+import time
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -33,6 +34,7 @@ try:
         analytics,
         credits,
         payments,
+        bot,
     )
 except ImportError:
     from api.routers import (
@@ -49,6 +51,7 @@ except ImportError:
         analytics,
         credits,
         payments,
+        bot,
     )
 
 app = FastAPI(
@@ -74,6 +77,18 @@ app.add_middleware(
     max_age=3600,
 )
 
+# Global Request Logging Middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    logger.info(
+        f"🌐 [REQUEST] {request.method} {request.url.path} - "
+        f"Status: {response.status_code} - Duration: {duration:.3f}s"
+    )
+    return response
+
 # Include Routers
 app.include_router(meetings.router, tags=["Meetings"])
 app.include_router(transcripts.router, tags=["Transcripts"])
@@ -87,6 +102,7 @@ app.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
 app.include_router(sharing.router)
 app.include_router(credits.router)
 app.include_router(payments.router)
+app.include_router(bot.router)
 
 
 @app.on_event("startup")

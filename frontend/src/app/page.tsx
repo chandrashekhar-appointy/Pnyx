@@ -6,6 +6,7 @@ import { Transcript, TranscriptUpdate, Summary, SummaryResponse } from '@/types'
 import { EditableTitle } from '@/components/EditableTitle';
 import { TranscriptView } from '@/components/TranscriptView';
 import { RecordingControls } from '@/components/RecordingControls';
+import { BotInvitePanel } from '@/components/BotInvitePanel';
 import { AISummary } from '@/components/AISummary';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { EncryptionCTABar } from '@/components/EncryptionCTABar';
@@ -15,7 +16,7 @@ import { LanguageSelection } from '@/components/LanguageSelection';
 // import { PermissionWarning } from '@/components/PermissionWarning';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { useNavigation } from '@/hooks/useNavigation';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Analytics from '@/lib/analytics';
@@ -429,9 +430,118 @@ export default function Home() {
 
   // Permission check skipped as browser handles it
 
-  const { currentMeeting, setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording, serverAddress, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { currentMeeting, setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording, serverAddress, isCollapsed: sidebarCollapsed, refetchMeetings, activeBotMeetingId } = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const botMeetingId = searchParams.get('botMeeting') || activeBotMeetingId;
+
+  // Track Bot WS Connection
+  const [botWsConnected, setBotWsConnected] = useState(false);
+  const botWsRef = useRef<WebSocket | null>(null);
+
+  // Auto-connect to bot websocket if botMeetingId is present
+  useEffect(() => {
+    if (!botMeetingId || !serverAddress) return;
+
+    // Disconnect existing if any
+    if (botWsRef.current) {
+      botWsRef.current.close();
+      botWsRef.current = null;
+    }
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Using the same backend host as serverAddress
+    const host = new URL(serverAddress).host;
+    const wsUrl = `${wsProtocol}//${host}/ws/bot-meeting/${botMeetingId}`;
+
+    const token = localStorage.getItem('token');
+    const protocols = token ? ['access_token', token] : [];
+
+    const ws = new WebSocket(wsUrl, protocols);
+    botWsRef.current = ws;
+
+    let pingInterval: NodeJS.Timeout;
+
+    ws.onopen = () => {
+      console.log('Bot WS Connected for meeting:', botMeetingId);
+      setBotWsConnected(true);
+      setCurrentSessionId(botMeetingId); // use it as session ID to keep UI unified
+      setMeetingTitle('Live Bot Session'); 
+      setIsMeetingActive(true);
+
+      // Heartbeat
+      pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'transcript') {
+          // It's a transcript update
+          const update = data.data;
+          
+          if (update.is_final) {
+            setTranscripts((prev) => {
+               // duplicate check
+               if (prev.some(t => t.id === update.id)) return prev;
+               return [...prev, update].sort((a, b) => a.sequence_id - b.sequence_id);
+            });
+            setPartialTranscript('');
+          } else {
+             setPartialTranscript(update.text);
+          }
+        } 
+        else if (data.type === 'bot_status') {
+           if (data.status === 'completed' || data.status === 'fatal') {
+              console.log('Bot session ended:', data.status);
+              toast.info(`Bot session ended: ${data.status}`);
+              setIsMeetingActive(false);
+              // auto-redirect to notes if completed
+              if (data.status === 'completed') {
+                 router.push(`/meeting-details?id=${botMeetingId}`);
+              } else {
+                 router.push('/');
+              }
+           }
+        }
+        else if (data.type === 'ai_host_suggestion') {
+          handleHostSuggestion(data.data);
+        }
+        else if (data.type === 'ai_host_intervention') {
+          handleHostIntervention(data.data);
+        }
+        else if (data.type === 'ai_host_state_delta') {
+          handleHostStateDelta(data.data);
+        }
+      } catch (err) {
+        console.error('Bot WS parse error', err);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('Bot WS Closed');
+      setBotWsConnected(false);
+      clearInterval(pingInterval);
+    };
+
+    ws.onerror = (err) => {
+      console.error('Bot WS Error:', err);
+      toast.error('Bot live connection error');
+    };
+
+    return () => {
+      clearInterval(pingInterval);
+      if (botWsRef.current) {
+         botWsRef.current.close();
+         botWsRef.current = null;
+      }
+    };
+  }, [botMeetingId, serverAddress]);
 
   // Ref for final buffer flush functionality
   const finalFlushRef = useRef<(() => void) | null>(null);
@@ -1477,14 +1587,25 @@ export default function Home() {
   };
 
   // Check for autoStartRecording flag and start recording automatically
+  // Uses a ref guard to ensure this only fires ONCE on mount, not on re-renders.
+  const hasCheckedAutoStartRef = useRef(false);
   useEffect(() => {
+    if (hasCheckedAutoStartRef.current) return;
+
     const checkAutoStartRecording = async () => {
       if (typeof window !== 'undefined') {
         const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
         const urlParams = new URLSearchParams(window.location.search);
         const shouldAutoStartFromUrl = urlParams.get('autoStart') === 'true';
 
+        // Only proceed if there's an explicit auto-start flag
+        if (!shouldAutoStart && !shouldAutoStartFromUrl) {
+          hasCheckedAutoStartRef.current = true;
+          return;
+        }
+
         if ((shouldAutoStart === 'true' || shouldAutoStartFromUrl) && !isRecording && !isMeetingActive) {
+          hasCheckedAutoStartRef.current = true;
           console.log('Auto-starting recording from navigation/new-tab launch...');
           sessionStorage.removeItem('autoStartRecording'); // Clear the flag
           if (shouldAutoStartFromUrl) {
@@ -3155,59 +3276,68 @@ export default function Home() {
                       )}
                     </div> */}
                 {/* )} */}
-                <div className="glass-surface rounded-full flex items-center">
-                  <RecordingControls
-                    isRecording={isRecording}
-                    onRecordingStop={(success) => handleRecordingStop(success)}
-                    onRecordingStart={handleRecordingStart}
-                    onTranscriptReceived={() => {}}
-                    onGuardrailAlert={handleGuardrailAlert}
-                    onHostSuggestion={handleHostSuggestion}
-                    onHostIntervention={handleHostIntervention}
-                    onHostStateDelta={handleHostStateDelta}
-                    onHostActionAck={handleHostActionAck}
-                    onHostSkillAck={(applied) => {
-                      if (applied) toast.success('AI Participant skill override applied');
-                    }}
-                    onHostClientReady={handleHostClientReady}
-                    hostSkillMarkdown={effectiveHostStyleMarkdown}
-                    manualContext={manualMeetingContext}
-                    contextApplySignal={contextApplySignal}
-                    onContextApplied={(applied) =>
-                      setContextAppliedStatus(applied ? 'applied' : 'failed')
-                    }
-                    onStopInitiated={() => setIsStopping(true)}
-                    barHeights={barHeights}
-                    onTranscriptionError={(message) => {
-                      setErrorMessage(message);
-                      setShowErrorAlert(true);
-                    }}
-                    isRecordingDisabled={isRecordingDisabled}
-                    isParentProcessing={isProcessingStop}
-                    selectedDevices={selectedDevices}
-                    meetingName={meetingTitle}
-                    onSessionIdReceived={(sessionId) => {
-                      setCurrentSessionId(sessionId);
-                      if (trackedMeetingStartRef.current !== sessionId) {
-                        trackedMeetingStartRef.current = sessionId;
-                        Analytics.trackMeetingStarted(
-                          sessionId,
-                          meetingTitle || 'Untitled Meeting'
-                        );
+                { !botMeetingId && (
+                  <div className="glass-surface rounded-full flex items-center">
+                    <RecordingControls
+                      isRecording={isRecording}
+                      onRecordingStop={(success) => handleRecordingStop(success)}
+                      onRecordingStart={handleRecordingStart}
+                      onTranscriptReceived={() => {}}
+                      onGuardrailAlert={handleGuardrailAlert}
+                      onHostSuggestion={handleHostSuggestion}
+                      onHostIntervention={handleHostIntervention}
+                      onHostStateDelta={handleHostStateDelta}
+                      onHostActionAck={handleHostActionAck}
+                      onHostSkillAck={(applied) => {
+                        if (applied) toast.success('AI Participant skill override applied');
+                      }}
+                      onHostClientReady={handleHostClientReady}
+                      hostSkillMarkdown={effectiveHostStyleMarkdown}
+                      manualContext={manualMeetingContext}
+                      contextApplySignal={contextApplySignal}
+                      onContextApplied={(applied) =>
+                        setContextAppliedStatus(applied ? 'applied' : 'failed')
                       }
-                      // Upgrade temporary recovery ids once backend confirms live session id.
-                      setPendingRecoveryId((prev) => {
-                        if (!prev) return prev;
-                        if (prev === sessionId) return prev;
-                        return prev.startsWith('recovery-') ? sessionId : prev;
-                      });
-                    }}
-                    initialSessionId={currentSessionId}
-                    onPauseChange={setIsPaused}
-                    startSignal={resumeStartSignal}
-                    onBeforeStart={handleBeforeStartRecording}
+                      onStopInitiated={() => setIsStopping(true)}
+                      barHeights={barHeights}
+                      onTranscriptionError={(message) => {
+                        setErrorMessage(message);
+                        setShowErrorAlert(true);
+                      }}
+                      isRecordingDisabled={isRecordingDisabled}
+                      isParentProcessing={isProcessingStop}
+                      selectedDevices={selectedDevices}
+                      meetingName={meetingTitle}
+                      onSessionIdReceived={(sessionId) => {
+                        setCurrentSessionId(sessionId);
+                        if (trackedMeetingStartRef.current !== sessionId) {
+                          trackedMeetingStartRef.current = sessionId;
+                          Analytics.trackMeetingStarted(
+                            sessionId,
+                            meetingTitle || 'Untitled Meeting'
+                          );
+                        }
+                        // Upgrade temporary recovery ids once backend confirms live session id.
+                        setPendingRecoveryId((prev) => {
+                          if (!prev) return prev;
+                          if (prev === sessionId) return prev;
+                          return prev.startsWith('recovery-') ? sessionId : prev;
+                        });
+                      }}
+                      initialSessionId={currentSessionId}
+                      onPauseChange={setIsPaused}
+                      startSignal={resumeStartSignal}
+                      onBeforeStart={handleBeforeStartRecording}
+                    />
+                  </div>
+                )}
+                {/* Recall.ai Bot Invite - Hide during local manual recording */}
+                {(!isRecording || !!botMeetingId) && (
+                  <BotInvitePanel
+                    meetingId={botMeetingId || currentSessionId}
+                    isRecording={isRecording || !!botMeetingId}
                   />
-                </div>
+                )}
               </div>
             </div>
           </div>

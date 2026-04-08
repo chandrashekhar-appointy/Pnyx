@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2, MoreHorizontal, Bot } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { authFetch } from '@/lib/api';
 import { useRouter, usePathname } from 'next/navigation';
@@ -23,6 +23,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 import { MessageToast } from '../MessageToast';
 import { ImportModal } from '@/components/ImportModal';
@@ -65,7 +72,10 @@ const Sidebar: React.FC = () => {
     meetings,
     setMeetings,
     serverAddress,
-    sharedNotesCount
+    sharedNotesCount,
+    activeBotSessions,
+    activeBotMeetingId,
+    setActiveBotMeetingId,
   } = useSidebar();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -530,52 +540,43 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/feedback')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/feedback' ? 'bg-gray-100' : 'hover:bg-gray-100'
-                  }`}
-              >
-                <MessageSquare className="w-5 h-5 text-gray-600" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Feedback</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/streaming-slo')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isSloPage ? 'bg-gray-100' : 'hover:bg-gray-100'
-                  }`}
-              >
-                <Activity className="w-5 h-5 text-gray-600" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Streaming SLO</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {isAdmin && (
+          <DropdownMenu>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  onClick={() => router.push('/dashboard')}
-                  className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/dashboard' ? 'bg-gray-100' : 'hover:bg-gray-100'
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className={`p-2 rounded-lg transition-colors duration-150 ${
+                      (pathname === '/feedback' || isSloPage || pathname === '/dashboard') ? 'bg-gray-100' : 'hover:bg-gray-100'
                     }`}
-                >
-                  <BarChart2 className="w-5 h-5 text-gray-600" />
-                </button>
+                  >
+                    <MoreHorizontal className="w-5 h-5 text-gray-600" />
+                  </button>
+                </DropdownMenuTrigger>
               </TooltipTrigger>
               <TooltipContent side="right">
-                <p>Analytics</p>
+                <p>More Options</p>
               </TooltipContent>
             </Tooltip>
-          )}
+            <DropdownMenuContent className="w-56 ml-4" align="start" side="right">
+              <DropdownMenuItem onClick={() => router.push('/feedback')} className="cursor-pointer">
+                <MessageSquare className="w-4 h-4 mr-2" />
+                Feedback
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push('/streaming-slo')} className="cursor-pointer">
+                <Activity className="w-4 h-4 mr-2" />
+                Streaming SLO
+              </DropdownMenuItem>
+              {isAdmin && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => router.push('/dashboard')} className="cursor-pointer">
+                    <BarChart2 className="w-4 h-4 mr-2" />
+                    Analytics
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -812,6 +813,40 @@ const Sidebar: React.FC = () => {
             {/* Scrollable meeting items */}
             {!isCollapsed && (
               <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                {/* Active Bot Sessions */}
+                {activeBotSessions.length > 0 && (
+                  <div className="mx-3 mb-2">
+                    <div className="flex items-center px-3 py-1.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
+                      <span className="relative flex h-2 w-2 mr-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      </span>
+                      Live Bot Sessions
+                    </div>
+                    {activeBotSessions.map((bs) => (
+                      <div
+                        key={bs.recall_bot_id}
+                        onClick={() => {
+                          setActiveBotMeetingId(bs.meeting_id);
+                          router.push(`/?botMeeting=${bs.meeting_id}`);
+                        }}
+                        className={`flex items-center px-3 py-2 my-0.5 rounded-md text-sm cursor-pointer transition-colors duration-150 ${
+                          activeBotMeetingId === bs.meeting_id
+                            ? 'bg-emerald-100 text-emerald-800 font-medium'
+                            : 'hover:bg-emerald-50'
+                        }`}
+                      >
+                        <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-emerald-100">
+                          <Bot className="w-3.5 h-3.5 text-emerald-600" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="block truncate">{bs.meeting_title || 'Bot Meeting'}</span>
+                          <span className="block text-xs text-emerald-600 capitalize">{bs.status}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {filteredSidebarItems
                   .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
                   .map(item => (
@@ -876,30 +911,33 @@ const Sidebar: React.FC = () => {
               <span>Settings</span>
             </button>
 
-            <button
-              onClick={() => router.push('/feedback')}
-              className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
-            >
-              <MessageSquare className="w-4 h-4 mr-2" />
-              <span>Feedback</span>
-            </button>
-            <button
-              onClick={() => router.push('/streaming-slo')}
-              className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
-            >
-              <Activity className="w-4 h-4 mr-2" />
-              <span>Streaming SLO</span>
-            </button>
-
-            {isAdmin && (
-              <button
-                onClick={() => router.push('/dashboard')}
-                className={`w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium rounded-lg transition-colors shadow-sm ${pathname === '/dashboard' ? 'text-gray-800 bg-gray-300' : 'text-gray-700 bg-gray-200 hover:bg-gray-300'}`}
-              >
-                <BarChart2 className="w-4 h-4 mr-2" />
-                <span>Analytics</span>
-              </button>
-            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors shadow-sm">
+                  <MoreHorizontal className="w-4 h-4 mr-2" />
+                  <span>More Options</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-56" align="center" side="top">
+                <DropdownMenuItem onClick={() => router.push('/feedback')} className="cursor-pointer">
+                  <MessageSquare className="w-4 h-4 mr-2" />
+                  Feedback
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => router.push('/streaming-slo')} className="cursor-pointer">
+                  <Activity className="w-4 h-4 mr-2" />
+                  Streaming SLO
+                </DropdownMenuItem>
+                {isAdmin && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => router.push('/dashboard')} className="cursor-pointer">
+                      <BarChart2 className="w-4 h-4 mr-2" />
+                      Analytics
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             <div className="px-1 mt-2 mb-2">
               <CreditBalance onTopUpClick={() => setIsPurchaseModalOpen(true)} />

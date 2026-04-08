@@ -22,6 +22,7 @@ type CalendarAutomationSettings = {
   reminder_offset_minutes: number;
   recap_enabled: boolean;
   writeback_enabled: boolean;
+  auto_join_enabled: boolean;
 };
 
 const DEFAULT_SETTINGS: CalendarAutomationSettings = {
@@ -30,6 +31,7 @@ const DEFAULT_SETTINGS: CalendarAutomationSettings = {
   reminder_offset_minutes: 2,
   recap_enabled: true,
   writeback_enabled: false,
+  auto_join_enabled: false,
 };
 
 export function CalendarIntegrationSettings() {
@@ -144,6 +146,7 @@ export function CalendarIntegrationSettings() {
         reminder_offset_minutes: settings.reminder_offset_minutes,
         recap_enabled: settings.recap_enabled,
         writeback_enabled: settings.writeback_enabled,
+        auto_join_enabled: settings.auto_join_enabled,
       }));
       toast.success("Calendar automation settings saved");
       await loadData();
@@ -229,6 +232,19 @@ export function CalendarIntegrationSettings() {
             checked={settings.reminders_enabled}
             onCheckedChange={(checked) =>
               setSettings((prev) => ({ ...prev, reminders_enabled: checked }))
+            }
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-medium text-gray-900">Auto-Join Meetings</p>
+            <p className="text-sm text-gray-600">Automatically send bot to upcoming calendar meetings</p>
+          </div>
+          <Switch
+            checked={settings.auto_join_enabled}
+            onCheckedChange={(checked) =>
+              setSettings((prev) => ({ ...prev, auto_join_enabled: checked }))
             }
           />
         </div>

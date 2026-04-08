@@ -58,6 +58,8 @@ for module_name in (
     "app.tasks.audio_pipeline",
     "tasks.weekly_credit_reset",
     "app.tasks.weekly_credit_reset",
+    "tasks.generate_notes",
+    "app.tasks.generate_notes",
 ):
     try:
         importlib.import_module(module_name)
