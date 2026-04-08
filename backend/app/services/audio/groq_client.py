@@ -30,6 +30,7 @@ class GroqTranscriptionClient:
             raise ValueError("GROQ_API_KEY not found in environment")
 
         self.client = AsyncGroq(api_key=self.api_key)
+        self.provider = "groq"
         logger.info("✅ Groq async client initialized")
 
     # ------------------------------------------------------------------

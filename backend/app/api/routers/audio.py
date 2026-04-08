@@ -1159,6 +1159,12 @@ async def websocket_streaming_audio(
             manager = StreamingTranscriptionManager(
                 transcription_client, meeting_context=meeting_context
             )
+            
+            # Increase window size for ElevenLabs (it needs more context than Groq)
+            if transcription_provider == "elevenlabs":
+                logger.info("[Streaming] Increasing minimum window to 10s for ElevenLabs Scribe v2")
+                manager.buffer.reconfigure(window_duration_ms=10000, slide_duration_ms=3000)
+
             streaming_managers[session_id] = manager
             logger.info(
                 f"[Streaming] ✅ Session {session_id} started (provider={transcription_provider})"

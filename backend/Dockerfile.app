@@ -12,10 +12,12 @@ RUN apt-get update && apt-get install -y \
     gcc \
     libc++1 \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz \
+    && ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then FFMPEG_ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then FFMPEG_ARCH="arm64"; else FFMPEG_ARCH="amd64"; fi && \
+    curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz -o /tmp/ffmpeg.tar.xz \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
-    && cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ \
-    && cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ \
+    && cp /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ \
+    && cp /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/ \
     && rm -rf /tmp/ffmpeg* \
     && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
@@ -23,6 +25,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python dependencies
+# First, install CPU-only torch to save 2GB and speed up build
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Then install other requirements
 RUN pip install --no-cache-dir gunicorn && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code

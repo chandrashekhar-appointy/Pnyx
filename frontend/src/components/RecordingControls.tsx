@@ -83,6 +83,7 @@ interface RecordingControlsProps {
   contextApplySignal?: number;
   onContextApplied?: (applied: boolean) => void;
   onBeforeStart?: () => boolean | Promise<boolean>;
+  onResetStartSignal?: () => void;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -111,7 +112,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   manualContext,
   contextApplySignal,
   onContextApplied,
-  onBeforeStart
+  onBeforeStart,
+  onResetStartSignal
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -449,7 +451,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     if (lastStartSignalRef.current === startSignal) return;
     lastStartSignalRef.current = startSignal;
     handleStartRecording();
-  }, [startSignal, isStarting, isStopping, sessionStatus, handleStartRecording]);
+    onResetStartSignal?.();
+  }, [startSignal, isStarting, isStopping, sessionStatus, handleStartRecording, onResetStartSignal]);
 
   const handleStopRecording = useCallback(async () => {
     if (!isRecording || isStarting || isStopping) {

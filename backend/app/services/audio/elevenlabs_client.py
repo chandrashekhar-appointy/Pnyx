@@ -25,7 +25,7 @@ ELEVENLABS_WS_BASE = "wss://api.elevenlabs.io"
 
 class ElevenLabsTranscriptionClient:
     def __init__(self, api_key: str = None, mode: str = "batch"):
-        self.api_key = api_key or os.getenv("ELEVENLABS_API_KEY", "")
+        self.api_key = (api_key or os.getenv("ELEVENLABS_API_KEY", "")).strip()
         if not self.api_key:
             raise ValueError(
                 "ELEVENLABS_API_KEY not found. Set it in environment variables."
@@ -41,8 +41,14 @@ class ElevenLabsTranscriptionClient:
         self._ws = None
         self._ws_lock = asyncio.Lock()
         self._ws_connected = False
+        self.provider = "elevenlabs"
 
-        logger.info("ElevenLabs Scribe client initialized (mode=%s)", self.mode)
+        # Safe debug logging for API key verification
+        if self.api_key:
+            masked_key = f"{self.api_key[:3]}...{self.api_key[-3:]}" if len(self.api_key) > 6 else "***"
+            logger.info(f"ElevenLabs Scribe client initialized (mode={self.mode}, key={masked_key}, len={len(self.api_key)})")
+        else:
+            logger.info(f"ElevenLabs Scribe client initialized (mode={self.mode}, NO KEY FOUND)")
 
     @staticmethod
     def _pcm_to_wav_bytes(audio_data: bytes, sample_rate: int = 16000) -> bytes:
@@ -187,10 +193,9 @@ class ElevenLabsTranscriptionClient:
 
         try:
             response = await client.post("/v1/speech-to-text", files=files, data=data)
+            # Allow raise_for_status() to handle errors with full body logging below
             if response.status_code == 429:
                 return {"text": "", "confidence": 0.0, "error": "rate_limit_exceeded"}
-            if response.status_code == 401:
-                return {"text": "", "confidence": 0.0, "error": "invalid_api_key"}
 
             response.raise_for_status()
             result = response.json()
@@ -205,6 +210,9 @@ class ElevenLabsTranscriptionClient:
             speaker_turns = self._build_speaker_turns(words)
             segments = self._build_text_segments(words, text)
             diarized = any(w.get("speaker_id") not in (None, "", "unknown") for w in words)
+
+            if not text:
+                logger.info("ElevenLabs returned NO TEXT. Audio size: %s bytes. Detected language: %s. Raw response: %s", len(wav_bytes), detected_language, result)
 
             logger.info(
                 "ElevenLabs batch transcription complete (chars=%s, words=%s, diarized=%s)",
@@ -226,12 +234,14 @@ class ElevenLabsTranscriptionClient:
                 "model": "scribe_v2",
             }
         except httpx.HTTPStatusError as e:
+            resp_body = (e.response.text or "")
             logger.error(
-                "ElevenLabs batch HTTP error: %s %s",
+                "ElevenLabs batch HTTP error: %s %s | Response: %s",
                 e.response.status_code,
-                (e.response.text or "")[:240],
+                e.request.url,
+                resp_body[:1000],
             )
-            return {"text": "", "confidence": 0.0, "error": str(e)}
+            return {"text": "", "confidence": 0.0, "error": f"ElevenLabs {e.response.status_code}: {resp_body}"}
         except Exception as e:
             logger.error("ElevenLabs batch transcription error: %s", e)
             return {"text": "", "confidence": 0.0, "error": str(e)}

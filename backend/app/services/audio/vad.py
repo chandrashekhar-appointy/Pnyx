@@ -285,6 +285,15 @@ class TenVAD:
         if sample_rate != 16000:
             logger.warning("TEN VAD only supports 16kHz. Resampling might be needed by caller.")
         
+        import platform
+        machine = platform.machine().lower()
+        system = platform.system().lower()
+        
+        # TenVAD is currently only reliable on Linux x86_64
+        if system != "linux" or machine not in ["x86_64", "amd64"]:
+            logger.info(f"⏭️ Skipping TenVAD initialization on unsupported platform: {system} {machine}")
+            raise ImportError(f"TenVAD is not supported on {system} {machine}")
+
         try:
             from ten_vad import TenVad
             # Initialize TenVad with default hop_size=256

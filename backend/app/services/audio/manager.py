@@ -45,30 +45,22 @@ class StreamingTranscriptionManager:
         self.meeting_context = meeting_context or {}
         # No ThreadPoolExecutor needed — GroqTranscriptionClient is now fully async.
 
-        # VAD Initialization Strategy: ONLY TenVAD
+        # VAD Initialization Strategy
         self.vad = None
 
-        # 1. TenVAD (High Performance C++) - STRICT enforcement
+        # 1. TenVAD (High Performance C++)
         try:
             self.vad = TenVAD(threshold=0.5)
             logger.info("✅ Using TenVAD (C++ based) with threshold 0.5")
-        except Exception as e:
-            logger.error(f"❌ TenVAD failed to load: {e}")
-            raise RuntimeError("TenVAD is required but failed to load. Aborting.")
+        except (ImportError, Exception) as e:
+            logger.warning(f"⚠️ TenVAD not available or failed to load: {e}")
 
-        # COMMENTED OUT: No fallbacks allowed per user request
-        # 2. Try SileroVAD (ML based, PyTorch)
-        # if self.vad is None:
-        #     try:
-        #         self.vad = SileroVAD(threshold=0.3)
-        #         logger.info("✅ Using SileroVAD (ML-based)")
-        #     except Exception as e:
-        #         logger.warning(f"⚠️ SileroVAD failed to load: {e}")
+        # 2. Skip SileroVAD (Avoids PyTorch dependency on local/Mac)
 
         # 3. Fallback to SimpleVAD (Amplitude based)
-        # if self.vad is None:
-        #     self.vad = SimpleVAD(threshold=0.08)
-        #     logger.info("ℹ️ Using SimpleVAD (Fallback)")
+        if self.vad is None:
+            self.vad = SimpleVAD(threshold=0.08)
+            logger.info("ℹ️ Using SimpleVAD (Fallback)")
 
         # IMPROVED: Optimized for real-time responsiveness
         # 6s window provides enough context for grammar, but is short enough to fail fast
@@ -638,7 +630,7 @@ class StreamingTranscriptionManager:
                     if should_transcribe is False:
                         return
 
-                # Transcribe with AsyncGroq — no thread pool needed.
+                # Transcribe with the configured async client — no thread pool needed.
                 prompt = self._construct_prompt()
                 result = await self.transcription_client.transcribe_audio_async(
                     window_bytes,
@@ -647,22 +639,24 @@ class StreamingTranscriptionManager:
                     True,  # translate_to_english=True
                 )
 
+                provider_name = getattr(self.transcription_client, 'provider', 'Transcription').capitalize()
+                
                 if result.get("error") == "rate_limit_exceeded":
-                    logger.warning("⚠️ Groq Rate Limit Exceeded")
+                    logger.warning(f"⚠️ {provider_name} Rate Limit Exceeded")
                     if on_error:
                         await on_error(
-                            "Groq API Rate Limit Reached. Please wait a moment or check your plan.",
-                            code="GROQ_RATE_LIMIT",
+                            f"{provider_name} API Rate Limit Reached. Please wait a moment or check your plan.",
+                            code=f"{provider_name.upper()}_RATE_LIMIT",
                         )
                 elif result.get("error") and (
                     "401" in str(result.get("error"))
                     or "invalid_api_key" in str(result.get("error"))
                 ):
-                    logger.error("❌ Groq Invalid API Key")
+                    logger.error(f"❌ {provider_name} Invalid API Key")
                     if on_error:
                         await on_error(
-                            "Groq API Key is invalid or missing. Please check your settings.",
-                            code="GROQ_KEY_REQUIRED",
+                            f"{provider_name} API Key is invalid or missing. Please check your settings.",
+                            code=f"{provider_name.upper()}_KEY_REQUIRED",
                         )
                 elif result["text"]:
                     self.total_transcriptions += 1

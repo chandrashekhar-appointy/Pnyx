@@ -131,6 +131,10 @@ export function appendStreamingTranscript(update: {
   emitChange();
 }
 
+export function resetResumeStartSignal() {
+  updateState('resumeStartSignal', 0);
+}
+
 export function usePersistentRecordingSession() {
   const snapshot = useSyncExternalStore(
     (listener) => {
@@ -153,6 +157,7 @@ export function usePersistentRecordingSession() {
     setResumeStartSignal: (value: Updater<number>) => updateState('resumeStartSignal', value),
     setRecordingElapsedSeconds: (value: Updater<number>) => updateState('recordingElapsedSeconds', value),
     setAudioTimelineOffsetSeconds: (value: Updater<number>) => updateState('audioTimelineOffsetSeconds', value),
+    resetResumeStartSignal: () => updateState('resumeStartSignal', 0),
   };
 }
 

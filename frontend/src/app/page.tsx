@@ -50,7 +50,13 @@ import { recoveryService, PendingMeetingData } from '@/lib/transcriptRecovery';
 import { SetupRequirements } from '@/components/SetupRequirements';
 import { CalendarMeetingPicker, CalendarEvent, formatCalendarEventTimeIST } from '@/components/CalendarMeetingPicker';
 import { AudioStreamClient } from '@/lib/audio-streaming/AudioStreamClient';
-import { getPersistentRecordingClient, usePersistentRecordingSession } from '@/lib/recordingSessionStore';
+import { 
+  getPersistentRecordingClient, 
+  usePersistentRecordingSession, 
+  resetResumeStartSignal,
+  setPartialTranscript,
+  appendStreamingTranscript 
+} from '@/lib/recordingSessionStore';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 
@@ -3327,6 +3333,7 @@ export default function Home() {
                       initialSessionId={currentSessionId}
                       onPauseChange={setIsPaused}
                       startSignal={resumeStartSignal}
+                      onResetStartSignal={resetResumeStartSignal}
                       onBeforeStart={handleBeforeStartRecording}
                     />
                   </div>
