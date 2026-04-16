@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useContext, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useContext, useCallback, useMemo, useRef, Suspense } from 'react';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { Transcript, TranscriptUpdate, Summary, SummaryResponse } from '@/types';
 import { EditableTitle } from '@/components/EditableTitle';
@@ -197,6 +197,14 @@ const toTitleCase = (value: string): string =>
     .join(' ');
 
 export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
   const {
     meetingTitle,
     setMeetingTitle,

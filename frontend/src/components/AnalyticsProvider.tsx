@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, ReactNode, useRef, useState, createContext } from 'react';
+import React, { useEffect, ReactNode, useRef, useState, createContext, useContext, Suspense } from 'react';
 import { useSession } from 'next-auth/react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import Analytics from '@/lib/analytics';
@@ -12,20 +12,48 @@ interface AnalyticsProviderProps {
 interface AnalyticsContextType {
   isAnalyticsOptedIn: boolean;
   setIsAnalyticsOptedIn: (optedIn: boolean) => void;
+  isAnalyticsInitialized: boolean;
 }
 
 export const AnalyticsContext = createContext<AnalyticsContextType>({
   isAnalyticsOptedIn: true,
   setIsAnalyticsOptedIn: () => { },
+  isAnalyticsInitialized: false,
 });
+
+/**
+ * PageViewTracker component uses useSearchParams and must be wrapped in Suspense.
+ */
+function PageViewTracker() {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { isAnalyticsOptedIn, isAnalyticsInitialized } = useContext(AnalyticsContext);
+  const trackedPathRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!isAnalyticsOptedIn || !isAnalyticsInitialized) {
+      return;
+    }
+
+    const url = searchParams?.toString()
+      ? `${pathname}?${searchParams.toString()}`
+      : pathname;
+
+    if (trackedPathRef.current === url) {
+      return;
+    }
+    trackedPathRef.current = url;
+    Analytics.trackPageView(url).catch(console.error);
+  }, [isAnalyticsOptedIn, isAnalyticsInitialized, pathname, searchParams]);
+
+  return null;
+}
 
 export default function AnalyticsProvider({ children }: AnalyticsProviderProps) {
   const { data: session, status } = useSession();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [isAnalyticsOptedIn, setIsAnalyticsOptedIn] = useState(true);
-  const initialized = useRef(false);
-  const trackedPathRef = useRef<string | null>(null);
+  const [isAnalyticsInitialized, setIsAnalyticsInitialized] = useState(false);
+  const initializedRef = useRef(false);
 
   // Automatically update the Analytics internal user ID when the session loads
   useEffect(() => {
@@ -52,7 +80,8 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
       await Analytics.init(userId);
 
       if (!analyticsOptedIn) {
-        initialized.current = false;
+        initializedRef.current = false;
+        setIsAnalyticsInitialized(false);
         return;
       }
 
@@ -65,7 +94,7 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
         user_agent: navigator.userAgent,
       });
 
-      if (!initialized.current) {
+      if (!initializedRef.current) {
         sessionId = await Analytics.startSession(userId);
         if (sessionId) {
           await Analytics.trackSessionStarted(sessionId);
@@ -73,7 +102,8 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
         await Analytics.checkAndTrackFirstLaunch();
         await Analytics.trackAppStarted();
         await Analytics.checkAndTrackDailyUsage();
-        initialized.current = true;
+        initializedRef.current = true;
+        setIsAnalyticsInitialized(true);
       }
 
       const handleBeforeUnload = async () => {
@@ -107,29 +137,25 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
     };
   }, [session?.user?.email]);
 
-  useEffect(() => {
-    if (!isAnalyticsOptedIn || !initialized.current) {
-      return;
-    }
-
-    const url = searchParams?.toString()
-      ? `${pathname}?${searchParams.toString()}`
-      : pathname;
-
-    if (trackedPathRef.current === url) {
-      return;
-    }
-    trackedPathRef.current = url;
-    Analytics.trackPageView(url).catch(console.error);
-  }, [isAnalyticsOptedIn, pathname, searchParams]);
-
   // Separate effect to handle re-initialization when analytics is toggled
   useEffect(() => {
     // Reset initialized flag when analytics is disabled to allow re-initialization
     if (!isAnalyticsOptedIn) {
-      initialized.current = false;
+      initializedRef.current = false;
+      setIsAnalyticsInitialized(false);
     }
   }, [isAnalyticsOptedIn]);
 
-  return <AnalyticsContext.Provider value={{ isAnalyticsOptedIn, setIsAnalyticsOptedIn }}>{children}</AnalyticsContext.Provider>;
+  return (
+    <AnalyticsContext.Provider value={{
+      isAnalyticsOptedIn,
+      setIsAnalyticsOptedIn,
+      isAnalyticsInitialized
+    }}>
+      <Suspense fallback={null}>
+        <PageViewTracker />
+      </Suspense>
+      {children}
+    </AnalyticsContext.Provider>
+  );
 }
