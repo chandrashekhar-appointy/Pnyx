@@ -105,6 +105,32 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const formatMeetingDisplayTitle = React.useCallback((meeting: { id: string; title: string }) => {
+    if (!meeting.id.startsWith('cal_')) {
+      return meeting.title;
+    }
+
+    const timestampMatch = meeting.id.match(/_(\d{9,})$/);
+    if (!timestampMatch) {
+      return meeting.title;
+    }
+
+    const startedAtMs = Number(timestampMatch[1]) * 1000;
+    if (!Number.isFinite(startedAtMs)) {
+      return meeting.title;
+    }
+
+    try {
+      const label = new Date(startedAtMs).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+      });
+      return `${meeting.title} - ${label}`;
+    } catch {
+      return meeting.title;
+    }
+  }, []);
+
   // Extract fetchMeetings as a reusable function
   const fetchMeetings = React.useCallback(async () => {
     // Only fetch if authenticated and server address is set
@@ -123,7 +149,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           new Map<string, CurrentMeeting>(
             meetingsData.map((meeting: any) => [
               meeting.id,
-              { id: meeting.id, title: meeting.title } as CurrentMeeting
+              {
+                id: meeting.id,
+                title: formatMeetingDisplayTitle(meeting),
+              } as CurrentMeeting
             ])
           ).values()
         );
@@ -135,7 +164,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         Analytics.trackBackendConnection(false, error instanceof Error ? error.message : 'Unknown error');
       }
     }
-  }, [serverAddress, status]);
+  }, [formatMeetingDisplayTitle, serverAddress, status]);
 
   const fetchSharedNotesCount = React.useCallback(async () => {
     if (status === 'authenticated' && serverAddress) {

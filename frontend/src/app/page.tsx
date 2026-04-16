@@ -159,6 +159,28 @@ interface AIHostStylesPayload {
   default_style_id: string;
 }
 
+interface BehaviorCategory {
+  id: string;
+  icon: string;
+  label: string;
+  display_hint: string;
+  confidence_threshold: number;
+}
+
+interface BehaviorSpecPayload {
+  name: string;
+  summary_visibility: string;
+  suppressed_categories: string[];
+  output_categories: Array<{
+    id: string;
+    icon: string;
+    label: string;
+    description: string;
+    display_hint: string;
+    priority_default: string;
+  }>;
+}
+
 const CORE_EVENT_TYPES = new Set(['decision_candidate', 'open_discussion']);
 
 const extractRoleModeFromMarkdown = (markdown: string): string | null => {
@@ -214,7 +236,7 @@ export default function Home() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'gemini',
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-2.5-flash',
     whisperModel: 'large-v3'
   });
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
@@ -287,6 +309,15 @@ export default function Home() {
   const pendingStartResolverRef = useRef<((allow: boolean) => void) | null>(null);
   const lastGuardrailSignatureRef = useRef<string>('');
   const lastGuardrailAtRef = useRef<number>(0);
+  const [behaviorSpec, setBehaviorSpec] = useState<BehaviorSpecPayload | null>(null);
+  const [insightsPanelWidth, setInsightsPanelWidth] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('insights_panel_width');
+      return saved ? Math.max(320, Math.min(Number(saved), 800)) : 380;
+    }
+    return 380;
+  });
+  const insightsResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
     const checkRecoveries = async () => {
@@ -436,11 +467,34 @@ export default function Home() {
 
   // Permission check skipped as browser handles it
 
-  const { currentMeeting, setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording, serverAddress, isCollapsed: sidebarCollapsed, refetchMeetings, activeBotMeetingId } = useSidebar();
+  const { 
+    currentMeeting, 
+    setCurrentMeeting, 
+    setMeetings, 
+    meetings, 
+    isMeetingActive, 
+    setIsMeetingActive, 
+    setIsRecording: setSidebarIsRecording, 
+    serverAddress, 
+    isCollapsed: sidebarCollapsed, 
+    refetchMeetings, 
+    activeBotMeetingId,
+    setActiveBotMeetingId
+  } = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
   const searchParams = useSearchParams();
   const botMeetingId = searchParams.get('botMeeting') || activeBotMeetingId;
+
+  // Clear active bot meeting if we are on the home page but no botMeeting param is present.
+  // This ensures that navigating back to "New Call" from a bot session correctly
+  // restores the local recording "Start Pnyx" button.
+  useEffect(() => {
+    if (!searchParams.get('botMeeting') && activeBotMeetingId) {
+      console.log('[Home] Clearing activeBotMeetingId as no botMeeting param is present');
+      setActiveBotMeetingId(null);
+    }
+  }, [searchParams, activeBotMeetingId, setActiveBotMeetingId]);
 
   // Track Bot WS Connection
   const [botWsConnected, setBotWsConnected] = useState(false);
@@ -523,6 +577,9 @@ export default function Home() {
         }
         else if (data.type === 'ai_host_state_delta') {
           handleHostStateDelta(data.data);
+        }
+        else if (data.type === 'behavior_spec_sync') {
+          setBehaviorSpec(data.payload || data.data || null);
         }
       } catch (err) {
         console.error('Bot WS parse error', err);
@@ -790,9 +847,9 @@ export default function Home() {
     openrouter: [
       'anthropic/claude-opus-4.1',
       'openai/gpt-5.4',
-      'google/gemini-3-pro-preview',
+      'google/gemini-2.5-flash',
     ],
-    gemini: ['gemini-3-pro-preview'],
+    gemini: ['gemini-2.5-flash'],
     openai: ['gpt-5.4', 'gpt-5', 'gpt-5-mini'],
   };
 
@@ -1347,7 +1404,13 @@ export default function Home() {
   const expiredInsightIds = useMemo(() => new Set(pastInsights.filter(i => i.type === 'action').map(i => i.id)), [pastInsights]);
   const activePinnedInsights = useMemo(() => participantActionsForPanel.filter(i => i.status === 'pinned' && !expiredInsightIds.has(i.id)), [participantActionsForPanel, expiredInsightIds]);
 
-  const totalPastInsightCount = useMemo(() => guardrailAlertHistory.length + pastInsights.length, [guardrailAlertHistory.length, pastInsights.length]);
+  const totalPastInsightCount = useMemo(() => {
+    let count = guardrailAlertHistory.length + pastInsights.length;
+    // Include summary if it's real AI content
+    const backendSummary = (hostStateDelta as Record<string, unknown> | null)?.meeting_summary as string | undefined;
+    if (backendSummary?.trim()) count++;
+    return count;
+  }, [guardrailAlertHistory.length, pastInsights.length, hostStateDelta]);
 
   const isInsightIntervention = activeHostIntervention &&
     !CORE_EVENT_TYPES.has(activeHostIntervention.event_type) ? activeHostIntervention : null;
@@ -2331,12 +2394,12 @@ export default function Home() {
       // The catch-up endpoint currently only supports gemini and groq
       const supportedProviders = ['gemini', 'groq'];
       let provider = modelConfig?.provider || 'gemini';
-      let modelName = modelConfig?.model || 'gemini-2.5-pro';
+      let modelName = modelConfig?.model || 'gemini-2.5-flash';
 
       if (!supportedProviders.includes(provider)) {
         console.warn(`[CatchUp] Unsupported provider "${provider}" selected. Falling back to Gemini.`);
         provider = 'gemini';
-        modelName = 'gemini-2.5-pro';
+        modelName = 'gemini-2.5-flash';
       }
 
       const response = await authFetch('/catch-up', {
@@ -2978,24 +3041,7 @@ export default function Home() {
                       </motion.div>
                     )}
 
-                    {/* Live Summary (compact) */}
-                    {liveMeetingSummary && liveMeetingSummary !== 'Meeting intelligence will appear here as discussion progresses.' && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="insight-chip w-full max-w-xl px-5 py-4"
-                      >
-                        <div className="flex items-center gap-2 mb-2">
-                          <div className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-                          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Live Summary</span>
-                        </div>
-                        <div className="prose prose-sm max-w-none text-gray-700 max-h-[180px] overflow-y-auto panel-scroll">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {liveMeetingSummary}
-                          </ReactMarkdown>
-                        </div>
-                      </motion.div>
-                    )}
+                    {/* Live Summary removed from center panel per user feedback (moved to Past Insights panel) */}
 
                     {/* Past Insights trigger */}
                     {totalPastInsightCount > 0 && (
@@ -3030,8 +3076,33 @@ export default function Home() {
                         animate={{ x: 0, opacity: 1 }}
                         exit={{ x: '100%', opacity: 0 }}
                         transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-                        className="fixed right-0 top-0 bottom-0 w-[380px] max-w-[90vw] z-50 glass-surface border-l border-gray-200/60 flex flex-col"
+                        style={{ width: insightsPanelWidth }}
+                        className="fixed right-0 top-0 bottom-0 max-w-[90vw] z-50 glass-surface border-l border-gray-200/60 flex flex-col"
                       >
+                        {/* Resize handle */}
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-indigo-400/40 active:bg-indigo-500/50 transition-colors z-10"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            insightsResizeRef.current = { startX: e.clientX, startWidth: insightsPanelWidth };
+                            const onMouseMove = (ev: MouseEvent) => {
+                              if (!insightsResizeRef.current) return;
+                              const delta = insightsResizeRef.current.startX - ev.clientX;
+                              const newWidth = Math.max(320, Math.min(insightsResizeRef.current.startWidth + delta, 800));
+                              setInsightsPanelWidth(newWidth);
+                            };
+                            const onMouseUp = () => {
+                              document.removeEventListener('mousemove', onMouseMove);
+                              document.removeEventListener('mouseup', onMouseUp);
+                              if (typeof window !== 'undefined') {
+                                localStorage.setItem('insights_panel_width', String(insightsPanelWidth));
+                              }
+                              insightsResizeRef.current = null;
+                            };
+                            document.addEventListener('mousemove', onMouseMove);
+                            document.addEventListener('mouseup', onMouseUp);
+                          }}
+                        />
                         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200/60">
                           <h3 className="text-base font-semibold text-gray-900">Past Insights</h3>
                           <button
@@ -3297,6 +3368,7 @@ export default function Home() {
                       onHostSkillAck={(applied) => {
                         if (applied) toast.success('AI Participant skill override applied');
                       }}
+                      onBehaviorSpecSync={(payload) => setBehaviorSpec(payload as unknown as BehaviorSpecPayload)}
                       onHostClientReady={handleHostClientReady}
                       hostSkillMarkdown={effectiveHostStyleMarkdown}
                       manualContext={manualMeetingContext}

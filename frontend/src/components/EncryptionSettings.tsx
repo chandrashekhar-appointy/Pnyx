@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { Shield, Download, RefreshCw, Trash2, AlertTriangle, Key, CheckCircle2, Lock, X } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { syncEncryptionPublicKey } from '@/lib/crypto/key_sync';
 
 export function EncryptionSettings() {
     const [hasKey, setHasKey] = useState<boolean>(false);
@@ -302,18 +303,19 @@ export function EncryptionSettings() {
                                             setActionLoading(true);
                                             try {
                                                 const key = await KeyManager.importPrivateKey(val);
-                                                // We also need the public key to sync with server? 
-                                                // Actually if restoring, the public key should already match what's on server.
-                                                await KeyManager.storeKeyPair({ 
-                                                    privateKey: key, 
-                                                    publicKey: null as any // We don't strictly need pubkey for decryption
+                                                const publicKey = await KeyManager.derivePublicKey(key);
+                                                await KeyManager.storeKeyPair({
+                                                    privateKey: key,
+                                                    publicKey,
                                                 });
+                                                await syncEncryptionPublicKey();
                                                 setHasKey(true);
-                                                toast.success('Private key restored successfully!');
+                                                toast.success('Private key restored and synced successfully!');
                                                 textarea.value = '';
                                                 Analytics.track('encryption_key_restored');
                                             } catch (e) {
-                                                toast.error('Invalid private key format.');
+                                                console.error('Failed to restore private key:', e);
+                                                toast.error('Could not restore and sync this private key.');
                                             } finally {
                                                 setActionLoading(false);
                                             }

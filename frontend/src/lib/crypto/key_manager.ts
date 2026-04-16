@@ -5,7 +5,7 @@ const STORE_NAME = 'keys';
 const KEY_NAME = 'main-identity';
 
 export interface KeyPair {
-  publicKey: CryptoKey;
+  publicKey: CryptoKey | null;
   privateKey: CryptoKey;
 }
 
@@ -43,7 +43,7 @@ export class KeyManager {
   static async generateAndStoreKeyPair(): Promise<{ publicKey: string }> {
     const pair = await this.generateKeyPair();
     await this.storeKeyPair(pair);
-    const pubBase64 = await this.exportPublicKey(pair.publicKey);
+    const pubBase64 = await this.exportPublicKey(pair.publicKey as CryptoKey);
     return { publicKey: pubBase64 };
   }
 
@@ -92,6 +92,31 @@ export class KeyManager {
   }
 
   /**
+   * Reconstruct the public key from an extractable EC private key.
+   * This is needed when users restore only a private-key backup.
+   */
+  static async derivePublicKey(privateKey: CryptoKey): Promise<CryptoKey> {
+    const jwk = await window.crypto.subtle.exportKey('jwk', privateKey);
+    if (!jwk.x || !jwk.y) {
+      throw new Error('Private key does not contain public key coordinates');
+    }
+
+    return await window.crypto.subtle.importKey(
+      'jwk',
+      {
+        kty: 'EC',
+        crv: (jwk.crv as string) || 'P-256',
+        x: jwk.x,
+        y: jwk.y,
+        ext: true,
+      },
+      { name: 'ECDH', namedCurve: (jwk.crv as string) || 'P-256' },
+      true,
+      []
+    );
+  }
+
+  /**
    * Retrieve the stored key pair.
    */
   static async getKeyPair(): Promise<KeyPair | null> {
@@ -99,6 +124,18 @@ export class KeyManager {
       const db = await this.getDb();
       const pair = await db.get(STORE_NAME, KEY_NAME);
       console.log('🗝️ KeyManager: Retrieved key pair from IndexedDB:', !!pair);
+      if (!pair) return null;
+
+      if (pair.privateKey && !pair.publicKey) {
+        console.log('🗝️ KeyManager: Reconstructing missing public key from private key...');
+        const repairedPair = {
+          privateKey: pair.privateKey,
+          publicKey: await this.derivePublicKey(pair.privateKey),
+        };
+        await this.storeKeyPair(repairedPair);
+        return repairedPair;
+      }
+
       return pair || null;
     } catch (e) {
       console.error('❌ KeyManager: Failed to retrieve key pair:', e);

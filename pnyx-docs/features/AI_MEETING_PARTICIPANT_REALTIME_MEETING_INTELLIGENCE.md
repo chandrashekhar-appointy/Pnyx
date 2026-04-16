@@ -125,7 +125,7 @@ The behavior of the AI Participant is highly tunable via environment variables w
 | :--- | :--- | :--- |
 | `AI_PARTICIPANT_ENABLED` | `true` | Master kill switch for the feature. |
 | `AI_PARTICIPANT_MODEL` | `gemini-3-pro-preview` | Primary reasoning model. |
-| `AI_PARTICIPANT_FALLBACK_MODELS` | `gemini-3-flash-preview` | Comma-separated fallback models in case of timeout/error. |
+| `AI_PARTICIPANT_FALLBACK_MODELS` | `gemini-3-flash-preview-preview` | Comma-separated fallback models in case of timeout/error. |
 | `AI_PARTICIPANT_WINDOW_SECONDS` | `180` | Number of seconds of transcript to retain in the buffer. |
 | `AI_PARTICIPANT_MAX_WINDOW_CHARS` | `6000` | Hard cap on transcript characters to prevent LLM context bloat. |
 | `AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS` | `90` | How often (in seconds) the LLM evaluates the buffer. |

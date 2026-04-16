@@ -18,6 +18,7 @@ export function useTemplates() {
     // Mock templates for web version
     const templates = [
       { id: 'standard_meeting', name: 'Standard Meeting', description: 'Standard meeting summary with key points and action items' },
+      { id: 'smart_notes', name: 'Freestyle', description: 'No fixed structure. Lets the AI shape the notes directly from the transcript.' },
       { id: 'daily_standup', name: 'Daily Standup', description: 'Concise update on progress, plans, and blockers' },
       { id: 'interview', name: 'Interview', description: 'Candidate assessment and key discussion points' },
       { id: 'brainstorming', name: 'Brainstorming', description: 'Capture ideas, suggestions, and creative concepts' },
@@ -56,6 +57,8 @@ export function useTemplates() {
     const savedTemplate = localStorage.getItem('selectedTemplate');
     if (savedTemplate) {
       setSelectedTemplate(savedTemplate);
+    } else {
+      setSelectedTemplate('standard_meeting');
     }
   }, []);
 

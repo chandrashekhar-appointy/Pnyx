@@ -5,6 +5,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
 import Analytics from '@/lib/analytics';
+import { syncEncryptionPublicKey } from '@/lib/crypto/key_sync';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 type NotesGenerationInfo = {
@@ -14,6 +15,11 @@ type NotesGenerationInfo = {
   prompt_version?: string | null;
   diarized_available?: boolean;
   recommend_regenerate_with_diarized?: boolean;
+  encryption?: {
+    transcript?: Record<string, unknown> | null;
+    summary?: Record<string, unknown> | null;
+    audio?: Record<string, unknown> | null;
+  } | null;
 };
 
 interface UseSummaryGenerationProps {
@@ -53,6 +59,28 @@ export function useSummaryGeneration({
     }
   }, [initialNotesGenerationInfo]);
 
+  const extractSummaryHeading = useCallback((summaryData: Record<string, any>) => {
+    const directTitle = String(summaryData?.MeetingName || '').trim();
+    if (directTitle) {
+      return directTitle;
+    }
+
+    const markdown = summaryData?.markdown;
+    if (typeof markdown !== 'string') {
+      return '';
+    }
+
+    for (const rawLine of markdown.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (line.startsWith('#')) {
+        return line.replace(/^#+\s*/, '').trim();
+      }
+    }
+
+    return '';
+  }, []);
+
   // Helper to get status message
   const getSummaryStatusMessage = useCallback((status: SummaryStatus) => {
     switch (status) {
@@ -87,6 +115,20 @@ export function useSummaryGeneration({
       try {
         console.log('Generating notes with Gemini using template:', selectedTemplate);
 
+        // Keep the server-side public key aligned with this browser before
+        // generating encrypted notes, otherwise decryption can fail later.
+        try {
+          await syncEncryptionPublicKey();
+        } catch (syncError) {
+          console.error('Failed to sync encryption public key before notes generation:', syncError);
+          throw new Error('Could not sync your encryption key. Restore your key in Settings and try again.');
+        }
+
+        // Extract transcript explicitly to handle encrypted records
+        const explicitTranscript = transcripts && transcripts.length > 0 
+          ? transcripts.map(t => t.text).join('\n') 
+          : '';
+
         // Use the new /meetings/{id}/generate-notes endpoint which uses Gemini
         const response = await authFetch(`/meetings/${meeting.id}/generate-notes`, {
           method: 'POST',
@@ -95,9 +137,10 @@ export function useSummaryGeneration({
             meeting_id: meeting.id,
             template_id: selectedTemplate,
             model: 'gemini',
-            model_name: 'gemini-2.5-pro',
+            model_name: 'gemini-2.5-flash',
             custom_context: customPrompt || '',  // Add context from user input
             prefer_diarized_transcript: preferDiarizedTranscript,
+            transcript: explicitTranscript,
           })
         });
 
@@ -139,32 +182,72 @@ export function useSummaryGeneration({
           return;
         }
 
-        // Handle successful completion
-          if (pollingResult.status === 'completed' && pollingResult.data) {
-            console.log('✅ Summary generation completed:', pollingResult.data);
-            if (pollingResult.notes_generation) {
-              setNotesGenerationInfo(pollingResult.notes_generation);
-              await Analytics.trackCalendarContextFetched(
-                pollingResult.notes_generation.agenda_used ? 'used' : 'not_used',
-                {
-                  meeting_id: meeting.id,
-                  transcript_source: pollingResult.notes_generation.transcript_source,
-                  audio_used: pollingResult.notes_generation.audio_used,
-                  prompt_version: pollingResult.notes_generation.prompt_version,
-                }
-              );
+        // Handle successful completion, including encrypted artifacts that
+        // intentionally return empty data until the browser decrypts them.
+        if (pollingResult.status === 'completed') {
+          console.log('✅ Summary generation completed:', pollingResult.data);
+          if (pollingResult.notes_generation) {
+            setNotesGenerationInfo(pollingResult.notes_generation);
+            await Analytics.trackCalendarContextFetched(
+              pollingResult.notes_generation.agenda_used ? 'used' : 'not_used',
+              {
+                meeting_id: meeting.id,
+                transcript_source: pollingResult.notes_generation.transcript_source,
+                audio_used: pollingResult.notes_generation.audio_used,
+                prompt_version: pollingResult.notes_generation.prompt_version,
+              }
+            );
+          }
+
+          const hasEncryptedSummary = !!pollingResult.notes_generation?.encryption?.summary;
+          const summaryData = pollingResult.data || {};
+          const summaryKeys = Object.keys(summaryData).filter((key) => key !== 'MeetingName');
+          const hasRenderablePayload =
+            !!summaryData.markdown ||
+            summaryKeys.length > 0;
+
+          if (!hasRenderablePayload && hasEncryptedSummary) {
+            setSummaryStatus('completed');
+
+            if (onMeetingUpdated) {
+              await onMeetingUpdated();
             }
 
+            if (isRegeneration && typeof window !== 'undefined') {
+              const evt = new CustomEvent('show-share-dialog', { detail: { meetingId: meeting.id }});
+              window.dispatchEvent(evt);
+            }
+
+            return;
+          }
+
+          if (!hasRenderablePayload) {
+            setSummaryError('Summary generation completed but returned empty content.');
+            setSummaryStatus('error');
+
+            await Analytics.trackSummaryGenerationCompleted(
+              modelConfig.provider,
+              modelConfig.model,
+              false,
+              undefined,
+              'Empty summary generated',
+              selectedTemplate
+            );
+            return;
+          }
+
           // Update meeting title if available
-          const meetingName = pollingResult.data.MeetingName || pollingResult.meetingName;
+          const meetingName =
+            extractSummaryHeading(summaryData) ||
+            String(pollingResult.meetingName || '').trim();
           if (meetingName) {
             updateMeetingTitle(meetingName);
           }
 
           // Check if backend returned markdown format (new flow)
-          if (pollingResult.data.markdown) {
+          if (summaryData.markdown) {
             console.log('✅ GENERATE SUMMARY: Received markdown format from backend');
-            setAiSummary({ markdown: pollingResult.data.markdown } as any);
+            setAiSummary({ markdown: summaryData.markdown } as any);
             setSummaryStatus('completed');
 
             if (meetingName && onMeetingUpdated) {
@@ -189,7 +272,7 @@ export function useSummaryGeneration({
           }
 
           // Legacy format handling
-          const summarySections = Object.entries(pollingResult.data).filter(([key]) => key !== 'MeetingName');
+          const summarySections = Object.entries(summaryData).filter(([key]) => key !== 'MeetingName');
           // Improved empty check to handle MeetingNotes structure
           const allEmpty = summarySections.every(([key, section]) => {
             if (key === 'MeetingNotes') {
@@ -201,6 +284,21 @@ export function useSummaryGeneration({
           });
 
           if (allEmpty) {
+            if (hasEncryptedSummary) {
+              setSummaryStatus('completed');
+
+              if (onMeetingUpdated) {
+                await onMeetingUpdated();
+              }
+
+              if (isRegeneration && typeof window !== 'undefined') {
+                const evt = new CustomEvent('show-share-dialog', { detail: { meetingId: meeting.id }});
+                window.dispatchEvent(evt);
+              }
+
+              return;
+            }
+
             console.error('Summary completed but all sections empty', pollingResult.data);
             setSummaryError('Summary generation completed but returned empty content.');
             setSummaryStatus('error');
@@ -217,15 +315,15 @@ export function useSummaryGeneration({
           }
 
           // Remove MeetingName from data before formatting
-          const { MeetingName, ...summaryData } = pollingResult.data;
+          const { MeetingName, ...legacySummaryData } = pollingResult.data;
 
           // Format legacy summary data
           const formattedSummary: Summary = {};
-          const sectionKeys = pollingResult.data._section_order || Object.keys(summaryData);
+          const sectionKeys = pollingResult.data._section_order || Object.keys(legacySummaryData);
 
           for (const key of sectionKeys) {
             try {
-              const section = summaryData[key];
+              const section = legacySummaryData[key];
               
               // Handle MeetingNotes specially by flattening its sections
               if (key === 'MeetingNotes' && section && typeof section === 'object' && 'sections' in section) {
@@ -319,11 +417,13 @@ export function useSummaryGeneration({
     meeting.id,
     meeting.created_at,
     modelConfig,
+    extractSummaryHeading,
     selectedTemplate,
     startSummaryPolling,
     setAiSummary,
     updateMeetingTitle,
     onMeetingUpdated,
+    transcripts,
   ]);
 
   // Public API: Generate summary from backend-selected transcript source.
@@ -344,7 +444,7 @@ export function useSummaryGeneration({
 
     // Always use Gemini for notes generation (best quality)
     const notesProvider = 'gemini';
-    const notesModel = 'gemini-2.5-pro';
+    const notesModel = 'gemini-2.5-flash';
     
     console.log('🚀 Starting notes generation with Gemini:', {
       provider: notesProvider,

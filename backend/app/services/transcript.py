@@ -375,8 +375,9 @@ class TranscriptService:
                 if not success:
                     logger.warning(f"Skipping chunk {i + 1} after failures.")
 
-                # Proactive rate limiting delay between chunks
-                await asyncio.sleep(2)
+                # Proactive rate limiting delay between chunks only.
+                if i < num_chunks - 1:
+                    await asyncio.sleep(2)
 
             logger.info(f"Finished processing all {num_chunks} chunks.")
             return num_chunks, all_json_data

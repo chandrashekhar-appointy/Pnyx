@@ -7,9 +7,15 @@ interface MeetingSelectorProps {
     selectedIds: string[];
     onSelectionChange: (ids: string[]) => void;
     onAttach?: () => void;
+    excludeMeetingId?: string;
 }
 
-export function MeetingSelector({ selectedIds, onSelectionChange, onAttach }: MeetingSelectorProps) {
+export function MeetingSelector({
+    selectedIds,
+    onSelectionChange,
+    onAttach,
+    excludeMeetingId,
+}: MeetingSelectorProps) {
     const [meetings, setMeetings] = useState<Meeting[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -33,6 +39,7 @@ export function MeetingSelector({ selectedIds, onSelectionChange, onAttach }: Me
     }, []);
 
     const filteredMeetings = meetings.filter(m =>
+        m.id !== excludeMeetingId &&
         (m.title || m.id).toLowerCase().includes(searchQuery.toLowerCase())
     );
 

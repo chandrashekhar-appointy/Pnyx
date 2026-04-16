@@ -3,6 +3,7 @@ import json
 import os
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List
 import logging
@@ -29,6 +30,31 @@ IST = ZoneInfo("Asia/Kolkata")
 
 class DatabaseManager:
     _pool = None
+
+    @staticmethod
+    def _extract_meeting_title_from_summary_result(result: Optional[Dict]) -> Optional[str]:
+        if not isinstance(result, dict):
+            return None
+
+        direct_title = str(
+            result.get("MeetingName") or result.get("meetingName") or ""
+        ).strip()
+        if direct_title:
+            return direct_title
+
+        markdown = result.get("markdown")
+        if isinstance(markdown, str):
+            for raw_line in markdown.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    heading = re.sub(r"^#+\s*", "", line).strip()
+                    if heading:
+                        return heading
+                    break
+
+        return None
 
     @classmethod
     async def init_pool(cls, db_url: str):
@@ -185,6 +211,7 @@ class DatabaseManager:
         """Update a process status and result"""
         now = datetime.utcnow()
         storage_meta: Optional[Dict] = None
+        summary_title = self._extract_meeting_title_from_summary_result(result)
         if result:
             # E2EE: Check if encryption is enabled for the meeting owner
             public_key = None
@@ -250,12 +277,10 @@ class DatabaseManager:
                         params.append(processing_time)
                         param_idx += 1
 
-                    if metadata:
-                        # Merge with existing metadata to preserve encryption keys
-                        # (post_recording sets encryption.audio/transcript, notes regen
-                        # should not clobber those when setting encryption.summary)
+                        # Merge with existing metadata to preserve encryption keys from OTHER sessions
+                        # (e.g., post_recording might have set encryption.audio in a different row)
                         existing_row = await conn.fetchval(
-                            "SELECT metadata FROM summary_processes WHERE meeting_id = $1",
+                            "SELECT metadata FROM summary_processes WHERE meeting_id = $1 ORDER BY start_time DESC LIMIT 1",
                             meeting_id,
                         )
                         existing_metadata = {}
@@ -296,6 +321,18 @@ class DatabaseManager:
                             f"No process found to update for meeting_id: {meeting_id}"
                         )
 
+                    if summary_title:
+                        await conn.execute(
+                            """
+                            UPDATE meetings
+                            SET title = $1, updated_at = $2
+                            WHERE id = $3
+                            """,
+                            summary_title,
+                            now,
+                            meeting_id,
+                        )
+
                     logger.debug(
                         f"Successfully updated process status to {status} for meeting_id: {meeting_id}"
                     )
@@ -310,7 +347,7 @@ class DatabaseManager:
         meeting_id: str,
         transcript_text: str,
         model: str = "gemini",
-        model_name: str = "gemini-1.5-pro",
+        model_name: str = "gemini-2.5-flash",
         chunk_size: int = 10000,
         overlap: int = 500,
     ):
@@ -913,8 +950,10 @@ class DatabaseManager:
     async def get_all_meetings(self):
         """Get all meetings with basic information.
         
-        Excludes bot-created meetings that have no transcript content.
-        Manual recordings and imports are always returned.
+        Excludes only bot-created placeholder meetings with no persisted activity.
+        Meetings remain visible if they have any recording/session/summary/transcript
+        evidence, which prevents recently recorded or encrypted meetings from
+        disappearing from the sidebar.
         """
         async with self._get_connection() as conn:
             rows = await conn.fetch("""
@@ -922,11 +961,14 @@ class DatabaseManager:
                 FROM meetings m
                 LEFT JOIN transcript_segments ts ON m.id = ts.meeting_id
                 LEFT JOIN full_transcripts ft ON m.id = ft.meeting_id
+                LEFT JOIN summary_processes sp ON m.id = sp.meeting_id
+                LEFT JOIN recording_sessions rs ON m.id = rs.meeting_id
                 LEFT JOIN meeting_bots b ON m.id = b.meeting_id
                 WHERE (
-                    b.id IS NULL                    -- Not a bot meeting: always show
-                    OR ts.meeting_id IS NOT NULL     -- Bot meeting with transcript segments
-                    OR ft.meeting_id IS NOT NULL     -- Bot meeting with full transcript
+                    ts.meeting_id IS NOT NULL
+                    OR ft.meeting_id IS NOT NULL
+                    OR sp.meeting_id IS NOT NULL
+                    OR rs.meeting_id IS NOT NULL
                 )
                 GROUP BY m.id, m.title, m.created_at, m.owner_id, m.workspace_id
                 ORDER BY m.created_at DESC
@@ -986,7 +1028,7 @@ class DatabaseManager:
             # Default to Gemini if no config found
             return {
                 "provider": "gemini",
-                "model": "gemini-3-pro-preview",
+                "model": "gemini-2.5-flash",
                 "whisperModel": "large-v3",
             }
 

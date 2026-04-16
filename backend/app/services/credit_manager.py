@@ -27,8 +27,10 @@ except (ImportError, ValueError):
 
 logger = logging.getLogger(__name__)
 
-# Default soft limit: allow going this far negative before blocking
-DEFAULT_SOFT_LIMIT = -100
+# Default soft limit: allow going this far negative before blocking.
+# Set very generous to implement "grace period" — never cut off mid-meeting.
+# New meetings are blocked at the WebSocket connection level when balance <= 0.
+DEFAULT_SOFT_LIMIT = -50000
 
 # Weekly free credits allocation
 WEEKLY_FREE_CREDITS = 10000

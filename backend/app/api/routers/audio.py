@@ -685,17 +685,64 @@ async def _finalize_session(
                     except Exception:
                         continue
             if process_audio:
+                try:
+                    await state_service.transition(session_id, "finalizing")
+                except Exception:
+                    pass
+
                 post_service = get_post_recording_service()
-                asyncio.create_task(
-                    post_service.finalize_recording(
-                        recorder_key,
-                        trigger_diarization=False,
-                        user_email=user_email,
+                result = await post_service.finalize_recording(
+                    recorder_key,
+                    trigger_diarization=False,
+                    user_email=user_email,
+                )
+                integrity_summary = {
+                    "finalize_status": result.get("status"),
+                    "finalize_error": result.get("error"),
+                    "artifact_path": result.get("gcp_path") or result.get("local_path"),
+                    "uploaded_to_gcp": bool(result.get("uploaded_to_gcp")),
+                    "local_cleaned": bool(result.get("local_cleaned")),
+                    "health": result.get("health"),
+                    "last_finalize_attempt_at": datetime.utcnow().isoformat(),
+                }
+                try:
+                    await db.merge_recording_session_metadata(
+                        session_id,
+                        {
+                            "recording_integrity": integrity_summary,
+                        },
                     )
-                )
-                logger.info(
-                    f"[Streaming] Scheduled post-recording processing for {recorder_key}"
-                )
+                except Exception as metadata_error:
+                    logger.warning(
+                        "[Streaming] Failed to persist finalize metadata for %s: %s",
+                        session_id,
+                        metadata_error,
+                    )
+
+                if result.get("status") == "completed":
+                    try:
+                        await state_service.transition(session_id, "completed")
+                    except Exception:
+                        pass
+                    logger.info(
+                        "[Streaming] Post-recording processing completed for %s",
+                        recorder_key,
+                    )
+                else:
+                    try:
+                        await state_service.transition(
+                            session_id,
+                            "failed",
+                            error_code="FINALIZE_FAILED",
+                            error_message=result.get("error") or "Finalize failed",
+                        )
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[Streaming] Post-recording processing failed for %s: %s",
+                        recorder_key,
+                        result.get("error"),
+                    )
             else:
                 logger.info(
                     f"[Streaming] Recorder closed for {recorder_key} (post-processing deferred until save)."
@@ -704,6 +751,16 @@ async def _finalize_session(
             logger.warning(
                 f"[Streaming] Recorder finalize failed for {recorder_key}: {e}"
             )
+            if process_audio:
+                try:
+                    await state_service.transition(
+                        session_id,
+                        "failed",
+                        error_code="FINALIZE_EXCEPTION",
+                        error_message=str(e),
+                    )
+                except Exception:
+                    pass
 
         manager_stats = mgr.get_stats() if mgr else {}
         await _persist_runtime_snapshot(
@@ -725,13 +782,11 @@ async def _finalize_session(
         session_runtime_stats.pop(session_id, None)
         session_finalized.add(session_id)
         _cancel_pending_cleanup(session_id)
-        try:
-            if process_audio:
-                await state_service.transition(session_id, "completed")
-            else:
+        if not process_audio:
+            try:
                 await state_service.transition(session_id, "uploading_chunks")
-        except Exception:
-            pass
+            except Exception:
+                pass
 
 
 def _is_safe_identifier(value: str) -> bool:
@@ -899,6 +954,28 @@ async def websocket_streaming_audio(
         session_id = str(uuid.uuid4()) if not session_id else session_id
         session_finalized.discard(session_id)
         is_resume = False
+
+        # ── PRE-FLIGHT CREDIT CHECK (new meetings only) ──────────────────
+        # Grace Period Rule: never cut off mid-meeting, but block new ones.
+        if not await credit_mgr.is_unlimited(user_email):
+            balance = await credit_mgr.get_balance(user_email)
+            if balance["total"] <= 0:
+                logger.warning(
+                    "[Streaming] Blocked new session for %s — credits exhausted (balance=%s)",
+                    user_email,
+                    balance["total"],
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "CREDITS_EXHAUSTED",
+                        "message": "Your credit balance is exhausted. Please purchase more credits or wait for your weekly reset to start a new meeting.",
+                        "remaining": balance["total"],
+                    }
+                )
+                await websocket.close(code=1008)
+                return
+
     active_meeting_id = meeting_id or session_id
     if active_meeting_id and not _is_safe_identifier(active_meeting_id):
         await websocket.send_json(
@@ -1018,14 +1095,32 @@ async def websocket_streaming_audio(
 
     if enable_recording:
         try:
+            encryption_enabled_for_user = False
+            try:
+                encryption_enabled_for_user = await db.get_user_encryption_enabled(
+                    user_email
+                )
+            except Exception as encryption_status_error:
+                logger.warning(
+                    "[Streaming] Failed to resolve encryption status for %s: %s",
+                    user_email,
+                    encryption_status_error,
+                )
+
             recorder_key = active_meeting_id
             logger.info(
                 f"[Streaming] Attempting to start recorder for key: {recorder_key}"
             )
-            audio_recorder = await get_or_create_recorder(recorder_key)
+            audio_recorder = await get_or_create_recorder(
+                recorder_key,
+                parallel_encoding_enabled_override=not encryption_enabled_for_user,
+            )
             if audio_recorder:
                 logger.info(
-                    f"[Streaming] 🎙️ Audio recording active using key: {recorder_key}"
+                    "[Streaming] 🎙️ Audio recording active using key: %s (parallel archive enabled=%s, encryption_enabled=%s)",
+                    recorder_key,
+                    getattr(audio_recorder, "parallel_encoding_enabled", None),
+                    encryption_enabled_for_user,
                 )
             else:
                 logger.error(
@@ -1119,13 +1214,19 @@ async def websocket_streaming_audio(
                         meeting_context=ai_context,
                     )
                     await ai_engine.load_runtime_config()
-                    # Recovery: Restore previous state if resuming session
-                    state_restored = await ai_engine.load_host_state(session_id)
+                    # Recovery: restore previous AI host state only for an actual resumed session.
+                    state_restored = False
+                    if is_resume:
+                        state_restored = await ai_engine.load_host_state(session_id)
                     policy_source = await _apply_host_skill_precedence(
                         ai_engine,
                         user_email=user_email,
                         meeting_id=active_meeting_id,
                     )
+
+                    # Compile BehaviorSpec from the applied skill (async)
+                    await ai_engine.compile_pending_behavior()
+
                     session_ai_participants[session_id] = ai_engine
 
                     # Push initial state to client if restored
@@ -1136,6 +1237,17 @@ async def websocket_streaming_audio(
                                 state_delta=initial_state,
                                 ai_stats=ai_engine.get_stats_snapshot(),
                             )
+
+                    # Send behavior spec sync to frontend
+                    behavior_payload = ai_engine.get_behavior_sync_payload()
+                    if behavior_payload:
+                        try:
+                            await websocket.send_json({
+                                "type": "behavior_spec_sync",
+                                "payload": behavior_payload,
+                            })
+                        except Exception:
+                            pass  # Non-critical
 
                     logger.info(
                         "[AIParticipant] Engine initialized session=%s meeting=%s restored=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
@@ -1182,13 +1294,19 @@ async def websocket_streaming_audio(
                 meeting_context=ai_context,
             )
             await ai_engine.load_runtime_config()
-            # Recovery: Restore previous state if resuming session
-            state_restored = await ai_engine.load_host_state(session_id)
+            # Recovery: restore previous AI host state only for an actual resumed session.
+            state_restored = False
+            if is_resume:
+                state_restored = await ai_engine.load_host_state(session_id)
             policy_source = await _apply_host_skill_precedence(
                 ai_engine,
                 user_email=user_email,
                 meeting_id=active_meeting_id,
             )
+
+            # Compile BehaviorSpec from the applied skill (async)
+            await ai_engine.compile_pending_behavior()
+
             session_ai_participants[session_id] = ai_engine
 
             # Push initial state to client if restored
@@ -1548,28 +1666,26 @@ async def websocket_streaming_audio(
             log_ledger=False,
             sync_postgres=False,
         )
-        if credit_result["allowed"]:
-            streaming_credit_usage["pending_cost"] = int(
-                streaming_credit_usage.get("pending_cost", 0)
-            ) + CREDIT_COST_PER_CHUNK
-            streaming_credit_usage["weekly"] = int(credit_result["weekly"])
-            streaming_credit_usage["admin"] = int(credit_result["admin"])
-            streaming_credit_usage["purchased"] = int(credit_result["purchased"])
-            streaming_credit_usage["total"] = int(credit_result["total"])
-            await flush_streaming_credit_usage(force=False)
-            return True
+        # Always track usage regardless of allowed status (grace period)
+        streaming_credit_usage["pending_cost"] = int(
+            streaming_credit_usage.get("pending_cost", 0)
+        ) + CREDIT_COST_PER_CHUNK
+        streaming_credit_usage["weekly"] = int(credit_result["weekly"])
+        streaming_credit_usage["admin"] = int(credit_result["admin"])
+        streaming_credit_usage["purchased"] = int(credit_result["purchased"])
+        streaming_credit_usage["total"] = int(credit_result["total"])
+        await flush_streaming_credit_usage(force=False)
 
-        try:
-            await websocket.send_json(
-                {
-                    "type": "credit_exhausted",
-                    "message": "Credit quota exhausted. Purchase more credits to continue transcription.",
-                    "remaining": credit_result["total"],
-                }
+        if not credit_result["allowed"]:
+            # Grace period: let the meeting finish, just log a warning.
+            # New meetings are blocked at WebSocket connection time.
+            logger.warning(
+                "[Credits] Grace period active for %s, balance=%s (meeting continues)",
+                chunk_user_email,
+                credit_result["total"],
             )
-        except Exception:
-            pass
-        return False
+
+        return True  # Always allow — never cut off mid-meeting
 
     # Audio Queue
     audio_queue = asyncio.Queue(maxsize=STREAMING_AUDIO_QUEUE_MAX_CHUNKS)
@@ -2426,6 +2542,7 @@ async def upload_meeting_recording(
 
 
 @router.post("/meetings/{meeting_id}/finalize-encrypted")
+@router.post("/api/audio/meetings/{meeting_id}/finalize-encrypted")
 async def finalize_recording_encrypted(
     meeting_id: str,
     payload: EncryptedFinalizeRequest,
@@ -2473,11 +2590,11 @@ async def get_meeting_recording_url(
     try:
         latest_session = await db.get_latest_recording_session_for_meeting(meeting_id)
         preferred_paths = [
+            # Prefer encrypted artifact if present so plaintext remnants never win.
+            (f"{meeting_id}/recording.enc.wav", "application/octet-stream", True),
             (f"{meeting_id}/recording.wav", "audio/wav", False),
             (f"{meeting_id}/recording.opus", "audio/ogg", False),
             (f"{meeting_id}/recording.m4a", "audio/mp4", False),
-            # E2EE: encrypted audio fallback (plaintext deleted by post_recording)
-            (f"{meeting_id}/recording.enc.wav", "application/octet-stream", True),
         ]
 
         STORAGE_TYPE = os.getenv("STORAGE_TYPE", "local").lower()
@@ -2503,7 +2620,7 @@ async def get_meeting_recording_url(
                         # Encrypted audio must go through artifact endpoint for client-side decryption
                         return {
                             "encrypted": True,
-                            "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                            "artifact_url": f"/meetings/{meeting_id}/artifacts/recording.enc.wav",
                             "format": "enc.wav",
                             "mime_type": "application/octet-stream",
                             "filename": f"recording-{meeting_id}.enc.wav",
@@ -2521,7 +2638,7 @@ async def get_meeting_recording_url(
                     if encrypted:
                         return {
                             "encrypted": True,
-                            "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                            "artifact_url": f"/meetings/{meeting_id}/artifacts/recording.enc.wav",
                             "format": "enc.wav",
                             "mime_type": "application/octet-stream",
                             "filename": f"recording-{meeting_id}.enc.wav",
@@ -2562,7 +2679,7 @@ async def get_meeting_recording_url(
         if is_encrypted:
             return {
                 "encrypted": True,
-                "artifact_url": f"/api/meetings/{meeting_id}/artifacts/recording.enc.wav",
+                "artifact_url": f"/meetings/{meeting_id}/artifacts/recording.enc.wav",
                 "format": "enc.wav",
                 "mime_type": "application/octet-stream",
                 "filename": f"recording-{meeting_id}.enc.wav",
@@ -2970,11 +3087,15 @@ async def reconcile_pipeline_sessions(current_user: User = Depends(get_current_u
 
 
 @router.get("/meetings/{meeting_id}/artifacts/{filename}")
+@router.get("/api/meetings/{meeting_id}/artifacts/{filename}")
 async def get_meeting_artifact(
     meeting_id: str, filename: str, current_user: User = Depends(get_current_user)
 ):
     """Fetch a specific artifact for a meeting from Storage"""
-    from ...core.rbac import RBAC
+    try:
+        from ...core.rbac import RBAC
+    except (ImportError, ValueError):
+        from core.rbac import RBAC
     rbac = RBAC(DatabaseManager())
     if not await rbac.can(current_user, "view", meeting_id):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -2990,9 +3111,46 @@ async def get_meeting_artifact(
             from services.document_storage import DocumentStorageService
 
         if filename == "transcript.enc.json":
-             full_path = DocumentStorageService.transcript_path(meeting_id).replace(".json", ".enc.json")
+            default_path = DocumentStorageService.transcript_path(meeting_id).replace(".json", ".enc.json")
+            legacy_path = f"{meeting_id}/transcript.enc.json"
+            full_path = default_path
+
+            try:
+                async with db._get_connection() as conn:
+                    stored_path = await conn.fetchval(
+                        """
+                        SELECT transcript_object_path
+                        FROM full_transcripts
+                        WHERE meeting_id = $1
+                        """,
+                        meeting_id,
+                    )
+                if stored_path and str(stored_path).endswith(".enc.json"):
+                    full_path = str(stored_path)
+            except Exception as path_error:
+                logger.warning(
+                    "Artifact lookup fallback for transcript %s failed: %s",
+                    meeting_id,
+                    path_error,
+                )
+
+            if full_path == default_path and not await StorageService.check_file_exists(full_path):
+                if await StorageService.check_file_exists(legacy_path):
+                    full_path = legacy_path
         elif filename == "summary.enc.json":
-             full_path = DocumentStorageService.summary_path(meeting_id).replace(".json", ".enc.json")
+            default_path = DocumentStorageService.summary_path(meeting_id).replace(".json", ".enc.json")
+            full_path = default_path
+            try:
+                summary_row = await db.get_transcript_data(meeting_id)
+                stored_path = (summary_row or {}).get("result_object_path")
+                if stored_path and str(stored_path).endswith(".enc.json"):
+                    full_path = str(stored_path)
+            except Exception as path_error:
+                logger.warning(
+                    "Artifact lookup fallback for summary %s failed: %s",
+                    meeting_id,
+                    path_error,
+                )
         else:
             # Traditional behavior: simple files in {meeting_id} folder
             if "/" in filename:
@@ -3001,6 +3159,12 @@ async def get_meeting_artifact(
             
         data = await StorageService.download_bytes(full_path)
         if not data:
+            logger.warning(
+                "Artifact bytes missing for meeting=%s filename=%s resolved_path=%s",
+                meeting_id,
+                filename,
+                full_path,
+            )
             raise HTTPException(status_code=404, detail="Artifact not found")
 
         content_type = "application/octet-stream"
@@ -3014,8 +3178,16 @@ async def get_meeting_artifact(
         from fastapi.responses import Response
 
         return Response(content=data, media_type=content_type)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error fetching artifact {filename} for meeting {meeting_id}: {e}")
+        logger.error(
+            "Error fetching artifact %s for meeting %s: %s",
+            filename,
+            meeting_id,
+            e,
+            exc_info=True,
+        )
         raise HTTPException(status_code=404, detail="Artifact not found")
 
 
@@ -3241,4 +3413,3 @@ async def websocket_bot_meeting(
             "[BotMeetingWS] Client disconnected: meeting=%s user=%s",
             meeting_id, user_email,
         )
-

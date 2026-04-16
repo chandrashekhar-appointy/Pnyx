@@ -18,6 +18,7 @@ import {
 import { GroqApiKeyDialog } from './GroqApiKeyDialog';
 import { authFetch } from '@/lib/api';
 import { KeyManager } from '@/lib/crypto/key_manager';
+import { syncEncryptionPublicKey } from '@/lib/crypto/key_sync';
 import { MeetingJournal } from '@/lib/audio-streaming/MeetingJournal';
 import { toast } from 'sonner';
 
@@ -82,6 +83,7 @@ interface RecordingControlsProps {
   };
   contextApplySignal?: number;
   onContextApplied?: (applied: boolean) => void;
+  onBehaviorSpecSync?: (payload: Record<string, unknown>) => void;
   onBeforeStart?: () => boolean | Promise<boolean>;
   onResetStartSignal?: () => void;
 }
@@ -112,6 +114,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   manualContext,
   contextApplySignal,
   onContextApplied,
+  onBehaviorSpecSync,
   onBeforeStart,
   onResetStartSignal
 }) => {
@@ -122,7 +125,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
   const [sessionError, setSessionError] = useState<boolean>(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
-  const [isCreditExhausted, setIsCreditExhausted] = useState(false);
   const { data: session, status: sessionStatus } = useSession();
 
   // Real-time streaming audio client
@@ -185,6 +187,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           onHostSkillAck?.(applied);
         }
       },
+      onBehaviorSpecSync: (payload: NonNullable<Parameters<NonNullable<typeof onBehaviorSpecSync>>[0]>) => {
+        if (!storeOnly) {
+          onBehaviorSpecSync?.(payload);
+        }
+      },
       onFinal: (
         text: string,
         _confidence: number,
@@ -241,12 +248,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setIsStarting(false);
         }
       },
-      onCreditExhausted: () => {
-        setIsCreditExhausted(true);
-        if (!storeOnly) {
-          onTranscriptionError?.('Credits exhausted. Transcription has stopped.', 'CREDIT_EXHAUSTED');
-        }
-      }
     }),
     [
       hostSkillMarkdown,
@@ -259,6 +260,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onHostSkillAck,
       onHostStateDelta,
       onHostSuggestion,
+      onBehaviorSpecSync,
       onSessionIdReceived,
       onTranscriptionError,
     ]
@@ -334,7 +336,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsStarting(true);
     setIsPaused(false);
     setDeviceError(null);
-    setIsCreditExhausted(false);
     startAckHandledRef.current = false;
 
     try {
@@ -344,14 +345,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         console.log('🔐 Generating new E2EE Key Pair...');
         keys = await KeyManager.generateKeyPair();
         await KeyManager.storeKeyPair(keys);
-        
-        // Send Public Key to server
-        const spki = await KeyManager.exportPublicKey(keys.publicKey);
-        await authFetch('/api/user/encryption-key', {
-          method: 'POST',
-          body: JSON.stringify({ public_key: spki })
-        });
       }
+
+      // Always sync the matching public key before starting a meeting.
+      // This prevents the backend from encrypting new artifacts to a stale key.
+      await syncEncryptionPublicKey();
 
       // Create new streaming audio client (uses Groq Whisper)
       const client = new AudioStreamClient(wsUrl);
@@ -480,7 +478,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         const segments = await MeetingJournal.getTranscript(mid);
         if (segments.length > 0) {
           console.log('🔐 Sending encrypted finalization payload...');
-          await authFetch(`/api/audio/meetings/${mid}/finalize-encrypted`, {
+          await authFetch(`/meetings/${mid}/finalize-encrypted`, {
             method: 'POST',
             body: JSON.stringify({
               meeting_id: mid,
@@ -585,23 +583,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         onSave={handleSaveApiKey}
       />
       <div className="flex flex-col space-y-2">
-        {isCreditExhausted && (
-          <Alert variant="destructive" className="mb-4 border-amber-300 bg-amber-50">
-            <AlertCircle className="h-5 w-5 text-amber-600" />
-            <AlertTitle className="text-amber-800 font-semibold mb-1">
-              Credits Exhausted
-            </AlertTitle>
-            <AlertDescription className="text-amber-700 text-sm">
-              Your credit balance has been exhausted. Live transcription has been paused.
-              <button 
-                onClick={() => window.open('/settings', '_blank')}
-                className="ml-2 font-bold underline"
-              >
-                Top up now
-              </button>
-            </AlertDescription>
-          </Alert>
-        )}
         <div className="flex items-center space-x-3 glass-surface rounded-full px-4 py-1.5">
           {isProcessing && !isParentProcessing ? (
             <div className="flex items-center space-x-2">

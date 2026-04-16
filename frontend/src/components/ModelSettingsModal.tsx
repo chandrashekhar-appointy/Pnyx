@@ -144,7 +144,7 @@ export function ModelSettingsModal({
     ollama: models.map((model) => model.name),
     claude: ['claude-opus-4-1-20250805'],
     groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-    gemini: ['gemini-3-pro-preview'],
+    gemini: ['gemini-2.5-flash'],
     openai: [
       'gpt-5.4',
       'gpt-5',

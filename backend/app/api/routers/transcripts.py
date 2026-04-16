@@ -164,6 +164,17 @@ Rules: Clear in/out scope. Explicit roles. Assess risks early. Document decision
 """,
     }
 
+    templates[
+        "smart_notes"
+    ] = """Generate intelligent meeting notes as valid JSON. Do not force any rigid structure.
+Instead, read the transcript and let the content itself dictate the best headings, sections, bullet points, and formats (e.g. Action Items, Decisions, Summary only if they make sense).
+Return exactly this JSON:
+{
+  "MeetingName": "Descriptive title from content",
+  "MarkdownNotes": "Your fully formatted, custom markdown notes here..."
+}
+"""
+
     return templates.get(template_id, templates["standard_meeting"])
 
 
@@ -268,6 +279,18 @@ Template-specific rules:
 """,
     }
 
+    templates[
+        "smart_notes"
+    ] = f"""Generate intelligent meeting notes as valid JSON. Do not force any rigid structure.
+Instead, read the transcript and let the content itself dictate the best headings, sections, bullet points, and formats (e.g. Action Items, Decisions, Summary only if they make sense).
+Return exactly this JSON:
+{{
+  "MeetingName": "Specific meeting title from content",
+  "MarkdownNotes": "Your fully formatted, custom markdown notes here..."
+}}
+{global_rules}
+"""
+
     return templates.get(template_id, templates["standard_meeting"])
 
 
@@ -289,6 +312,10 @@ def get_template_structure(template_id: str) -> dict:
 
     # Template-specific customizations
     template_structures = {
+        "smart_notes": {
+            "MeetingName": "",
+            "MarkdownNotes": "",
+        },
         "standard_meeting": base_structure,
         "daily_standup": {
             **base_structure,
@@ -333,6 +360,37 @@ def _dedupe_blocks(blocks: list) -> list:
         seen.add(key)
         result.append(block)
     return result
+
+
+def _summary_has_substantive_content(summary: dict) -> bool:
+    if not isinstance(summary, dict):
+        return False
+
+    markdown_notes = str(
+        summary.get("MarkdownNotes") or summary.get("markdown") or ""
+    ).strip()
+    if markdown_notes:
+        return True
+
+    for key, value in summary.items():
+        if key == "MeetingName":
+            continue
+        if isinstance(value, dict):
+            blocks = value.get("blocks")
+            if isinstance(blocks, list) and any(
+                str((block or {}).get("content") or "").strip() for block in blocks
+            ):
+                return True
+            sections = value.get("sections")
+            if isinstance(sections, list):
+                for section in sections:
+                    section_blocks = (section or {}).get("blocks") or []
+                    if any(
+                        str((block or {}).get("content") or "").strip()
+                        for block in section_blocks
+                    ):
+                        return True
+    return False
 
 
 def _dedupe_summary_content(summary: dict) -> dict:
@@ -403,7 +461,7 @@ async def _get_gemini_notes_api_key(user_email: str) -> str:
 async def _translate_summary_to_english(
     summary: dict,
     user_email: str,
-    model_name: str = "gemini-3-pro-preview",
+    model_name: str = "gemini-2.5-flash",
 ) -> dict:
     if not _summary_contains_devanagari(summary):
         return summary
@@ -414,7 +472,7 @@ async def _translate_summary_to_english(
     translate_model = (
         model_name
         if str(model_name or "").strip().lower().startswith("gemini")
-        else "gemini-3-pro-preview"
+        else "gemini-2.5-flash"
     )
 
     prompt = (
@@ -560,7 +618,7 @@ async def process_transcript_background(
 
         # Default to Gemini if no model specified
         transcript.model = transcript.model or "gemini"
-        transcript.model_name = transcript.model_name or "gemini-3-pro-preview"
+        transcript.model_name = transcript.model_name or "gemini-2.5-flash"
 
         if transcript.model in ["claude", "groq", "openai", "gemini"]:
             # Prioritize Environment Variables over Database
@@ -632,6 +690,19 @@ async def process_transcript_background(
                     if key == "MeetingName":
                         continue
 
+                    if (
+                        key == "MarkdownNotes"
+                        and key in json_dict
+                        and isinstance(json_dict[key], str)
+                    ):
+                        if not final_summary.get("MarkdownNotes"):
+                            final_summary["MarkdownNotes"] = json_dict["MarkdownNotes"]
+                        else:
+                            final_summary["MarkdownNotes"] += (
+                                "\n\n" + json_dict["MarkdownNotes"]
+                            )
+                        continue
+
                     if key == "MeetingNotes" and key in json_dict:
                         # Handle MeetingNotes sections
                         if isinstance(json_dict[key].get("sections"), list):
@@ -664,7 +735,21 @@ async def process_transcript_background(
                 )
 
         # Update database with meeting name using meeting_id
-        if final_summary["MeetingName"]:
+        # Only update the meeting title if it's currently a default/generic name
+        # to prevent overwriting user-customized titles
+        current_meeting = await db.get_meeting(transcript.meeting_id)
+        current_title = str(
+            (current_meeting.get("title") if current_meeting else "") or ""
+        ).strip()
+
+        is_default_title = (
+            not current_title
+            or current_title == "Untitled Meeting"
+            or current_title == "New Meeting"
+            or current_title.startswith("Meeting on")
+        )
+
+        if final_summary["MeetingName"] and is_default_title:
             await db.update_meeting_name(
                 transcript.meeting_id, final_summary["MeetingName"]
             )
@@ -674,7 +759,7 @@ async def process_transcript_background(
         final_summary = await _translate_summary_to_english(
             final_summary,
             user_email=user_email or "",
-            model_name=transcript.model_name or "gemini-3-pro-preview",
+            model_name=transcript.model_name or "gemini-2.5-flash",
         )
         final_summary = _dedupe_summary_content(final_summary)
 
@@ -819,6 +904,58 @@ async def generate_notes_with_gemini_background(
         template_prompt += f"\n\nAdditional Context:\n{custom_context}"
     if calendar_context_lines:
         template_prompt += "\n\nCalendar Context:\n" + "\n".join(calendar_context_lines)
+
+    # -------------------------------------------------------------
+    # USER OVERRIDE: INJECT PINNED DECISIONS AS PRIMARY SOURCE
+    # -------------------------------------------------------------
+    pinned_texts = []
+    try:
+        from api.routers.audio import session_ai_participants
+
+        for sid, engine in session_ai_participants.items():
+            if getattr(engine, "meeting_id", None) == meeting_id:
+                if hasattr(engine, "_host_state") and getattr(
+                    engine._host_state, "pinned_items", None
+                ):
+                    for item in engine._host_state.pinned_items:
+                        pinned_texts.append(f"- {item.title}: {item.content}")
+                break
+    except Exception as e:
+        logger.warning(f"Could not load in-memory AI engine for pinned: {e}")
+        pass
+
+    if not pinned_texts:
+        try:
+            import json
+
+            latest_session = await db.get_latest_recording_session_for_meeting(
+                meeting_id
+            )
+            if latest_session and latest_session.get("metadata"):
+                meta = latest_session["metadata"]
+                if isinstance(meta, str) and meta.strip().startswith("{"):
+                    meta = json.loads(meta)
+                ai_state = (
+                    meta.get("ai_host_state", {}) if isinstance(meta, dict) else {}
+                )
+                pinned_items = ai_state.get("pinned_items", [])
+                for item in pinned_items:
+                    pinned_texts.append(
+                        f"- {item.get('title', 'Item')}: {item.get('content', '')}"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to fetch pinned items from DB: {e}")
+            pass
+
+    if pinned_texts:
+        template_prompt += (
+            "\n\nPinned Decisions/Topics by User (CRITICAL - Highest Priority Source):\n"
+            + "\n".join(pinned_texts)
+        )
+        template_prompt += "\n(You MUST ensure all the above pinned items are thoroughly represented in the generated notes.)"
+    # -------------------------------------------------------------
+
+    if calendar_context_lines:
         template_prompt += (
             "\n\nParticipant Name Rules:\n"
             "- Use participant names from Calendar Context when filling the People section.\n"
@@ -837,6 +974,53 @@ async def generate_notes_with_gemini_background(
         if start == -1 or end == -1 or end <= start:
             return cleaned
         return cleaned[start : end + 1]
+
+    async def _generate_short_transcript_notes_json() -> Optional[str]:
+        transcript_chars = len(full_transcript_text or "")
+        short_transcript_threshold = int(
+            os.getenv("NOTES_SHORT_TRANSCRIPT_MAX_CHARS", "12000")
+        )
+        if transcript_chars == 0 or transcript_chars > short_transcript_threshold:
+            return None
+
+        api_key = await _get_gemini_notes_api_key(user_email)
+        if not api_key:
+            return None
+
+        direct_prompt = (
+            f"{template_prompt}\n\n"
+            "Additional rules for short or partial transcripts:\n"
+            "1. The transcript may be incomplete, but if there is any concrete topic, decision, rationale, or next-step signal, capture it.\n"
+            "2. Do not return only a title when substantive discussion exists.\n"
+            "3. Prefer 2-6 concise factual bullets over empty sections.\n"
+            "4. If the transcript is code-mixed (for example Hindi + English), return notes in natural English.\n"
+            "5. Base the title on the actual topic discussed, not on generic meeting labels.\n\n"
+            f"Transcript:\n---\n{full_transcript_text}\n---"
+        )
+
+        try:
+            response_text = await generate_content_text_async(
+                api_key=api_key,
+                model="gemini-2.5-flash",
+                contents=direct_prompt,
+                config={"response_mime_type": "application/json"},
+            )
+            candidate_json = _extract_json_object(response_text)
+            parsed = json.loads(candidate_json)
+            if isinstance(parsed, dict) and _summary_has_substantive_content(parsed):
+                logger.info(
+                    "⚡ Using short-transcript fast path for meeting %s (%s chars)",
+                    meeting_id,
+                    transcript_chars,
+                )
+                return candidate_json
+        except Exception as fast_path_error:
+            logger.warning(
+                "Short-transcript fast path failed for %s: %s",
+                meeting_id,
+                fast_path_error,
+            )
+        return None
 
     async def _maybe_create_compressed_audio(meeting_id_local: str) -> bool:
         """
@@ -1020,7 +1204,7 @@ async def generate_notes_with_gemini_background(
         def _sync_generate() -> Optional[str]:
             return generate_content_with_file_sync(
                 api_key=api_key,
-                model=model_name or "gemini-3-pro-preview",
+                model=model_name or "gemini-2.5-flash",
                 prompt=multimodal_prompt,
                 file_path=temp_audio_path,
                 mime_type=mime_type,
@@ -1052,70 +1236,82 @@ async def generate_notes_with_gemini_background(
         }
 
         all_json_data = []
-        model_name = "gemini-3-pro-preview"
+        model_name = "gpt-5.4"
 
         # 2. Try multimodal generation first (behind feature flag + request flags)
-        notes_audio_enabled = os.getenv("NOTES_AUDIO_ENABLED", "true").lower() == "true"
+        notes_audio_enabled = (
+            os.getenv("NOTES_AUDIO_ENABLED", "false").lower() == "true"
+        )
         allow_audio = bool(use_audio_context) and notes_audio_enabled
         effective_audio_mode = audio_mode or os.getenv(
             "NOTES_AUDIO_DEFAULT_MODE", "auto"
         )
 
-        if allow_audio:
-            try:
-                (
-                    audio_source,
-                    audio_bytes,
-                    audio_mime,
-                    audio_duration_sec,
-                    selected_mode,
-                ) = await _resolve_audio_asset(
-                    meeting_id,
-                    effective_audio_mode,
-                    allow_audio=True,
-                )
-                metadata["audio_mode_selected"] = selected_mode
-                metadata["audio_source"] = audio_source
-                metadata["audio_duration_sec"] = audio_duration_sec
-
-                if audio_source and audio_mime == "audio/url":
-                    metadata["fallback_reason"] = (
-                        "audio_url_override_not_supported_server_side"
-                    )
-                elif audio_bytes and audio_mime:
-                    max_minutes = max(1, int(max_audio_minutes or 120))
-                    if audio_duration_sec and (audio_duration_sec / 60) > max_minutes:
-                        metadata["fallback_reason"] = (
-                            f"audio_exceeds_max_minutes_{max_minutes}"
-                        )
-                    else:
-                        multimodal_json = await _generate_multimodal_json(
-                            transcript_text=full_transcript_text,
-                            prompt_text=template_prompt,
-                            model_name=model_name,
-                            user_email_local=user_email,
-                            mime_type=audio_mime,
-                            audio_bytes=audio_bytes,
-                        )
-                        if multimodal_json:
-                            all_json_data = [_extract_json_object(multimodal_json)]
-                            metadata["audio_used"] = True
-                        else:
-                            metadata["fallback_reason"] = "multimodal_generation_failed"
-                else:
-                    metadata["fallback_reason"] = "audio_asset_unavailable"
-            except Exception as e:
-                logger.warning("Multimodal notes path failed for %s: %s", meeting_id, e)
-                metadata["fallback_reason"] = "multimodal_exception"
+        # ---------------------------------------------------------------------
+        # USER OVERRIDE: COMMENTED OUT AUDIO USAGE FOR NOTES GENERATION
+        # Use transcription strictly as main source for speed and determinism
+        # ---------------------------------------------------------------------
+        # if allow_audio:
+        #     try:
+        #         (
+        #             audio_source,
+        #             audio_bytes,
+        #             audio_mime,
+        #             audio_duration_sec,
+        #             selected_mode,
+        #         ) = await _resolve_audio_asset(
+        #             meeting_id,
+        #             effective_audio_mode,
+        #             allow_audio=True,
+        #         )
+        #         metadata["audio_mode_selected"] = selected_mode
+        #         metadata["audio_source"] = audio_source
+        #         metadata["audio_duration_sec"] = audio_duration_sec
+        #
+        #         if audio_source and audio_mime == "audio/url":
+        #             metadata["fallback_reason"] = (
+        #                 "audio_url_override_not_supported_server_side"
+        #             )
+        #         elif audio_bytes and audio_mime:
+        #             max_minutes = max(1, int(max_audio_minutes or 120))
+        #             if audio_duration_sec and (audio_duration_sec / 60) > max_minutes:
+        #                 metadata["fallback_reason"] = (
+        #                     f"audio_exceeds_max_minutes_{max_minutes}"
+        #                 )
+        #             else:
+        #                 multimodal_json = await _generate_multimodal_json(
+        #                     transcript_text=full_transcript_text,
+        #                     prompt_text=template_prompt,
+        #                     model_name=model_name,
+        #                     user_email_local=user_email,
+        #                     mime_type=audio_mime,
+        #                     audio_bytes=audio_bytes,
+        #                 )
+        #                 if multimodal_json:
+        #                     all_json_data = [_extract_json_object(multimodal_json)]
+        #                     metadata["audio_used"] = True
+        #                 else:
+        #                     metadata["fallback_reason"] = "multimodal_generation_failed"
+        #         else:
+        #             metadata["fallback_reason"] = "audio_asset_unavailable"
+        #     except Exception as e:
+        #         logger.warning("Multimodal notes path failed for %s: %s", meeting_id, e)
+        #         metadata["fallback_reason"] = "multimodal_exception"
+        # ---------------------------------------------------------------------
 
         # 3. Transcript-only fallback
+        if not all_json_data:
+            fast_path_json = await _generate_short_transcript_notes_json()
+            if fast_path_json:
+                all_json_data = [fast_path_json]
+
         if not all_json_data:
             _, all_json_data = await processor.process_transcript(
                 text=full_transcript_text,
                 model="gemini",
                 model_name=model_name,
-                chunk_size=10000,  # larger chunks for notes
-                overlap=1000,
+                chunk_size=500000,  # 1 massive chunk for ~4-5 sec generation
+                overlap=0,
                 custom_prompt=template_prompt,
                 user_email=user_email,
             )
@@ -1129,7 +1325,8 @@ async def generate_notes_with_gemini_background(
         # 4. Get template-specific structure
         final_result = get_template_structure(template_id)
         final_result["MeetingName"] = ""
-        final_result["MeetingNotes"]["meeting_name"] = ""
+        if "MeetingNotes" in final_result:
+            final_result["MeetingNotes"]["meeting_name"] = ""
 
         # 5. Aggregate results from all chunks
         for json_str in all_json_data:
@@ -1143,7 +1340,24 @@ async def generate_notes_with_gemini_background(
                             final_result["MeetingName"] = json_dict["MeetingName"]
                         continue
 
-                    if key == "MeetingNotes" and key in json_dict:
+                    if (
+                        key == "MarkdownNotes"
+                        and key in json_dict
+                        and isinstance(json_dict[key], str)
+                    ):
+                        if not final_result.get("MarkdownNotes"):
+                            final_result["MarkdownNotes"] = json_dict["MarkdownNotes"]
+                        else:
+                            final_result["MarkdownNotes"] += (
+                                "\n\n" + json_dict["MarkdownNotes"]
+                            )
+                        continue
+
+                    if (
+                        key == "MeetingNotes"
+                        and key in json_dict
+                        and isinstance(json_dict[key], dict)
+                    ):
                         if isinstance(json_dict[key].get("sections"), list):
                             for new_section in json_dict[key]["sections"]:
                                 # Skip empty sections
@@ -1184,7 +1398,26 @@ async def generate_notes_with_gemini_background(
 
         if not final_result["MeetingName"]:
             final_result["MeetingName"] = meeting_title
-        if not final_result["MeetingNotes"]["meeting_name"]:
+
+        current_meeting = await db.get_meeting(meeting_id)
+        current_title = str(
+            (current_meeting.get("title") if current_meeting else "") or ""
+        ).strip()
+
+        is_default_title = (
+            not current_title
+            or current_title == "Untitled Meeting"
+            or current_title == "New Meeting"
+            or current_title.startswith("Meeting on")
+        )
+
+        if final_result["MeetingName"] and is_default_title:
+            await db.update_meeting_name(meeting_id, final_result["MeetingName"])
+
+        if (
+            "MeetingNotes" in final_result
+            and not final_result["MeetingNotes"]["meeting_name"]
+        ):
             final_result["MeetingNotes"]["meeting_name"] = final_result["MeetingName"]
 
         final_result = _dedupe_summary_content(final_result)
@@ -1192,7 +1425,7 @@ async def generate_notes_with_gemini_background(
         final_result = await _translate_summary_to_english(
             final_result,
             user_email=user_email,
-            model_name=model_name,
+            model_name=model_name or "gemini-2.5-flash",
         )
         final_result = _dedupe_summary_content(final_result)
 
@@ -1333,7 +1566,7 @@ async def generate_notes_with_gemini_background(
             )
 
     except Exception as e:
-        logger.error(f"Failed to generate notes: {e}")
+        logger.error(f"Failed to generate notes: {e}", exc_info=True)
         # Update process to failed
         try:
             await db.update_process(
@@ -1354,6 +1587,9 @@ def generate_markdown_from_structure(data: dict, template_id: str) -> str:
     Generate professional markdown notes from the structured data.
     Format varies based on template type.
     """
+    if template_id == "smart_notes":
+        return f"# {data.get('MeetingName', 'Meeting Notes')}\n\n{data.get('MarkdownNotes', '')}"
+
     markdown = f"# {data.get('MeetingName', 'Meeting Notes')}\n\n"
 
     # Add metadata
@@ -2024,7 +2260,7 @@ async def generate_notes_for_meeting(
         actual_meeting_id = meeting_id
         template_id = "standard_meeting"
         custom_context = ""
-        use_audio_context = os.getenv("NOTES_AUDIO_ENABLED", "true").lower() == "true"
+        use_audio_context = os.getenv("NOTES_AUDIO_ENABLED", "false").lower() == "true"
         audio_mode = os.getenv("NOTES_AUDIO_DEFAULT_MODE", "auto")
         audio_url = ""
         max_audio_minutes = 120

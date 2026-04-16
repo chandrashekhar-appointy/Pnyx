@@ -41,6 +41,7 @@ class AudioRecorder:
         meeting_id: str,
         storage_path: str = "./data/recordings",
         chunk_duration_seconds: float = 30.0,
+        parallel_encoding_enabled_override: Optional[bool] = None,
     ):
         """
         Initialize the audio recorder.
@@ -61,14 +62,22 @@ class AudioRecorder:
         configured_flush_interval = float(
             os.getenv(
                 "AUDIO_BUFFER_FLUSH_INTERVAL_SECONDS",
-                str(min(5.0, self.chunk_duration_seconds)),
+                str(self.chunk_duration_seconds),
             )
         )
         self.flush_interval_seconds = max(
             1.0, min(configured_flush_interval, self.chunk_duration_seconds)
         )
-        self.parallel_encoding_enabled = (
+        self.periodic_flush_enabled = (
+            os.getenv("AUDIO_PERIODIC_PCM_FLUSH_ENABLED", "false").lower() == "true"
+        )
+        env_parallel_encoding_enabled = (
             os.getenv("AUDIO_PARALLEL_ENCODING_ENABLED", "true").lower() == "true"
+        )
+        self.parallel_encoding_enabled = (
+            parallel_encoding_enabled_override
+            if parallel_encoding_enabled_override is not None
+            else env_parallel_encoding_enabled
         )
         self.archive_format = os.getenv("AUDIO_ARCHIVE_FORMAT", "opus").lower()
 
@@ -157,6 +166,7 @@ class AudioRecorder:
             logger.info(f"   Storage path: {self.storage_path}")
             logger.info(f"   Chunk duration: {self.chunk_duration_seconds}s")
             logger.info(f"   Flush interval: {self.flush_interval_seconds}s")
+            logger.info(f"   Periodic PCM flush enabled: {self.periodic_flush_enabled}")
             logger.info(f"   Next chunk index: {self.chunk_index}")
 
             return True
@@ -273,6 +283,8 @@ class AudioRecorder:
             )
             should_flush = len(self.current_chunk_buffer) >= self.target_chunk_bytes
             should_flush = should_flush or (
+                self.periodic_flush_enabled
+                and
                 len(self.current_chunk_buffer) > 0
                 and elapsed >= self.flush_interval_seconds
             )
@@ -828,7 +840,9 @@ active_recorders: Dict[str, AudioRecorder] = {}
 
 
 async def get_or_create_recorder(
-    meeting_id: str, storage_path: str = "./data/recordings"
+    meeting_id: str,
+    storage_path: str = "./data/recordings",
+    parallel_encoding_enabled_override: Optional[bool] = None,
 ) -> AudioRecorder:
     """
     Get existing recorder or create new one for a meeting.
@@ -841,7 +855,11 @@ async def get_or_create_recorder(
         AudioRecorder instance
     """
     if meeting_id not in active_recorders:
-        recorder = AudioRecorder(meeting_id, storage_path)
+        recorder = AudioRecorder(
+            meeting_id,
+            storage_path,
+            parallel_encoding_enabled_override=parallel_encoding_enabled_override,
+        )
         await recorder.start()
         active_recorders[meeting_id] = recorder
 

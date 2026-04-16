@@ -39,12 +39,18 @@ def weekly_credit_reset(self):
             from db import DatabaseManager
 
         try:
-            from ..services.credit_manager import CreditManager
+            from ..services.credit_manager import CreditManager, WEEKLY_FREE_CREDITS
         except (ImportError, ValueError):
-            from services.credit_manager import CreditManager
+            from services.credit_manager import CreditManager, WEEKLY_FREE_CREDITS
+
+        try:
+            from ..services.email.credit_reset_email import CreditResetEmailService
+        except (ImportError, ValueError):
+            from services.email.credit_reset_email import CreditResetEmailService
 
         db = DatabaseManager()
         credit_mgr = CreditManager(db)
+        email_service = CreditResetEmailService()
 
         # Get all user emails from user_credits table
         async with db._get_connection() as conn:
@@ -59,11 +65,29 @@ def weekly_credit_reset(self):
 
         success_count = 0
         error_count = 0
+        email_sent_count = 0
+        email_error_count = 0
 
         for email in user_emails:
             try:
                 await credit_mgr.reset_weekly_credits(email)
                 success_count += 1
+
+                # Send notification email (best-effort, don't block reset)
+                try:
+                    await email_service.send_credit_reset_notification(
+                        user_email=email,
+                        weekly_credits=WEEKLY_FREE_CREDITS,
+                    )
+                    email_sent_count += 1
+                except Exception as email_err:
+                    email_error_count += 1
+                    logger.warning(
+                        "[WeeklyReset] Email notification failed for %s: %s",
+                        email,
+                        email_err,
+                    )
+
             except Exception as e:
                 error_count += 1
                 logger.error(
@@ -72,14 +96,19 @@ def weekly_credit_reset(self):
                 )
 
         logger.info(
-            f"[WeeklyReset] Complete: {success_count} succeeded, "
-            f"{error_count} failed out of {len(user_emails)} users"
+            "[WeeklyReset] Complete: %s/%s credits reset, %s/%s emails sent",
+            success_count,
+            len(user_emails),
+            email_sent_count,
+            success_count,
         )
 
         return {
             "total_users": len(user_emails),
             "success": success_count,
             "errors": error_count,
+            "emails_sent": email_sent_count,
+            "emails_failed": email_error_count,
         }
 
     return asyncio.run(_run_reset())

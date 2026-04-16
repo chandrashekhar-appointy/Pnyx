@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
 import { Key, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 // Custom hooks
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -51,6 +52,24 @@ export default function PageContent({
 
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [decryptionError, setDecryptionError] = useState<string | null>(null);
+  const [manualKeyInput, setManualKeyInput] = useState('');
+  const [customPrivateKey, setCustomPrivateKey] = useState<CryptoKey | null>(null);
+
+  const getFriendlyDecryptionMessage = (error: unknown) => {
+    const rawMessage =
+      error instanceof Error ? error.message : typeof error === 'string' ? error : 'Decryption failed';
+    const normalized = rawMessage.toLowerCase();
+
+    if (
+      normalized.includes('operation-specific') ||
+      normalized.includes('aes-gcm') ||
+      normalized.includes('decrypt')
+    ) {
+      return 'Your local private key does not match the key used for this encrypted summary. Restore the correct key in Settings, then regenerate the notes.';
+    }
+
+    return rawMessage;
+  };
 
   // State
   const [isRecording] = useState(false);
@@ -86,6 +105,7 @@ export default function PageContent({
     setAiSummary: meetingData.setAiSummary,
     initialNotesGenerationInfo: notesGenerationInfo,
   });
+  const effectiveNotesGenerationInfo = summaryGeneration.notesGenerationInfo || notesGenerationInfo;
 
   const copyOperations = useCopyOperations({
     meeting,
@@ -97,6 +117,7 @@ export default function PageContent({
 
   const meetingOperations = useMeetingOperations({
     meeting,
+    notesGenerationInfo: effectiveNotesGenerationInfo,
   });
 
   // Diarization
@@ -189,7 +210,7 @@ export default function PageContent({
   // E2EE Decryption Effect
   useEffect(() => {
     const attemptDecryption = async () => {
-      const encryption = notesGenerationInfo?.encryption;
+      const encryption = effectiveNotesGenerationInfo?.encryption;
       if (!encryption) return;
 
       const hasTranscript = !!encryption.transcript;
@@ -202,7 +223,9 @@ export default function PageContent({
 
       try {
         const keyPair = await KeyManager.getKeyPair();
-        if (!keyPair || !keyPair.privateKey) {
+        const activePrivateKey = customPrivateKey || keyPair?.privateKey;
+        
+        if (!activePrivateKey) {
           // No key → hide everything and redirect to settings for key restoration
           console.warn('🔐 E2EE: No private key found, redirecting to settings...');
           meetingData.setTranscripts([]);
@@ -232,7 +255,7 @@ export default function PageContent({
           const nonce = Uint8Array.from(atob(meta.nonce), c => c.charCodeAt(0));
 
           const sessionKey = await KeyManager.decryptSessionKey(
-            keyPair.privateKey, ephemeralPubKey, kekNonce, wrappedKey
+            activePrivateKey, ephemeralPubKey, kekNonce, wrappedKey
           );
           const decryptedBuffer = await KeyManager.decryptDocumentAsync(
             sessionKey, nonce, encryptedData
@@ -244,13 +267,16 @@ export default function PageContent({
         if (hasTranscript && (!meetingData.transcripts || meetingData.transcripts.length === 0)) {
           console.log('🔐 E2EE: Decrypting full transcript...');
           try {
-            const decrypted = await decryptPayload(encryption.transcript, `/api/meetings/${meeting.id}/artifacts/transcript.enc.json`);
+            const decrypted = await decryptPayload(encryption.transcript, `/meetings/${meeting.id}/artifacts/transcript.enc.json`);
             if (decrypted) {
               meetingData.setTranscripts(decrypted);
             }
           } catch (err: any) {
             console.error('🔐 E2EE: Transcript decryption failed:', err);
-            // Don't block the page—just log the error for transcript
+            // If transcript decryption fails, it likely means a key mismatch
+            const friendlyMessage = getFriendlyDecryptionMessage(err);
+            setDecryptionError(friendlyMessage);
+            throw new Error(friendlyMessage);
           }
         }
 
@@ -258,21 +284,20 @@ export default function PageContent({
         if (hasSummary) {
           console.log('🔐 E2EE: Decrypting AI summary...');
           try {
-            const decrypted = await decryptPayload(encryption.summary, `/api/meetings/${meeting.id}/artifacts/summary.enc.json`);
+            const decrypted = await decryptPayload(encryption.summary, `/meetings/${meeting.id}/artifacts/summary.enc.json`);
             // DocumentStorageService structure: { meeting_id, result: { ... } }
             if (decrypted && decrypted.result) {
               meetingData.setAiSummary(decrypted.result);
             }
           } catch (err: any) {
             console.error('🔐 E2EE: Summary decryption failed:', err);
-            // Show a non-blocking toast instead of overlay
-            toast.error("Could not decrypt meeting notes", {
-              description: err.message || "The encrypted notes could not be decrypted."
-            });
+            const friendlyMessage = getFriendlyDecryptionMessage(err);
+            setDecryptionError(friendlyMessage);
+            throw new Error(friendlyMessage);
           }
         }
 
-        console.log('✅ E2EE: Decryption successful!');
+        console.log('✅ E2EE: Decryption flow completed');
       } catch (err: any) {
         console.error('❌ E2EE Decryption Error:', err);
         setDecryptionError(err.message || "Decryption failed");
@@ -284,10 +309,10 @@ export default function PageContent({
       }
     };
 
-    if (notesGenerationInfo) {
+    if (effectiveNotesGenerationInfo) {
       attemptDecryption();
     }
-  }, [notesGenerationInfo, meeting.id]);
+  }, [effectiveNotesGenerationInfo, meeting.id, customPrivateKey]);
 
   // AUTO-REFRESH TRANSCRIPT: When diarization completes, refresh meeting data to show speaker labels
   const [hasRefreshedForDiarization, setHasRefreshedForDiarization] = useState(false);
@@ -313,6 +338,24 @@ export default function PageContent({
     return acc;
   }, {} as Record<string, string>);
 
+  const handleManualUnlock = async () => {
+    if (!manualKeyInput.trim()) {
+      toast.error('Please enter a private key');
+      return;
+    }
+    
+    try {
+      // Import the custom private key string
+      const pk = await KeyManager.importPrivateKey(manualKeyInput.trim());
+      setCustomPrivateKey(pk); // This will trigger the useEffect to attempt decryption again
+      toast.success('Attempting to decrypt with provided key...');
+    } catch (err) {
+      toast.error('Invalid Private Key format', {
+        description: 'Ensure it is a valid base64/PEM encoded ECDH P-256 key.'
+      });
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -323,15 +366,33 @@ export default function PageContent({
       <div className="flex flex-1 overflow-hidden relative">
         {/* E2EE Decryption Overlay */}
         {decryptionError && (
-          <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center p-8 text-center">
+          <div className="absolute inset-0 z-50 bg-white/95 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm">
             <AlertTriangle className="w-12 h-12 text-red-500 mb-4" />
             <h3 className="text-xl font-bold text-red-700 mb-2">Decryption Error</h3>
-            <p className="text-gray-600 mb-4">{decryptionError}</p>
+            <p className="text-gray-600 mb-6 max-w-md">{decryptionError}</p>
+            
+            <div className="w-full max-w-md bg-white p-6 rounded-lg shadow-sm border border-gray-200 mb-6 text-left">
+              <h4 className="text-sm font-semibold text-gray-900 mb-2">Provide Private Key for this Meeting</h4>
+              <p className="text-xs text-gray-500 mb-4">
+                If this meeting was encrypted with a different key than your current one, paste the correct private key below to unlock it.
+              </p>
+              <Input
+                type="password"
+                placeholder="Paste base64 private key here..."
+                value={manualKeyInput}
+                onChange={(e) => setManualKeyInput(e.target.value)}
+                className="mb-4 font-mono text-xs"
+              />
+              <Button onClick={handleManualUnlock} className="w-full bg-blue-600 hover:bg-blue-700">
+                Unlock Meeting
+              </Button>
+            </div>
+
             <div className="flex gap-3">
-              <Button onClick={() => window.location.reload()} variant="outline">Retry</Button>
-              <Button onClick={() => router.push('/settings?tab=encryption')} variant="default" className="bg-blue-600 hover:bg-blue-700">
+              <Button onClick={() => window.location.reload()} variant="outline">Refresh Page</Button>
+              <Button onClick={() => router.push('/settings?tab=encryption')} variant="secondary">
                 <Key className="w-4 h-4 mr-2" />
-                Manage Keys
+                Go to Global Settings
               </Button>
             </div>
           </div>

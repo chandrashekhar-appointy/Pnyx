@@ -27,6 +27,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    depends_on:
+      - redis
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
     # Port mapping
     ports:
@@ -115,78 +120,120 @@ services:
       - ${GOOGLE_APPLICATION_CREDENTIALS_FILE:-./app/gcp-service-account.json}:/app/gcp-service-account.json:ro
     depends_on:
       - redis
-  # Meeting Summarizer Python App (macOS)
-  meeting-copilot-backend-macos:
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "grep -aq 'celery.*worker' /proc/1/cmdline"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  celery-beat:
     build:
       context: .
       dockerfile: Dockerfile.app
     image: meeting-copilot-backend:latest
-    container_name: meeting-copilot-backend
     restart: unless-stopped
-    depends_on:
-      - redis
     env_file:
       - .env
-
-    # Port mapping
-    ports:
-      - "${APP_PORT:-5167}:5167"
-
-    # Environment variables
+    command: [ "celery", "-A", "celery_app:celery_app", "beat", "-l", "INFO" ]
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
-      - DATABASE_PATH=/app/data/meeting_minutes.db
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      - TRANSCRIPTION_PROVIDER=${TRANSCRIPTION_PROVIDER:-groq}
-      - STORAGE_TYPE=${STORAGE_TYPE}
-      - GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-/app/gcp-service-account.json}
-      - AUDIO_MERGE_SERVICE_URL=${AUDIO_MERGE_SERVICE_URL}
-      - DELETE_PCM_AFTER_MERGE=${DELETE_PCM_AFTER_MERGE:-true}
-      - AUDIO_CHUNK_PREFIX=${AUDIO_CHUNK_PREFIX:-pcm_chunks}
-      - AUDIO_CELERY_ENABLED=${AUDIO_CELERY_ENABLED:-false}
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
-
-    # Add extra host for Docker Desktop compatibility
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-    # Volume mounts
     volumes:
-      # Local database directory (created by setup-db.sh)
-      - ./data:/app/data
       - ./app:/app
-      # Optional: mount GCP service account
-      - ${GOOGLE_APPLICATION_CREDENTIALS_FILE:-./app/gcp-service-account.json}:/app/gcp-service-account.json:ro
-      # Logs directory
-      - meeting_app_logs:/app/logs
-
-    # Health check
+    depends_on:
+      - redis
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:5167/docs" ]
+      test:
+        [
+          "CMD-SHELL",
+          "grep -aq 'celery.*beat' /proc/1/cmdline"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
-
-    # Resource limits (optional)
-    mem_limit: 2g
-    mem_reservation: 512m
-
-    # Logging configuration
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      start_period: 15s
+  # # Meeting Summarizer Python App (macOS)
+  # meeting-copilot-backend-macos:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.app
+  #   image: meeting-copilot-backend:latest
+  #   container_name: meeting-copilot-backend
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - redis
+  #   env_file:
+  #     - .env
+  #
+  #   # Port mapping
+  #   ports:
+  #     - "${APP_PORT:-5167}:5167"
+  #
+  #   # Environment variables
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - PYTHONPATH=/app
+  #     - DATABASE_PATH=/app/data/meeting_minutes.db
+  #     - DATABASE_URL=${DATABASE_URL}
+  #     - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+  #     - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+  #     - GEMINI_API_KEY=${GEMINI_API_KEY}
+  #     - GROQ_API_KEY=${GROQ_API_KEY}
+  #     - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+  #     - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+  #     - TRANSCRIPTION_PROVIDER=${TRANSCRIPTION_PROVIDER:-groq}
+  #     - STORAGE_TYPE=${STORAGE_TYPE}
+  #     - GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
+  #     - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-/app/gcp-service-account.json}
+  #     - AUDIO_MERGE_SERVICE_URL=${AUDIO_MERGE_SERVICE_URL}
+  #     - DELETE_PCM_AFTER_MERGE=${DELETE_PCM_AFTER_MERGE:-true}
+  #     - AUDIO_CHUNK_PREFIX=${AUDIO_CHUNK_PREFIX:-pcm_chunks}
+  #     - AUDIO_CELERY_ENABLED=${AUDIO_CELERY_ENABLED:-false}
+  #     - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+  #     - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+  #
+  #   # Add extra host for Docker Desktop compatibility
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #
+  #   # Volume mounts
+  #   volumes:
+  #     # Local database directory (created by setup-db.sh)
+  #     - ./data:/app/data
+  #     - ./app:/app
+  #     # Optional: mount GCP service account
+  #     - ${GOOGLE_APPLICATION_CREDENTIALS_FILE:-./app/gcp-service-account.json}:/app/gcp-service-account.json:ro
+  #     # Logs directory
+  #     - meeting_app_logs:/app/logs
+  #
+  #   # Health check
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-f", "http://localhost:5167/docs" ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
+  #
+  #   # Resource limits (optional)
+  #   mem_limit: 2g
+  #   mem_reservation: 512m
+  #
+  #   # Logging configuration
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
 
     # Optional: Web UI service (if you want a separate frontend)
   web-ui:

@@ -33,11 +33,14 @@ try:
         HostSuggestion,
         MeetingHostState,
     )
+    from ..schemas.behavior_spec import BehaviorSpec, OutputCategory, build_default_spec
     from .gemini_client import generate_content_text_async
     from .ai_participant_skills import (
         load_system_skill_templates,
         parse_skill_markdown,
     )
+    from .behavior_compiler import compile_behavior
+    from .behavior_auto_tuner import BehaviorAutoTuner
 except (ImportError, ValueError):
     from schemas.ai_participant import (
         GuardrailAlert,
@@ -49,20 +52,23 @@ except (ImportError, ValueError):
         HostSuggestion,
         MeetingHostState,
     )
+    from schemas.behavior_spec import BehaviorSpec, OutputCategory, build_default_spec
     from services.gemini_client import generate_content_text_async
     from services.ai_participant_skills import (
         load_system_skill_templates,
         parse_skill_markdown,
     )
+    from services.behavior_compiler import compile_behavior
+    from services.behavior_auto_tuner import BehaviorAutoTuner
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_HOST_SKILLS: Dict[str, str] = load_system_skill_templates()
 CORE_EVENT_TYPES = {"decision_candidate", "open_discussion"}
 DEFAULT_PROVIDER_MODELS = {
-    "gemini": "gemini-3-pro-preview",
+    "gemini": "gemini-3.1-pro",
     "openai": "gpt-5.4",
-    "anthropic": "claude-opus-4-1-20250805",
+    "anthropic": "claude-3-5-sonnet-latest",
     "openrouter": "anthropic/claude-3.5-sonnet",
 }
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
@@ -154,7 +160,7 @@ class RollingTranscriptBuffer:
 
 class GuardrailEvaluator:
     def __init__(self):
-        self.min_confidence = float(os.getenv("AI_PARTICIPANT_MIN_CONFIDENCE", "0.70"))
+        self.min_confidence = float(os.getenv("AI_PARTICIPANT_MIN_CONFIDENCE", "0.45"))
         self.cooldown_seconds = int(os.getenv("AI_PARTICIPANT_COOLDOWN_SECONDS", "180"))
         self.decision_logs = (
             os.getenv("AI_PARTICIPANT_DECISION_LOGS", "true").strip().lower() == "true"
@@ -337,7 +343,7 @@ class AIParticipantEngine:
             == "true"
         )
         self.provider = _normalize_provider_name(
-            os.getenv("AI_PARTICIPANT_PROVIDER", "gemini"), "gemini"
+            os.getenv("AI_PARTICIPANT_PROVIDER", "openai"), "openai"
         )
         self.model_name = _clean_env_value(
             os.getenv(
@@ -360,7 +366,7 @@ class AIParticipantEngine:
             os.getenv("AI_PARTICIPANT_LLM_TIMEOUT_SECONDS", "12")
         )
         self.analysis_interval_seconds = int(
-            os.getenv("AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS", "90")
+            os.getenv("AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS", "25")
         )
         self.verbose_logs = (
             os.getenv("AI_PARTICIPANT_VERBOSE_LOGS", "false").strip().lower() == "true"
@@ -400,6 +406,14 @@ class AIParticipantEngine:
         self._host_policy_source = "system"
         self._temp_suggestions: List[HostSuggestion] = []
 
+        # ── Behavior Spec (v2 dynamic system) ──
+        self._behavior_spec: BehaviorSpec = build_default_spec()
+        self._auto_tuner: BehaviorAutoTuner = BehaviorAutoTuner(self._behavior_spec)
+        self._behavior_agent: Optional[Agent] = (
+            None  # Dynamic agent, rebuilt when spec changes
+        )
+        self._session_start_time: float = time.time()
+
         self._stats: Dict[str, Any] = {
             "analysis_attempts": 0,
             "analysis_skipped_small_window": 0,
@@ -427,10 +441,12 @@ class AIParticipantEngine:
 
         # Initialize the Observer Agent
         self.agent = Agent(
-            "gemini-1.5-flash",  # Placeholder, will be overriden in runtime
+            "openai:gpt-5.4",  # Placeholder, will be overriden in runtime
             deps_type=AIParticipantEngine,
             system_prompt=(
                 "You are a meeting observer. Use tools to register decisions, discussions, and summary updates.\n"
+                "**Hinglish/Multilingual Awareness**: The transcript often contains Hinglish (Hindi + English) code-switching. "
+                "Extract decisions, action items, and insights even if they are expressed in mixed languages. Do NOT dismiss Hinglish discussion as noise or assume there is 'no active discussion'.\n"
                 "CRITICAL: When calling `update_summary`, you MUST use rich Markdown formatting:\n"
                 "- Use `###` headings for sections (Overview, Decisions, etc.)\n"
                 "- Use `**` for bold emphasis\n"
@@ -840,10 +856,39 @@ class AIParticipantEngine:
             self._stats["analysis_attempts"] += 1
             self._stats["last_analysis_at"] = datetime.utcnow().isoformat()
 
+            # Behavior Gate: check if BehaviorSpec allows analysis this cycle
+            transcript_text = self.buffer.get_text()
+            should_analyze, gate_reason = self._should_analyze_this_cycle(
+                transcript_text
+            )
+            if not should_analyze:
+                self._stats["analysis_skipped_behavior_gate"] = (
+                    int(self._stats.get("analysis_skipped_behavior_gate") or 0) + 1
+                )
+                self._stats["last_gate_skip_reason"] = gate_reason
+                logger.info(
+                    "[AIParticipant] Behavior gate BLOCKED: reason=%s window_chars=%d",
+                    gate_reason,
+                    len(transcript_text),
+                )
+                # Even in silence mode, run summary update via fallback
+                if gate_reason == "silence_mode":
+                    self._build_fallback_host_events(
+                        transcript_window=transcript_text,
+                        reason="silence_mode_summary_only",
+                    )
+                return payload
+
             # The new agentic path handles summary updates and collects suggestions via tools
             self._temp_suggestions = []
             await self._reason_host_events()
             await self._supplement_host_events_from_heuristics(self.buffer.get_text())
+
+            # Behavior Post-Filter: enforce behavior constraints on output
+            if self._temp_suggestions and self._behavior_spec.output_categories:
+                self._temp_suggestions = self._filter_by_behavior(
+                    self._temp_suggestions
+                )
 
             if (
                 not self._temp_suggestions
@@ -1131,11 +1176,9 @@ Guardrail reasons:
 - missing_context_or_repeat
 
 Rules:
-- If no intervention is required, return: {{"intervention_required": false}}
-- If intervention is required, return strict JSON:
-  {{"intervention_required": true, "reason": "...", "insight": "...", "confidence": 0.0}}
-- Insight must be one actionable sentence and no more than 30 words.
-- Insight must always be written in English, even if the transcript includes Hindi or mixed-language discussion.
+- **Hinglish/Multilingual Awareness**: The transcript often contains Hinglish (Hindi + English) code-switching. Extract decisions, action items, and insights even if they are expressed in mixed languages.
+- If any actionable commitment, decision, or important unresolved question is present in ANY language, set `intervention_required: true`. Do not dismiss mixed-language discussion as noise.
+- Insight must be one professional, actionable sentence in English, even if the transcript includes Hindi or mixed-language discussion.
 - Reason must be one of: agenda_deviation, no_decision, unresolved_question, missing_context_or_repeat.
 - Return JSON only. No markdown.
 
@@ -1186,6 +1229,8 @@ Recent transcript window:
         return f"""
 You are an active AI Participant in this meeting. Generate event suggestions conservatively, based only on transcript and meeting context.
 
+**Hinglish/Multilingual Awareness**: The transcript often contains Hinglish (Hindi + English) code-switching. Extract decisions, action items, and insights even if they are expressed in mixed languages. Do NOT dismiss mixed-language discussion as noise.
+
 Meeting Context:
 - Title: {title}
 - Goal: {goal}
@@ -1217,12 +1262,9 @@ Allowed custom event_type values from the active skill:
 
 Rules:
 - You are an active observer. DO NOT return a JSON object. Instead, use the provided tools to share insights and update the summary.
-- Update the meeting summary frequently using the `update_summary` tool.
-- **CRITICAL**: In `update_summary`, use rich Markdown (Level 3 Headings `###`, Bold `**bold**`, and Lists `- `) so the UI looks structured and professional.
-- Everything you send through tools must be in English only. Translate Hindi or mixed-language discussion into clear English before calling a tool.
-- Use Level 3 headings (`### Overview`, `### Decisions`, `### Open Discussions`, `### Next Steps`) for sections. Do NOT use `#` or `##`.
-- Use concise bullet points under those sections. Omit empty sections instead of inventing content.
-- Include key decisions, unresolved discussions, risks, and concrete next steps when present.
+- **Hinglish/Multilingual Awareness**: The transcript often contains Hinglish (Hindi + English) code-switching. Extract decisions, action items, and insights even if they are expressed in mixed languages.
+- Everything you send through tools must be in English only. Translate bits of Hindi or mixed-language discussion into clear, professional English before calling a tool.
+- Include key decisions, unresolved discussions, risks, and concrete next steps when present. Do not skip a decision just because the wording is informal or multi-lingual.
 - Treat the rolling meeting summary above as cumulative context from earlier parts of the meeting. Update it incrementally using the latest transcript window.
 - Preserve still-relevant earlier decisions and open discussions unless the newest transcript clearly changes them.
 - If no action is needed, simply finish your turn without calling any tools.
@@ -1431,70 +1473,8 @@ Recent transcript window:
         text: str,
         preserve_markdown: bool = False,
     ) -> str:
-        raw = str(text or "").strip()
-        if not raw:
-            return ""
-        if not DEVANAGARI_RE.search(raw):
-            return raw
-
-        prompt = (
-            "Translate the following meeting content into concise professional English. "
-            "Preserve names, dates, bullets, and markdown formatting when present. "
-            "Return only the translated text.\n\n"
-            f"Content:\n{raw}"
-        )
-        try:
-            await self.load_runtime_config()
-            api_key = await self._get_provider_api_key()
-            if not api_key:
-                return raw
-
-            async def _translate() -> str:
-                if self.provider == "gemini":
-                    return await generate_content_text_async(
-                        api_key=api_key,
-                        model=self.model_name,
-                        contents=prompt,
-                        config={"temperature": 0.1},
-                    )
-                if self.provider == "openai":
-                    client = AsyncOpenAI(api_key=api_key)
-                    response = await client.chat.completions.create(
-                        model=self.model_name,
-                        temperature=0.1,
-                        messages=[
-                            {"role": "system", "content": "Translate to English only."},
-                            {"role": "user", "content": prompt},
-                        ],
-                    )
-                    return response.choices[0].message.content or ""
-                if self.provider == "anthropic":
-                    client = AsyncAnthropic(api_key=api_key)
-                    response = await client.messages.create(
-                        model=self.model_name,
-                        max_tokens=1200,
-                        temperature=0.1,
-                        system="Translate to English only.",
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    parts: List[str] = []
-                    for block in getattr(response, "content", []) or []:
-                        block_text = getattr(block, "text", None)
-                        if block_text:
-                            parts.append(block_text)
-                    return "".join(parts)
-                return raw
-
-            translated = await asyncio.wait_for(
-                _translate(),
-                timeout=max(3.0, min(self.llm_timeout_seconds, 8.0)),
-            )
-            cleaned = str(translated or "").strip()
-            if preserve_markdown:
-                return cleaned or raw
-            return " ".join(cleaned.split()).strip() or raw
-        except Exception:
-            return raw
+        # BYPASS: Trust the primary LLM to handle language. Forced translation hangs Hinglish meetings.
+        return str(text or "").strip()
 
     def _extract_candidate_host_events(
         self, transcript_window: str
@@ -1616,6 +1596,318 @@ Recent transcript window:
             self._host_state.current_topic = current_topic
         if unresolved_items:
             self._host_state.unresolved_items = unresolved_items[:8]
+
+    # ── Behavior System v2 Methods ────────────────────────────────────────
+
+    def _should_analyze_this_cycle(self, transcript_window: str) -> Tuple[bool, str]:
+        """
+        Deterministic gate: should we run the LLM agent this cycle?
+        Returns (should_run, skip_reason).
+        Fast and cheap — no LLM call.
+
+        HARD blocks (always skip): silence_mode, warmup, all_categories_suppressed
+        SOFT signals (log but proceed): speak/silence triggers, topic filters
+        Rationale: keyword matching fails for multilingual (Hindi/Hinglish) transcripts.
+        The LLM agent should decide relevance, not a keyword matcher.
+        """
+        spec = self._behavior_spec
+        if not spec or not spec.output_categories:
+            return True, "no_spec"
+
+        # ── HARD BLOCKS ──────────────────────────────────────────────────
+
+        # 1. Silence mode — user explicitly wants summary-only
+        if spec.silence_mode:
+            return False, "silence_mode"
+
+        # 2. Warmup — don't analyze too early
+        elapsed = time.time() - self._session_start_time
+        if elapsed < spec.warmup_seconds:
+            return False, "warmup"
+
+        # 3. All categories suppressed by auto-tuner
+        active_cats = [
+            c for c in spec.output_categories if spec.is_category_active(c.id)
+        ]
+        if not active_cats:
+            return False, "all_categories_suppressed"
+
+        # ── SOFT SIGNALS (proceed anyway, let LLM decide) ────────────────
+
+        lower_window = transcript_window.lower()
+
+        # 4. Silence triggers — advisory: log but don't block
+        for trigger in spec.silence_triggers:
+            if self._trigger_matches_text(lower_window, trigger):
+                logger.info(
+                    "[AIParticipant] Soft silence trigger matched: '%s' (proceeding anyway, LLM will decide)",
+                    trigger,
+                )
+                # Don't block — let LLM decide
+                break
+
+        # 5. Speak triggers — advisory: if none match, still proceed
+        #    Keyword matching fails for multilingual transcripts (Hindi/Hinglish),
+        #    so we MUST NOT hard-block based on keyword mismatches.
+        if spec.speak_triggers:
+            matched = any(
+                self._trigger_matches_text(lower_window, t) for t in spec.speak_triggers
+            )
+            if not matched:
+                logger.info(
+                    "[AIParticipant] No speak trigger matched (proceeding anyway — may be multilingual transcript)"
+                )
+
+        # 6. Topic filter — advisory
+        if spec.topic_filters:
+            topic_matched = any(
+                self._trigger_matches_text(lower_window, topic)
+                for topic in spec.topic_filters
+            )
+            if not topic_matched:
+                logger.info(
+                    "[AIParticipant] No topic filter matched (proceeding anyway)"
+                )
+
+        return True, "pass"
+
+    @staticmethod
+    def _trigger_matches_text(lower_text: str, trigger: str) -> bool:
+        """
+        Check if a trigger phrase matches the transcript text.
+        Uses keyword-based matching — fast and deterministic.
+        """
+        trigger_lower = trigger.lower().strip()
+        if not trigger_lower:
+            return False
+
+        # Direct substring match for short triggers
+        if trigger_lower in lower_text:
+            return True
+
+        # Keyword match: all significant words must appear
+        trigger_words = [
+            w
+            for w in trigger_lower.split()
+            if len(w) > 3  # Skip short connecting words
+        ]
+        if len(trigger_words) >= 2:
+            match_count = sum(1 for w in trigger_words if w in lower_text)
+            # Require 60%+ keyword match
+            if match_count / len(trigger_words) >= 0.6:
+                return True
+
+        return False
+
+    def _filter_by_behavior(
+        self, suggestions: List[HostSuggestion]
+    ) -> List[HostSuggestion]:
+        """
+        Post-filter: remove suggestions that don't match the behavior spec.
+        Applied after the agent produces events.
+        """
+        spec = self._behavior_spec
+        if not spec or not spec.output_categories:
+            return suggestions
+
+        allowed_ids = set(spec.get_category_ids())
+        filtered: List[HostSuggestion] = []
+
+        for s in suggestions:
+            # 1. Category must exist in the spec
+            if s.event_type not in allowed_ids:
+                logger.info(
+                    "[AIParticipant] Filter REJECTED '%s': category '%s' not in behavior spec",
+                    s.title,
+                    s.event_type,
+                )
+                self._stats["host_suggestions_suppressed"] = (
+                    int(self._stats.get("host_suggestions_suppressed") or 0) + 1
+                )
+                continue
+
+            # 2. Category must not be suppressed by auto-tuner
+            if not spec.is_category_active(s.event_type):
+                logger.info(
+                    "[AIParticipant] Filter REJECTED '%s': category '%s' suppressed by auto-tuner (negative feedback)",
+                    s.title,
+                    s.event_type,
+                )
+                self._stats["host_suggestions_suppressed"] = (
+                    int(self._stats.get("host_suggestions_suppressed") or 0) + 1
+                )
+                continue
+
+            # 3. Confidence must meet threshold
+            threshold = spec.get_effective_threshold(s.event_type)
+            if s.confidence < threshold:
+                logger.info(
+                    "[AIParticipant] Filter REJECTED '%s': confidence %.2f < threshold %.2f (category: %s)",
+                    s.title,
+                    s.confidence,
+                    threshold,
+                    s.event_type,
+                )
+                continue
+
+            # 4. Enforce word limit from behavior spec
+            words = s.content.split()
+            max_words = spec.max_words_per_insight * 2  # 2x buffer before truncation
+            if len(words) > max_words:
+                s.content = " ".join(words[: spec.max_words_per_insight]) + "."
+
+            # 5. Check ignore topics
+            if spec.ignore_topics:
+                content_lower = s.content.lower()
+                should_ignore = any(
+                    topic.lower() in content_lower for topic in spec.ignore_topics
+                )
+                if should_ignore:
+                    logger.info(
+                        "[AIParticipant] Filter REJECTED '%s': matches ignore_topics",
+                        s.title,
+                    )
+                    continue
+
+            logger.info(
+                "[AIParticipant] Filter PASSED: '%s' (type: %s, confidence: %.2f)",
+                s.title,
+                s.event_type,
+                s.confidence,
+            )
+            filtered.append(s)
+
+        return filtered
+
+    def _build_behavior_host_prompt(self, transcript_window: str) -> str:
+        """
+        Build the host prompt using BehaviorSpec.
+        This generates a dynamic prompt based on the user's behavior definition.
+        """
+        spec = self._behavior_spec
+        title = self.meeting_context.title or ""
+        goal = self.meeting_context.goal or ""
+        agenda_text = self.meeting_context.agenda_text or ""
+        participant_names = self.meeting_context.participant_names or []
+        participant_line = (
+            ", ".join(participant_names[:25]) if participant_names else "None"
+        )
+        current_summary = self._host_state.meeting_summary or "None"
+
+        # Build the pinned items context
+        pinned_context = ""
+        if self._host_state.pinned_items:
+            items = []
+            for item in self._host_state.pinned_items[:10]:
+                items.append(
+                    f"- [{item.event_type}] {item.title}: {item.content[:120]}"
+                )
+            pinned_context = "\n".join(items) if items else "None"
+        else:
+            pinned_context = "None"
+
+        # Build active categories instruction
+        active_categories = [
+            c for c in spec.output_categories if spec.is_category_active(c.id)
+        ]
+        categories_block = (
+            "\n".join(
+                f"- `{cat.id}` ({cat.label}): {cat.description}"
+                for cat in active_categories
+            )
+            or "- No specific categories defined"
+        )
+
+        # Build ignore instruction
+        ignore_block = ""
+        if spec.ignore_topics:
+            ignore_block = (
+                "\n\nTopics to IGNORE (do NOT produce events about these):\n"
+                + "\n".join(f"- {topic}" for topic in spec.ignore_topics)
+            )
+
+        return f"""
+{spec.personality_prompt}
+
+**Hinglish/Multilingual Awareness**: The transcript often contains Hinglish (Hindi + English) code-switching. Extract decisions, action items, and insights even if they are expressed in mixed languages. Do NOT dismiss Hinglish discussion as noise or assume there is 'no active discussion'.
+
+Meeting Context:
+- Title: {title}
+- Goal: {goal}
+- Agenda: {agenda_text}
+- Participants: {participant_line}
+- Rolling meeting summary so far:
+{current_summary}
+
+Already Pinned Items (do NOT repeat these):
+{pinned_context}
+
+Your output categories (use ONLY these when calling tools):
+{categories_block}
+{ignore_block}
+
+Tone guidance:
+{spec.tone_instruction or "Be concise, neutral, and evidence-based."}
+
+Rules:
+- You are an active observer. DO NOT return a JSON object. Instead, use the provided tools to share insights and update the summary.
+- Update the meeting summary frequently using the `update_summary` tool.
+- **CRITICAL**: In `update_summary`, use rich Markdown (Level 3 Headings `###`, Bold `**bold**`, and Lists `- `) so the UI looks structured.
+- Everything you send through tools must be in English only.
+- Use Level 3 headings (`### Overview`, `### Decisions`, etc.) for summary sections. Do NOT use `#` or `##`.
+- If no action is needed, simply finish your turn without calling any tools.
+- Do NOT suggest events for topics or decisions that are already in the pinned items list.
+- Do NOT call a tool twice if the content has not changed.
+- Max {spec.max_words_per_insight} words per event content.
+
+Recent transcript window:
+{transcript_window}
+""".strip()
+
+    async def apply_behavior_spec(
+        self, behavior_markdown: str, source: str = "meeting"
+    ) -> Optional[BehaviorSpec]:
+        """
+        Compile a behavior markdown and apply the resulting spec.
+        This is the primary entry point for the v2 behavior system.
+        Returns the compiled spec, or None if compilation fails.
+        """
+        text = (behavior_markdown or "").strip()
+        if not text:
+            return None
+
+        try:
+            spec, used_llm = await compile_behavior(
+                markdown=text,
+                db=self.db,
+                user_email=self.user_email,
+                use_llm=True,
+            )
+        except Exception as e:
+            logger.error(
+                "[AIParticipant] Behavior compilation failed: %s", e, exc_info=True
+            )
+            return None
+
+        self._behavior_spec = spec
+        self._auto_tuner = BehaviorAutoTuner(spec)
+        self._stats["behavior_spec_applied"] = True
+        self._stats["behavior_spec_name"] = spec.name
+        self._stats["behavior_spec_categories"] = len(spec.output_categories)
+        self._stats["behavior_compile_used_llm"] = used_llm
+
+        logger.info(
+            "[AIParticipant] Behavior spec applied: name=%s categories=%d silence_mode=%s "
+            "speak_triggers=%d silence_triggers=%d used_llm=%s source=%s",
+            spec.name,
+            len(spec.output_categories),
+            spec.silence_mode,
+            len(spec.speak_triggers),
+            len(spec.silence_triggers),
+            used_llm,
+            source,
+        )
+        return spec
 
     def _load_policy_from_skill(self, skill_text: str, source: str) -> HostPolicyConfig:
         policy = HostPolicyConfig(source=source)
@@ -1773,6 +2065,9 @@ Recent transcript window:
         self._host_policy_source = source
         self._stats["host_policy_source"] = source
 
+        # Also compile BehaviorSpec from the same markdown
+        self._pending_behavior_compile = skill_text
+
     def set_host_template(self, template_name: str, source: str = "system") -> None:
         template_key = str(template_name or "").strip().lower()
         skill_text = SYSTEM_HOST_SKILLS.get(template_key)
@@ -1783,6 +2078,40 @@ Recent transcript window:
         self._host_policy = self._load_policy_from_skill(skill_text, source=source)
         self._host_policy_source = source
         self._stats["host_policy_source"] = source
+
+        # Also compile BehaviorSpec from the system template
+        self._pending_behavior_compile = skill_text
+
+    async def compile_pending_behavior(self) -> None:
+        """
+        Compile any pending behavior markdown set during skill application.
+        Must be called after apply_host_skill_override or set_host_template.
+        Separated because those methods are sync, compilation is async.
+        """
+        markdown = getattr(self, "_pending_behavior_compile", None)
+        if not markdown:
+            return
+        self._pending_behavior_compile = None
+        try:
+            spec = await self.apply_behavior_spec(
+                behavior_markdown=markdown, source=self._host_policy_source
+            )
+            if spec:
+                logger.info(
+                    "[AIParticipant] Behavior spec compiled from style: name=%s categories=%d",
+                    spec.name,
+                    len(spec.output_categories),
+                )
+        except Exception as e:
+            logger.warning(
+                "[AIParticipant] Background behavior compilation failed: %s", e
+            )
+
+    def get_behavior_sync_payload(self) -> dict:
+        """Return the behavior spec sync payload for the frontend."""
+        if not self._behavior_spec:
+            return {}
+        return self._behavior_spec.get_frontend_sync_payload()
 
     def pin_suggestion(
         self, suggestion_id: str, actor: Optional[str] = None
@@ -1831,6 +2160,11 @@ Recent transcript window:
         )
         self._host_state.updated_at = datetime.utcnow().isoformat()
         self._stats["host_suggestions_pinned"] += 1
+
+        # Auto-tuner: user found this valuable
+        if self._auto_tuner and hasattr(match, "event_type"):
+            self._auto_tuner.on_pin(match.event_type)
+
         return match
 
     def dismiss_suggestion(
@@ -1871,6 +2205,10 @@ Recent transcript window:
         )
         self._host_state.updated_at = datetime.utcnow().isoformat()
         self._stats["host_suggestions_dismissed"] += 1
+
+        # Auto-tuner: user didn't want this
+        if self._auto_tuner and hasattr(match, "event_type"):
+            self._auto_tuner.on_dismiss(match.event_type)
 
         if actor:
             self._host_state.last_response_outcomes.insert(0, f"dismissed_by:{actor}")
@@ -1995,6 +2333,21 @@ Recent transcript window:
             "pinned": pinned,
             "dismissed": dismissed,
         }
+
+        # Behavior system v2 observability
+        if self._behavior_spec:
+            payload["behavior_spec"] = {
+                "name": self._behavior_spec.name,
+                "categories": len(self._behavior_spec.output_categories),
+                "silence_mode": self._behavior_spec.silence_mode,
+                "summary_visibility": self._behavior_spec.summary_visibility,
+                "suppressed_categories": list(
+                    self._behavior_spec.suppressed_categories
+                ),
+            }
+        if self._auto_tuner:
+            payload["auto_tuner"] = self._auto_tuner.get_adjustments_summary()
+
         return payload
 
     def apply_manual_context(

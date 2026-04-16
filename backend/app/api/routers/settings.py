@@ -89,15 +89,15 @@ async def get_model_config(current_user: User = Depends(get_current_user)):
     config = await db.get_model_config()
     if config:
         # HOTFIX: Migrate users away from retired models
-        retired_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest"]
+        retired_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-3-pro-preview", "gemini-3-flash", "gemini-3-flash-preview"]
         if config.get("model", "") in retired_models:
             logger.info(
-                f"Migrating retired model {config['model']} to gemini-3-pro-preview"
+                f"Migrating retired model {config['model']} to gemini-2.5-flash"
             )
-            config["model"] = "gemini-3-pro-preview"
+            config["model"] = "gemini-2.5-flash"
             await db.save_model_config(
                 config["provider"],
-                "gemini-3-pro-preview",
+                "gemini-2.5-flash",
                 config.get("whisperModel", "large-v3"),
             )
 

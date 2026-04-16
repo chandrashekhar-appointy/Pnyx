@@ -1184,7 +1184,7 @@ class DiarizationService:
             # Using Gemini as the default fast/cheap translation engine
             response_text = await generate_content_text_async(
                 api_key=api_key,
-                model="gemini-3-flash-preview",  # Reliable json output
+                model="gemini-2.5-flash",  # Reliable json output
                 contents=prompt,
                 config={"temperature": 0.1},
             )

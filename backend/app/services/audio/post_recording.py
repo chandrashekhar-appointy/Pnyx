@@ -94,7 +94,9 @@ class PostRecordingService:
         }
 
         try:
-            async with self.db.advisory_lock(f"audio-finalize:{meeting_id}") as acquired:
+            async with self.db.advisory_lock(
+                f"audio-finalize:{meeting_id}"
+            ) as acquired:
                 if not acquired:
                     result["status"] = "already_running"
                     result["error"] = "Another finalize job is already in progress"
@@ -107,8 +109,39 @@ class PostRecordingService:
                 logger.info("🔒 Acquired finalize lock for %s", meeting_id)
                 recording_dir = self.storage_path / meeting_id
 
+                encrypted_path = await self._get_encrypted_audio_path(meeting_id)
+                if encrypted_path:
+                    has_chunks = False
+                    if self.storage_type == "gcp":
+                        prefix = f"{meeting_id}/{self.chunk_prefix}/"
+                        files = await StorageService.list_files(prefix)
+                        has_chunks = any(f.endswith(".pcm") for f in files)
+                    else:
+                        local_dir = self.storage_path / meeting_id
+                        has_chunks = local_dir.exists() and any(
+                            local_dir.glob("chunk_*.pcm")
+                        )
+
+                    if not has_chunks:
+                        verified = await self._verify_storage_artifact(
+                            encrypted_path,
+                            min_size_bytes=128,
+                        )
+                        if verified:
+                            result["status"] = "completed"
+                            result["uploaded_to_gcp"] = self.storage_type == "gcp"
+                            result["gcp_path"] = encrypted_path
+                            logger.info(
+                                "✅ Post-recording fast path for %s: encrypted artifact already available at %s",
+                                meeting_id,
+                                encrypted_path,
+                            )
+                            return result
+
                 if self.prefer_compressed_read and self.skip_wav_finalize_if_compressed:
-                    compressed_path = await self._get_compressed_archive_path(meeting_id)
+                    compressed_path = await self._get_compressed_archive_path(
+                        meeting_id
+                    )
                     if compressed_path:
                         logger.info(f"💾 Found compressed archive: {compressed_path}")
 
@@ -119,7 +152,9 @@ class PostRecordingService:
                             has_chunks = any(f.endswith(".pcm") for f in files)
                         else:
                             local_dir = self.storage_path / meeting_id
-                            has_chunks = local_dir.exists() and any(local_dir.glob("chunk_*.pcm"))
+                            has_chunks = local_dir.exists() and any(
+                                local_dir.glob("chunk_*.pcm")
+                            )
 
                         if not has_chunks:
                             verified = await self._verify_storage_artifact(
@@ -133,7 +168,10 @@ class PostRecordingService:
                                 )
                                 return result
 
-                            if self.storage_type == "gcp" and self.delete_pcm_after_merge:
+                            if (
+                                self.storage_type == "gcp"
+                                and self.delete_pcm_after_merge
+                            ):
                                 try:
                                     await self._cleanup_gcp_chunks(meeting_id)
                                     result["local_cleaned"] = True
@@ -153,7 +191,9 @@ class PostRecordingService:
                                 )
                             return result
                         else:
-                            logger.info(f"📦 PCM chunks detected for {meeting_id}, ignoring compressed archive to ensure full merge.")
+                            logger.info(
+                                f"📦 PCM chunks detected for {meeting_id}, ignoring compressed archive to ensure full merge."
+                            )
 
                 if self.storage_type == "gcp":
                     logger.info(f"☁️ GCP mode: merging PCM in backend for {meeting_id}")
@@ -193,9 +233,7 @@ class PostRecordingService:
                         )
                         if not healthy:
                             result["status"] = "recovery_failed"
-                            result["error"] = (
-                                "Recovered WAV still failed health check"
-                            )
+                            result["error"] = "Recovered WAV still failed health check"
                             result["health"] = health
                             return result
 
@@ -211,7 +249,9 @@ class PostRecordingService:
                     # E2EE Logic: Get user's public key (ONLY IF ENABLED)
                     public_key_spki = None
                     if user_email:
-                        is_enabled = await self.db.get_user_encryption_enabled(user_email)
+                        is_enabled = await self.db.get_user_encryption_enabled(
+                            user_email
+                        )
                         if is_enabled:
                             user_info = await self.db.get_user_credits(user_email)
                             if user_info:
@@ -219,80 +259,119 @@ class PostRecordingService:
 
                         if public_key_spki:
                             from ..encryption_service import EncryptionService
-                            logger.info(f"🔐 E2EE: Encrypting recording and notes for {meeting_id}")
-                            
+
+                            logger.info(
+                                f"🔐 E2EE: Encrypting recording and notes for {meeting_id}"
+                            )
+
                             # 1. Encrypt merged audio
                             gcp_wav_path = f"{meeting_id}/recording.wav"
-                            audio_data = await StorageService.download_bytes(gcp_wav_path)
+                            audio_data = await StorageService.download_bytes(
+                                gcp_wav_path
+                            )
                             if not audio_data:
-                                logger.error(f"Failed to download audio for encryption: {gcp_wav_path}")
+                                logger.error(
+                                    f"Failed to download audio for encryption: {gcp_wav_path}"
+                                )
                                 raise ValueError(f"Missing audio file {gcp_wav_path}")
-                            encrypted_audio, audio_wrapper = EncryptionService.encrypt_document(audio_data, public_key_spki)
-                            
-                            # Save encrypted audio AND DELETE PLAINTEXT
-                            await StorageService.upload_bytes(encrypted_audio, f"{meeting_id}/recording.enc.wav")
-                            await StorageService.delete_file(gcp_wav_path)
-                            
+                            encrypted_audio, audio_wrapper = (
+                                EncryptionService.encrypt_document(
+                                    audio_data, public_key_spki
+                                )
+                            )
+
+                            # Save encrypted audio and purge all plaintext audio artifacts.
+                            await StorageService.upload_bytes(
+                                encrypted_audio, f"{meeting_id}/recording.enc.wav"
+                            )
+                            await self._delete_plaintext_audio_artifacts(meeting_id)
+
                             # 2. Process and Encrypt Transcript / Notes
                             encryption_meta = {
                                 "audio": audio_wrapper,
-                                "transcript": None
+                                "transcript": None,
                             }
-                            
+
                             # If transcript_payload not provided (e.g. background task), fetch from DB
                             if not transcript_payload:
                                 meeting_data = await self.db.get_meeting(meeting_id)
                                 if meeting_data and meeting_data.get("transcripts"):
                                     transcript_payload = meeting_data["transcripts"]
-                                    logger.info(f"📑 E2EE: Fetched {len(transcript_payload)} segments from DB for encryption")
+                                    logger.info(
+                                        f"📑 E2EE: Fetched {len(transcript_payload)} segments from DB for encryption"
+                                    )
 
                             if transcript_payload:
-                                transcript_json = json.dumps(transcript_payload).encode('utf-8')
-                                enc_transcript, trans_wrapper = EncryptionService.encrypt_document(transcript_json, public_key_spki)
-                                
-                                await StorageService.upload_bytes(enc_transcript, f"{meeting_id}/transcript.enc.json")
+                                transcript_json = json.dumps(transcript_payload).encode(
+                                    "utf-8"
+                                )
+                                enc_transcript, trans_wrapper = (
+                                    EncryptionService.encrypt_document(
+                                        transcript_json, public_key_spki
+                                    )
+                                )
+
+                                await StorageService.upload_bytes(
+                                    enc_transcript, f"{meeting_id}/transcript.enc.json"
+                                )
                                 encryption_meta["transcript"] = trans_wrapper
-                                
-                                # Update database with encryption metadata
-                                async with self.db._get_connection() as conn:
-                                    existing_process = await self.db.get_transcript_data(meeting_id)
-                                    if existing_process:
-                                        current_metadata = existing_process.get("metadata") or {}
-                                        current_metadata["encryption"] = encryption_meta
-                                        await conn.execute(
-                                            "UPDATE summary_processes SET metadata = $1, status = 'completed' WHERE meeting_id = $2",
-                                            json.dumps(current_metadata),
-                                            meeting_id
-                                        )
-                                    else:
-                                        await conn.execute(
-                                            """
-                                            INSERT INTO summary_processes 
-                                            (meeting_id, status, metadata, start_time, end_time)
-                                            VALUES ($1, 'completed', $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                                            """,
-                                            meeting_id,
-                                            json.dumps({"encryption": encryption_meta})
-                                        )
-                                
+
+                            # Update database with encryption metadata (REQUIRED for audio download even if transcript is empty)
+                            async with self.db._get_connection() as conn:
+                                existing_process = await self.db.get_transcript_data(
+                                    meeting_id
+                                )
+                                if existing_process:
+                                    # Ensure we have a dict, parsing string if necessary
+                                    current_metadata = (
+                                        existing_process.get("metadata") or {}
+                                    )
+                                    if isinstance(current_metadata, str):
+                                        try:
+                                            current_metadata = json.loads(
+                                                current_metadata
+                                            )
+                                        except Exception:
+                                            current_metadata = {}
+
+                                    current_metadata["encryption"] = encryption_meta
+
+                                    # Serialize back to JSON string since asyncpg expects it for this column
+                                    await conn.execute(
+                                        "UPDATE summary_processes SET metadata = $1, status = 'completed' WHERE meeting_id = $2",
+                                        json.dumps(current_metadata),
+                                        meeting_id,
+                                    )
+                                else:
+                                    # Creating fresh metadata for a new process entry
+                                    initial_metadata = {"encryption": encryption_meta}
+                                    await conn.execute(
+                                        """
+                                        INSERT INTO summary_processes 
+                                        (meeting_id, status, metadata, start_time, end_time)
+                                        VALUES ($1, 'completed', $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                        """,
+                                        meeting_id,
+                                        json.dumps(initial_metadata),
+                                    )
+
+                            if transcript_payload:
                                 # PURGE PLAINTEXT: Now that it's safely encrypted in storage, remove from DB
                                 await self.db.clear_meeting_transcripts(meeting_id)
-                                logger.info(f"🧹 E2EE: Purged plaintext transcripts for {meeting_id}")
+                                logger.info(
+                                    f"🧹 E2EE: Purged plaintext transcripts for {meeting_id}"
+                                )
 
-                        # Update meeting title if it was "Untitled"
-                        # (The frontend can provide a title or we can infer it if we dared to decrypt, 
-                        # but we can't. So we rely on the frontend or a non-encrypted summary phase)
                         logger.info(f"✅ E2EE: Encryption complete for {meeting_id}")
-
-                            # Save meeting metadata encrypted
-                            # ... (add summary logic here if needed)
 
                     result["status"] = "completed"
                     logger.info(f"✅ Post-recording (GCP) complete for {meeting_id}")
 
                     if trigger_diarization and not public_key_spki:
                         # Diarization needs raw audio, so we skip if encrypted for now
-                        asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
+                        asyncio.create_task(
+                            self._trigger_diarization(meeting_id, user_email)
+                        )
 
                     return result
 
@@ -361,7 +440,9 @@ class PostRecordingService:
                     )
                     if not recovered:
                         result["status"] = "recovery_failed"
-                        result["error"] = "Local WAV failed health check and recovery was unsuccessful"
+                        result["error"] = (
+                            "Local WAV failed health check and recovery was unsuccessful"
+                        )
                         result["health"] = health
                         return result
                     healthy, health = await self._assess_recording_health(
@@ -371,7 +452,9 @@ class PostRecordingService:
                     )
                     if not healthy:
                         result["status"] = "recovery_failed"
-                        result["error"] = "Recovered local WAV still failed health check"
+                        result["error"] = (
+                            "Recovered local WAV still failed health check"
+                        )
                         result["health"] = health
                         return result
                 result["health"] = health
@@ -383,7 +466,10 @@ class PostRecordingService:
                     if gcp_path:
                         result["uploaded_to_gcp"] = True
                         result["gcp_path"] = gcp_path
-                        healthy_remote, remote_health = await self._assess_recording_health(
+                        (
+                            healthy_remote,
+                            remote_health,
+                        ) = await self._assess_recording_health(
                             meeting_id,
                             artifact_path=gcp_path,
                         )
@@ -394,18 +480,27 @@ class PostRecordingService:
                                 health=remote_health,
                             )
                             if not recovered:
-                                logger.warning(f"GCP upload failed recovery health check, keeping local files")
+                                logger.warning(
+                                    f"GCP upload failed recovery health check, keeping local files"
+                                )
                                 result["status"] = "recovery_failed"
-                                result["error"] = "Uploaded artifact failed health check and recovery was unsuccessful"
+                                result["error"] = (
+                                    "Uploaded artifact failed health check and recovery was unsuccessful"
+                                )
                                 result["health"] = remote_health
                                 return result
-                            healthy_remote, remote_health = await self._assess_recording_health(
+                            (
+                                healthy_remote,
+                                remote_health,
+                            ) = await self._assess_recording_health(
                                 meeting_id,
                                 artifact_path=gcp_path,
                             )
                             if not healthy_remote:
                                 result["status"] = "recovery_failed"
-                                result["error"] = "Recovered uploaded artifact still failed health check"
+                                result["error"] = (
+                                    "Recovered uploaded artifact still failed health check"
+                                )
                                 result["health"] = remote_health
                                 return result
 
@@ -415,7 +510,9 @@ class PostRecordingService:
                             await self._cleanup_local(meeting_id, keep_wav=False)
                             result["local_cleaned"] = True
                     else:
-                        logger.warning(f"GCP upload failed verification, keeping local files")
+                        logger.warning(
+                            f"GCP upload failed verification, keeping local files"
+                        )
                         result["status"] = "verification_failed"
                         result["error"] = "Uploaded artifact could not be verified"
                         return result
@@ -426,7 +523,9 @@ class PostRecordingService:
                 logger.info(f"✅ Post-recording processing complete for {meeting_id}")
 
                 if trigger_diarization:
-                    asyncio.create_task(self._trigger_diarization(meeting_id, user_email))
+                    asyncio.create_task(
+                        self._trigger_diarization(meeting_id, user_email)
+                    )
 
                 return result
 
@@ -486,14 +585,18 @@ class PostRecordingService:
         local_override_path: Optional[Path] = None,
     ) -> Tuple[bool, Dict]:
         if local_override_path:
-            verified = await self._verify_local_path(local_override_path, min_size_bytes=45)
+            verified = await self._verify_local_path(
+                local_override_path, min_size_bytes=45
+            )
             size_bytes = (
                 int(local_override_path.stat().st_size)
                 if local_override_path.exists()
                 else None
             )
         else:
-            verified = await self._verify_storage_artifact(artifact_path, min_size_bytes=45)
+            verified = await self._verify_storage_artifact(
+                artifact_path, min_size_bytes=45
+            )
             size_bytes = await StorageService.get_file_size(artifact_path)
 
         expected_duration = await self._get_expected_pcm_duration_seconds(meeting_id)
@@ -530,7 +633,10 @@ class PostRecordingService:
         local_override_path: Optional[Path] = None,
     ) -> bool:
         if not health.get("expected_duration_seconds"):
-            logger.warning("Skipping recovery for %s because expected duration is unavailable", meeting_id)
+            logger.warning(
+                "Skipping recovery for %s because expected duration is unavailable",
+                meeting_id,
+            )
             return False
 
         logger.warning(
@@ -540,7 +646,9 @@ class PostRecordingService:
             health,
         )
         if self.storage_type == "gcp" and not local_override_path:
-            return await self._merge_gcp_chunks_to_wav(meeting_id, append_existing=False)
+            return await self._merge_gcp_chunks_to_wav(
+                meeting_id, append_existing=False
+            )
 
         merged_pcm = await self._merge_chunks(meeting_id)
         if not merged_pcm:
@@ -550,9 +658,13 @@ class PostRecordingService:
             merged_pcm,
             append_existing=False,
         )
-        return bool(wav_path and await self._verify_local_path(wav_path, min_size_bytes=45))
+        return bool(
+            wav_path and await self._verify_local_path(wav_path, min_size_bytes=45)
+        )
 
-    async def _get_expected_pcm_duration_seconds(self, meeting_id: str) -> Optional[float]:
+    async def _get_expected_pcm_duration_seconds(
+        self, meeting_id: str
+    ) -> Optional[float]:
         metadata = await self._load_chunk_metadata(meeting_id)
         chunks = metadata.get("chunks") if isinstance(metadata, dict) else None
         if chunks:
@@ -643,7 +755,41 @@ class PostRecordingService:
         except Exception:
             return None
 
-    async def _merge_gcp_chunks_to_wav(self, meeting_id: str, append_existing: bool = True) -> bool:
+    async def _get_encrypted_audio_path(self, meeting_id: str) -> Optional[str]:
+        encrypted_path = f"{meeting_id}/recording.enc.wav"
+        try:
+            if self.storage_type == "gcp":
+                return (
+                    encrypted_path
+                    if await StorageService.check_file_exists(encrypted_path)
+                    else None
+                )
+
+            local_path = self.storage_path / meeting_id / "recording.enc.wav"
+            return encrypted_path if local_path.exists() else None
+        except Exception:
+            return None
+
+    async def _delete_plaintext_audio_artifacts(self, meeting_id: str) -> None:
+        plaintext_paths = [
+            f"{meeting_id}/recording.wav",
+            f"{meeting_id}/recording.opus",
+            f"{meeting_id}/recording.m4a",
+        ]
+        for path in plaintext_paths:
+            try:
+                await StorageService.delete_file(path)
+            except Exception as exc:
+                logger.warning(
+                    "Failed deleting plaintext audio artifact for %s at %s: %s",
+                    meeting_id,
+                    path,
+                    exc,
+                )
+
+    async def _merge_gcp_chunks_to_wav(
+        self, meeting_id: str, append_existing: bool = True
+    ) -> bool:
         """
         Merge PCM chunks stored in GCS into a WAV file, upload to GCS.
         No local disk usage; uses in-memory buffering.
@@ -662,7 +808,9 @@ class PostRecordingService:
                 logger.error(f"No PCM chunks found in GCS for {meeting_id}")
                 return False
 
-            logger.info(f"📂 Merging {len(chunk_files)} PCM chunks from GCP for {meeting_id}")
+            logger.info(
+                f"📂 Merging {len(chunk_files)} PCM chunks from GCP for {meeting_id}"
+            )
             for i, f in enumerate(chunk_files[:5]):
                 logger.debug(f"  [{i}] {f}")
             if len(chunk_files) > 5:
@@ -680,9 +828,13 @@ class PostRecordingService:
                 # Check for existing recording.wav to append to
                 if append_existing:
                     existing_wav_path = f"{meeting_id}/recording.wav"
-                    existing_wav_bytes = await StorageService.download_bytes(existing_wav_path)
+                    existing_wav_bytes = await StorageService.download_bytes(
+                        existing_wav_path
+                    )
                     if existing_wav_bytes and len(existing_wav_bytes) > 44:
-                        logger.info(f"Found existing GCP recording.wav for {meeting_id}, appending new PCM chunks.")
+                        logger.info(
+                            f"Found existing GCP recording.wav for {meeting_id}, appending new PCM chunks."
+                        )
                         wav_file.writeframes(existing_wav_bytes[44:])
 
                 for blob_name in chunk_files:
@@ -716,7 +868,26 @@ class PostRecordingService:
                 from services.storage import StorageService
 
             prefix = f"{meeting_id}/{self.chunk_prefix}/"
-            return await StorageService.delete_prefix(prefix)
+            deleted = await StorageService.delete_prefix(prefix)
+            remaining = await StorageService.list_files(prefix)
+            if remaining:
+                logger.warning(
+                    "GCS chunk cleanup left %s objects for %s under %s; retrying once",
+                    len(remaining),
+                    meeting_id,
+                    prefix,
+                )
+                deleted = await StorageService.delete_prefix(prefix) and deleted
+                remaining = await StorageService.list_files(prefix)
+
+            if remaining:
+                logger.warning(
+                    "GCS chunk cleanup incomplete for %s; remaining objects: %s",
+                    meeting_id,
+                    remaining[:10],
+                )
+                return False
+            return deleted
         except Exception as e:
             logger.error(f"GCS cleanup failed: {e}")
             return False
@@ -739,15 +910,17 @@ class PostRecordingService:
         try:
             wav_path = self.storage_path / meeting_id / "recording.wav"
             import aiofiles
-            
+
             existing_pcm = b""
             if append_existing and wav_path.exists():
-                logger.info(f"Found existing recording.wav for {meeting_id}, appending new PCM chunks.")
+                logger.info(
+                    f"Found existing recording.wav for {meeting_id}, appending new PCM chunks."
+                )
                 async with aiofiles.open(wav_path, "rb") as f:
                     old_wav = await f.read()
                     if len(old_wav) > 44:
                         existing_pcm = old_wav[44:]
-            
+
             total_pcm = existing_pcm + pcm_data
             wav_data = AudioRecorder.convert_pcm_to_wav(total_pcm)
 
@@ -802,6 +975,10 @@ class PostRecordingService:
                 pcm_file.unlink()
                 logger.debug(f"Deleted: {pcm_file}")
 
+            chunk_subdir = recording_dir / self.chunk_prefix
+            if chunk_subdir.exists():
+                shutil.rmtree(chunk_subdir, ignore_errors=True)
+
             # Delete merged PCM if it exists
             merged_pcm = recording_dir / "merged_recording.pcm"
             if merged_pcm.exists():
@@ -818,6 +995,16 @@ class PostRecordingService:
                 merged_wav = recording_dir / "merged_recording.wav"
                 if merged_wav.exists():
                     merged_wav.unlink()
+
+                for archive_name in (
+                    "recording.opus",
+                    "recording.m4a",
+                    "recording.enc.wav",
+                    "metadata.json",
+                ):
+                    archive_path = recording_dir / archive_name
+                    if archive_path.exists():
+                        archive_path.unlink()
 
             # Clean up empty directory
             remaining_files = list(recording_dir.iterdir())

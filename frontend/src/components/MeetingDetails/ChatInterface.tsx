@@ -208,7 +208,7 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
 
             // Use configured model or factory default
             const provider = modelConfig?.provider || 'gemini';
-            const modelName = modelConfig?.model || 'gemini-2.5-pro';
+            const modelName = modelConfig?.model || 'gemini-2.5-flash';
 
             const contextEntries = getStableContextEntries();
             const contextText = getContextFromTranscripts();
@@ -327,6 +327,7 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
                             selectedIds={linkedMeetingIds}
                             onSelectionChange={setLinkedMeetingIds}
                             onAttach={() => setShowLinkContext(false)}
+                            excludeMeetingId={meetingId}
                         />
                     </div>
                 )}
@@ -337,14 +338,15 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
                 {messages.length === 0 && (
                     <div className="text-center text-zinc-500 mt-10 space-y-2">
                         <Bot className="w-12 h-12 mx-auto opacity-20" />
-                        <p>Ask anything about this meeting!</p>
+                        <p>I'm following your meeting. Ask me anything about the discussion!</p>
                         {linkedMeetingIds.length > 0 && (
                             <p className="text-xs text-blue-500 font-medium">
                                 Searching {linkedMeetingIds.length} linked meeting(s)
                             </p>
                         )}
                         <p className="text-xs text-zinc-400">"What were the key decisions?"</p>
-                        <p className="text-xs text-zinc-400">"search on web [your query]"</p>
+                        <p className="text-xs text-zinc-400">"Help us decide on this topic"</p>
+                        <p className="text-xs text-zinc-400">"Compare with linked meetings"</p>
                     </div>
                 )}
 
@@ -390,7 +392,7 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder="Ask a question... (or 'search on web [query]')"
+                        placeholder="Ask about the current discussion..."
                         className="w-full pl-4 pr-10 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-zinc-100"
                         disabled={isLoading}
                     />

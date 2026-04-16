@@ -35,6 +35,7 @@ export interface StreamingCallbacks {
   onHostActionAck?: (payload: { action: string; applied: boolean; suggestion?: unknown; suggestion_id?: string }) => void;
   onHostSkillAck?: (applied: boolean) => void;
   onContextAck?: (applied: boolean) => void;
+  onBehaviorSpecSync?: (payload: Record<string, unknown>) => void;
   onGuardrailAlert?: (alert: {
     id: string;
     reason: 'agenda_deviation' | 'no_decision' | 'unresolved_question' | 'missing_context_or_repeat';
@@ -60,7 +61,6 @@ export interface StreamingCallbacks {
   onError?: (error: Error, code?: string) => void;
   onConnected?: (sessionId: string) => void;
   onDisconnected?: () => void;
-  onCreditExhausted?: () => void;
 }
 
 import { wsUrl } from '../config';
@@ -344,6 +344,9 @@ export class AudioStreamClient {
           else if (data.type === 'context_ack') {
             this.callbacks.onContextAck?.(Boolean(data.applied));
           }
+          else if (data.type === 'behavior_spec_sync') {
+            this.callbacks.onBehaviorSpecSync?.(data.payload || data);
+          }
           else if (data.type === 'partial') this.callbacks.onPartial?.(data.text, data.confidence, data.is_stable);
           else if (data.type === 'final') {
             this.callbacks.onFinal?.(
@@ -368,10 +371,6 @@ export class AudioStreamClient {
             this.pendingStopResolve?.();
             this.pendingStopResolve = null;
             this.pendingStopReject = null;
-          }
-          else if (data.type === 'credit_exhausted') {
-            console.warn('[AudioStream] ⚠️ Credit exhausted');
-            this.callbacks.onCreditExhausted?.();
           }
           else if (data.type === 'error') this.callbacks.onError?.(new Error(data.message), data.code);
         } catch (e) {

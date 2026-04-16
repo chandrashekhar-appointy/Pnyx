@@ -374,22 +374,69 @@ Quick Catch-Up Summary:"""
 
 
 @router.post("/search-context")
-async def search_context_endpoint(request: SearchContextRequest):
+async def search_context_endpoint(
+    request: SearchContextRequest,
+    current_user: User = Depends(get_current_user),
+):
     """
     Search across past meetings for relevant context.
     Returns matching chunks with source citations.
     """
     try:
-        # Fallback to empty results for now as VectorDB logic is not fully migrated
-        # Inform frontend that search is currently unavailable
+        # Try to import the vector store
+        try:
+            from app.vector_store import search_context, get_collection_stats
+        except ImportError:
+            try:
+                from ...vector_store import search_context, get_collection_stats
+            except (ImportError, ValueError):
+                return {
+                    "status": "success",
+                    "query": request.query,
+                    "results": [],
+                    "total_indexed": 0,
+                    "message": "Vector store module not available.",
+                }
+
+        stats = get_collection_stats()
+        if not stats.get("status") or "available" not in str(
+            stats.get("status", "")
+        ):
+            return {
+                "status": "success",
+                "query": request.query,
+                "results": [],
+                "total_indexed": 0,
+                "message": "Vector store is not currently available.",
+            }
+
+        results = await search_context(
+            query=request.query,
+            n_results=request.n_results,
+            allowed_meeting_ids=request.allowed_meeting_ids,
+        )
+
+        formatted_results = []
+        for r in results or []:
+            formatted_results.append(
+                {
+                    "text": r.get("text", ""),
+                    "meeting_id": r.get("meeting_id", ""),
+                    "meeting_title": r.get("meeting_title", "Unknown"),
+                    "meeting_date": r.get("meeting_date", ""),
+                    "similarity": r.get("similarity", 0),
+                    "chunk_index": r.get("chunk_index", 0),
+                }
+            )
+
         return {
             "status": "success",
             "query": request.query,
-            "results": [],
-            "total_indexed": 0,
-            "message": "Semantic search is currently disabled for maintenance.",
+            "results": formatted_results,
+            "total_results": len(formatted_results),
         }
 
     except Exception as e:
         logger.error(f"Error in search_context: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+

@@ -297,12 +297,12 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && meetingUrl.trim()) handleInviteBot();
                   }}
-                  disabled={!meetingId || isSpawning}
+                  disabled={isSpawning}
                 />
               </div>
               <button
                 onClick={handleInviteBot}
-                disabled={!meetingId || !meetingUrl.trim() || isSpawning}
+                disabled={!meetingUrl.trim() || isSpawning}
                 className="px-3 py-2 text-xs font-medium text-white bg-indigo-500
                            hover:bg-indigo-600 disabled:bg-gray-300 disabled:cursor-not-allowed
                            rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap"
@@ -328,7 +328,7 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
             )}
             {!meetingId && (
               <p className="text-[10px] text-gray-400">
-                Start a meeting first to invite a bot
+                Paste a meeting URL and Pnyx will create a meeting automatically when you send the bot
               </p>
             )}
           </div>

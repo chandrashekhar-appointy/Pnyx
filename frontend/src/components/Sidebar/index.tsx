@@ -82,7 +82,7 @@ const Sidebar: React.FC = () => {
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'gemini',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash',
     whisperModel: 'large-v3',
     apiKey: null,
     ollamaEndpoint: null
@@ -608,7 +608,7 @@ const Sidebar: React.FC = () => {
     const isExpanded = expandedFolders.has(item.id);
     const paddingLeft = `${depth * 12 + 12}px`;
     const isActive = item.type === 'file' && currentMeeting?.id === item.id;
-    const isMeetingItem = item.id.includes('-') && !item.id.startsWith('intro-call');
+    const isMeetingItem = item.type === 'file' && !item.id.startsWith('intro-call');
 
     // Check if this item has a matching transcript snippet
     const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
