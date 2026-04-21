@@ -7,6 +7,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { authFetch } from '@/lib/api';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface BotInvitePanelProps {
   meetingId: string | null;
@@ -116,11 +117,15 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
     if (!meetingUrl.trim()) return;
     if (!isValidUrl(meetingUrl)) {
       setError('Enter a valid Zoom, Google Meet, or Teams URL');
+      Analytics.trackBotInvalidUrl(meetingUrl.slice(0, 60));
       return;
     }
 
     setIsSpawning(true);
     setError(null);
+    let urlDomain = 'unknown';
+    try { urlDomain = new URL(meetingUrl.trim()).hostname; } catch { /* ignore */ }
+    Analytics.trackBotInviteSent({ meeting_id: meetingId, url_domain: urlDomain });
 
     try {
       let activeMeetingId = meetingId;
@@ -150,6 +155,7 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
         const errData = await res.json();
         const msg = errData?.detail?.message || errData?.detail || 'Failed to send bot';
         setError(String(msg));
+        Analytics.trackBotInviteFailed({ error_message: String(msg), url_domain: urlDomain });
         toast.error('Bot invite failed', { description: String(msg) });
         return;
       }
@@ -160,6 +166,7 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
         status: 'requesting',
       });
       setMeetingUrl('');
+      Analytics.trackBotInviteSuccess({ meeting_id: activeMeetingId, recall_bot_id: data.recall_bot_id, url_domain: urlDomain });
       toast.success('Bot sent!', { description: 'Pnyx AI Assistant is joining the meeting.' });
       
       // Navigate to bot mode
@@ -184,6 +191,7 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
       });
       if (res.ok) {
         setBotStatus(null);
+        Analytics.trackBotRemoved({ meeting_id: meetingId });
         toast.success('Bot removed from meeting');
       }
     } catch {

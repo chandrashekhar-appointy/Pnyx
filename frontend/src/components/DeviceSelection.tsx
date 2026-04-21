@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Mic, Speaker } from 'lucide-react';
-import { Analytics } from '@/lib/analytics';
+import Analytics from '@/lib/analytics';
 import { Button } from '@/components/ui/button';
 
 export interface AudioDevice {
@@ -106,6 +106,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     // but ideally we should update state to store deviceId.
     // Assuming existing logic matches by name.
     onDeviceChange(newDevices);
+    Analytics.trackAudioDeviceChanged('microphone', name);
   };
 
   const handleSystemDeviceChange = (deviceId: string) => {
@@ -116,6 +117,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       systemDevice: deviceId === 'default' ? null : name
     };
     onDeviceChange(newDevices);
+    Analytics.trackAudioDeviceChanged('speaker', name);
   };
 
   if (loading) return <div>Loading devices...</div>;

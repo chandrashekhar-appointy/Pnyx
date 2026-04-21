@@ -213,7 +213,10 @@ export function SummaryGeneratorButtonGroup({
             {availableTemplates.map((template) => (
               <DropdownMenuItem
                 key={template.id}
-                onClick={() => onTemplateSelect(template.id, template.name)}
+                onClick={() => {
+                  Analytics.trackFeatureUsed('summary_template_selected');
+                  onTemplateSelect(template.id, template.name);
+                }}
                 title={template.description}
                 className="flex items-center justify-between gap-2"
               >

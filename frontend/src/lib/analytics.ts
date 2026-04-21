@@ -73,7 +73,8 @@ export class Analytics {
   private static posthogEnabled = false;
 
   private static isConfigured(): boolean {
-    return Boolean(getPostHogKey());
+    const isProduction = getAppEnv() === 'production';
+    return Boolean(getPostHogKey()) && isProduction;
   }
 
   private static sanitizeProperties(
@@ -786,6 +787,288 @@ export class Analytics {
     properties?: Record<string, any>
   ) {
     await this.track('feedback_status_updated', properties);
+  }
+
+  static async trackBotInvited(meetingId: string, url: string): Promise<void> {
+    let urlDomain = 'unknown';
+    try {
+      urlDomain = new URL(url).hostname;
+    } catch (e) {
+      // Ignore if URL is invalid to not break tracking
+    }
+    await this.track('bot_invited', { meeting_id: meetingId, url_domain: urlDomain });
+  }
+
+  static async trackSearchPerformed(queryLength: number, resultsCount: number): Promise<void> {
+    await this.track('search_performed', { query_length: queryLength, results_count: resultsCount });
+  }
+
+  static async trackAuthAction(action: 'login' | 'signup', success: boolean, error?: string): Promise<void> {
+    await this.track('auth_action', { action, success, error });
+  }
+
+  static async trackRecordingPaused(meetingId?: string): Promise<void> {
+    await this.track('recording_paused', { meeting_id: meetingId });
+  }
+
+  static async trackRecordingResumed(meetingId?: string): Promise<void> {
+    await this.track('recording_resumed', { meeting_id: meetingId });
+  }
+
+  // ── Authentication ─────────────────────────────────────────────────
+  static async trackLoginAttempted(method: string): Promise<void> {
+    await this.track('login_attempted', { method });
+  }
+
+  static async trackLoginSuccess(method: string): Promise<void> {
+    await this.track('login_success', { method });
+  }
+
+  static async trackLoginFailed(method: string, errorMessage?: string): Promise<void> {
+    await this.track('login_failed', { method, error_message: errorMessage });
+  }
+
+  static async trackLogoutClicked(location: string): Promise<void> {
+    await this.track('logout_clicked', { location });
+  }
+
+  // ── Bot Invite ─────────────────────────────────────────────────────
+  static async trackBotInviteSent(properties?: Record<string, any>): Promise<void> {
+    await this.track('bot_invite_sent', properties);
+  }
+
+  static async trackBotInviteSuccess(properties?: Record<string, any>): Promise<void> {
+    await this.track('bot_invite_success', properties);
+  }
+
+  static async trackBotInviteFailed(properties?: Record<string, any>): Promise<void> {
+    await this.track('bot_invite_failed', properties);
+  }
+
+  static async trackBotRemoved(properties?: Record<string, any>): Promise<void> {
+    await this.track('bot_removed', properties);
+  }
+
+  static async trackBotInvalidUrl(urlPreview?: string): Promise<void> {
+    await this.track('bot_invalid_url', { url_preview: urlPreview });
+  }
+
+  // ── Credits & Payments ─────────────────────────────────────────────
+  static async trackPurchaseModalOpened(): Promise<void> {
+    await this.track('purchase_modal_opened');
+  }
+
+  static async trackCreditPackSelected(properties?: Record<string, any>): Promise<void> {
+    await this.track('credit_pack_selected', properties);
+  }
+
+  static async trackPaymentInitiated(properties?: Record<string, any>): Promise<void> {
+    await this.track('payment_initiated', properties);
+  }
+
+  static async trackPaymentCompleted(properties?: Record<string, any>): Promise<void> {
+    await this.track('payment_completed', properties);
+  }
+
+  static async trackPaymentFailed(properties?: Record<string, any>): Promise<void> {
+    await this.track('payment_failed', properties);
+  }
+
+  static async trackPaymentCancelled(properties?: Record<string, any>): Promise<void> {
+    await this.track('payment_cancelled', properties);
+  }
+
+  static async trackPaymentRetryClicked(): Promise<void> {
+    await this.track('payment_retry_clicked');
+  }
+
+  static async trackCreditTopUpClicked(currentBalance?: number): Promise<void> {
+    await this.track('credit_topup_clicked', { current_balance: currentBalance });
+  }
+
+  // ── Sidebar / Navigation ───────────────────────────────────────────
+  static async trackNavigation(destination: string, source: string): Promise<void> {
+    await this.track('navigation', { destination, source });
+  }
+
+  static async trackSidebarMeetingOpened(meetingId: string): Promise<void> {
+    await this.track('sidebar_meeting_opened', { meeting_id: meetingId });
+  }
+
+  static async trackSidebarSearched(queryLength: number, resultsCount: number): Promise<void> {
+    await this.track('sidebar_searched', { query_length: queryLength, results_count: resultsCount });
+  }
+
+  static async trackSidebarToggled(collapsed: boolean): Promise<void> {
+    await this.track('sidebar_toggled', { collapsed });
+  }
+
+  static async trackNewCallClicked(): Promise<void> {
+    await this.track('new_call_clicked');
+  }
+
+  static async trackImportModalOpened(): Promise<void> {
+    await this.track('import_modal_opened');
+  }
+
+  // ── Shared Notes ───────────────────────────────────────────────────
+  static async trackSharedNoteOpened(properties?: Record<string, any>): Promise<void> {
+    await this.track('shared_note_opened', properties);
+  }
+
+  static async trackSharedNotesEmptyState(): Promise<void> {
+    await this.track('shared_notes_empty_state');
+  }
+
+  // ── AI Host Skill (per-meeting) ────────────────────────────────────
+  static async trackMeetingAISkillDialogOpened(meetingId: string): Promise<void> {
+    await this.track('meeting_ai_skill_dialog_opened', { meeting_id: meetingId });
+  }
+
+  static async trackMeetingAISkillTemplateApplied(templateName: string, meetingId: string): Promise<void> {
+    await this.track('meeting_ai_skill_template_applied', { template_name: templateName, meeting_id: meetingId });
+  }
+
+  static async trackMeetingAISkillActiveToggled(isActive: boolean, meetingId: string): Promise<void> {
+    await this.track('meeting_ai_skill_active_toggled', { is_active: isActive, meeting_id: meetingId });
+  }
+
+  static async trackMeetingAISkillSaved(meetingId: string, skillLength: number): Promise<void> {
+    await this.track('meeting_ai_skill_saved', { meeting_id: meetingId, skill_length: skillLength });
+  }
+
+  static async trackMeetingAISkillDeleted(meetingId: string): Promise<void> {
+    await this.track('meeting_ai_skill_deleted', { meeting_id: meetingId });
+  }
+
+  // ── Transcript Versions ────────────────────────────────────────────
+  static async trackTranscriptVersionSwitched(meetingId: string, versionNum: number, source?: string): Promise<void> {
+    await this.track('transcript_version_switched', { meeting_id: meetingId, version_num: versionNum, source });
+  }
+
+  static async trackTranscriptVersionDeleted(meetingId: string, versionNum: number): Promise<void> {
+    await this.track('transcript_version_deleted', { meeting_id: meetingId, version_num: versionNum });
+  }
+
+  // ── Chat / Ask AI Panel ────────────────────────────────────────────
+  static async trackChatPanelOpened(meetingId: string): Promise<void> {
+    await this.track('chat_panel_opened', { meeting_id: meetingId });
+  }
+
+  static async trackChatPanelClosed(meetingId: string, messagesCount: number): Promise<void> {
+    await this.track('chat_panel_closed', { meeting_id: meetingId, messages_count: messagesCount });
+  }
+
+  static async trackChatContextLinked(linkedCount: number, meetingId: string): Promise<void> {
+    await this.track('chat_context_linked', { linked_meeting_count: linkedCount, meeting_id: meetingId });
+  }
+
+  // ── Refine Notes ───────────────────────────────────────────────────
+  static async trackRefineNotesOpened(meetingId: string): Promise<void> {
+    await this.track('refine_notes_opened', { meeting_id: meetingId });
+  }
+
+  static async trackRefineNotesApplied(meetingId: string): Promise<void> {
+    await this.track('refine_notes_applied', { meeting_id: meetingId });
+  }
+
+  // ── Import ─────────────────────────────────────────────────────────
+  static async trackImportFileSelected(fileType: string, fileSizeMB: number): Promise<void> {
+    await this.track('import_file_selected', { file_type: fileType, file_size_mb: fileSizeMB });
+  }
+
+  static async trackImportUploadFailed(errorMessage?: string): Promise<void> {
+    await this.track('import_upload_failed', { error_message: errorMessage });
+  }
+
+  static async trackImportCancelled(): Promise<void> {
+    await this.track('import_cancelled');
+  }
+
+  // ── Share Notes Dialog ─────────────────────────────────────────────
+  static async trackShareNotesDialogOpened(meetingId: string): Promise<void> {
+    await this.track('share_notes_dialog_opened', { meeting_id: meetingId });
+  }
+
+  static async trackShareNotesSkipped(meetingId: string): Promise<void> {
+    await this.track('share_notes_skipped', { meeting_id: meetingId });
+  }
+
+  // ── Model Settings ─────────────────────────────────────────────────
+  static async trackModelSettingsOpened(): Promise<void> {
+    await this.track('model_settings_opened');
+  }
+
+  static async trackModelProviderSelected(provider: string): Promise<void> {
+    await this.track('model_provider_selected', { provider });
+  }
+
+  static async trackOllamaModelsFetched(modelCount: number): Promise<void> {
+    await this.track('ollama_models_fetched', { model_count: modelCount });
+  }
+
+  static async trackOllamaModelDownloadStarted(modelName: string): Promise<void> {
+    await this.track('ollama_model_download_started', { model_name: modelName });
+  }
+
+  // ── Recording ──────────────────────────────────────────────────────
+  static async trackRecordingPermissionDenied(errorMessage?: string): Promise<void> {
+    await this.track('recording_permission_denied', { error_message: errorMessage });
+  }
+
+  // ── Live Meeting Interactions ──────────────────────────────────────
+  static async trackLiveTabSwitched(tabName: string, meetingId?: string): Promise<void> {
+    await this.track('live_tab_switched', { tab_name: tabName, meeting_id: meetingId });
+  }
+
+  static async trackDecisionPinned(meetingId: string, properties?: Record<string, any>): Promise<void> {
+    await this.track('decision_pinned', { meeting_id: meetingId, ...properties });
+  }
+
+  static async trackDecisionUnpinned(meetingId: string): Promise<void> {
+    await this.track('decision_unpinned', { meeting_id: meetingId });
+  }
+
+  static async trackCatchUpPanelOpened(meetingId: string): Promise<void> {
+    await this.track('catchup_panel_opened', { meeting_id: meetingId });
+  }
+
+  // ── Diarization buttons ────────────────────────────────────────────
+  static async trackDiarizeClicked(meetingId: string): Promise<void> {
+    await this.track('diarize_clicked', { meeting_id: meetingId });
+  }
+
+  static async trackDiarizeStopClicked(meetingId: string): Promise<void> {
+    await this.track('diarize_stop_clicked', { meeting_id: meetingId });
+  }
+
+  // ── Calendar / Settings extras ─────────────────────────────────────
+  static async trackCalendarDisconnected(): Promise<void> {
+    await this.track('calendar_disconnected');
+  }
+
+  static async trackCalendarSettingsSaved(properties?: Record<string, any>): Promise<void> {
+    await this.track('calendar_settings_saved', properties);
+  }
+
+  static async trackCalendarTestReminderSent(): Promise<void> {
+    await this.track('calendar_test_reminder_sent');
+  }
+
+  static async trackPersonalKeySaved(keyType: string): Promise<void> {
+    await this.track('personal_key_saved', { key_type: keyType });
+  }
+
+  static async trackPersonalKeyDeleted(keyType: string): Promise<void> {
+    await this.track('personal_key_deleted', { key_type: keyType });
+  }
+
+  static async trackAudioDeviceChanged(deviceType: string, deviceName: string): Promise<void> {
+    await this.track('audio_device_changed', { device_type: deviceType, device_name: deviceName });
+  }
+
+  static async trackGroqApiKeySaved(): Promise<void> {
+    await this.track('groq_api_key_saved');
   }
 }
 

@@ -1,7 +1,8 @@
 'use client';
 
 import { signIn } from 'next-auth/react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import Analytics from '@/lib/analytics';
 
 /**
  * Login Page
@@ -11,14 +12,18 @@ export default function LoginPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    useEffect(() => { Analytics.trackPageView('login'); }, []);
+
     const handleGoogleSignIn = async () => {
         setIsLoading(true);
         setError(null);
+        Analytics.trackLoginAttempted('google');
 
         try {
             await signIn('google', { callbackUrl: '/' });
         } catch (err) {
             setError('Failed to sign in. Please try again.');
+            Analytics.trackLoginFailed('google', 'Failed to sign in');
             setIsLoading(false);
         }
     };

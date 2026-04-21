@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { authFetch } from '@/lib/api';
 import { Loader2, RefreshCcw, Activity, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface StreamingSloSession {
   session_id: string;
@@ -59,6 +60,8 @@ export default function StreamingSloPage() {
   const [lookbackHours, setLookbackHours] = useState(24);
   const [loading, setLoading] = useState(true);
   const [report, setReport] = useState<StreamingSloResponse | null>(null);
+
+  useEffect(() => { Analytics.trackPageView('streaming_slo'); }, []);
 
   const fetchReport = async () => {
     setLoading(true);

@@ -29,6 +29,10 @@ export function ImportModal({ isOpen, onClose }: ImportModalProps) {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
+      Analytics.trackImportFileSelected(
+        selectedFile.type || selectedFile.name.split('.').pop()?.toLowerCase() || 'unknown',
+        parseFloat((selectedFile.size / (1024 * 1024)).toFixed(2))
+      );
       // Auto-set title from filename if empty
       if (!title) {
         const name = selectedFile.name.replace(/\.[^/.]+$/, ""); // Remove extension
@@ -91,6 +95,7 @@ export function ImportModal({ isOpen, onClose }: ImportModalProps) {
 
     } catch (error) {
       console.error("Upload error:", error);
+      Analytics.trackImportUploadFailed(error instanceof Error ? error.message : 'Unknown error');
       toast.error("Failed to upload file");
       setUploadProgress(0);
     } finally {

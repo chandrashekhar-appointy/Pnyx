@@ -379,12 +379,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       await client.start(buildStreamingCallbacks(), stableSessionId, stableSessionId, authToken);
 
       console.log('✅ Real-time streaming started');
+      Analytics.trackRecordingStarted(stableSessionId);
     } catch (error) {
       console.error('❌ Failed to start streaming transcription:', error);
 
       const errorMsg = error instanceof Error ? error.message : String(error);
 
       if (errorMsg.includes('denied') || errorMsg.includes('permission')) {
+        Analytics.trackRecordingPermissionDenied(errorMsg);
         setDeviceError({
           title: 'Microphone Permission Required',
           message: 'Please grant microphone access in your browser and try again.'
@@ -499,6 +501,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStop(true);
 
       Analytics.trackButtonClick('stop_recording_streaming', 'recording_controls');
+      if (mid) Analytics.trackRecordingStopped(mid);
     } catch (error) {
       console.error('❌ Failed to stop streaming:', error);
       onRecordingStop(false);
@@ -512,21 +515,24 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     if (!audioClientRef.current) return;
 
     try {
+      const mid = initialSessionId || audioClientRef.current?.getSessionId();
       if (isPaused) {
         await audioClientRef.current.resume();
         setIsPaused(false);
         onPauseChange?.(false);
         console.log('▶️ Resumed recording');
+        if (mid) Analytics.trackRecordingResumed(mid);
       } else {
         await audioClientRef.current.pause();
         setIsPaused(true);
         onPauseChange?.(true);
         console.log('⏸️ Paused recording');
+        if (mid) Analytics.trackRecordingPaused(mid);
       }
     } catch (error) {
       console.error('Failed to toggle pause/resume:', error);
     }
-  }, [isPaused, onPauseChange]);
+  }, [isPaused, onPauseChange, initialSessionId]);
 
   const handleSaveApiKey = async (apiKey: string) => {
     try {

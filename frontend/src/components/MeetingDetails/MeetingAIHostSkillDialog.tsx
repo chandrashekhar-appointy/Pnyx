@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 const TEMPLATE_SKILLS: Record<string, string> = {
   meeting_assistant: `# Meeting Assistant
@@ -152,6 +153,7 @@ export function MeetingAIHostSkillDialog({ open, onOpenChange, meetingId }: Meet
 
   const applyTemplate = (name: keyof typeof TEMPLATE_SKILLS) => {
     setSkillMarkdown(TEMPLATE_SKILLS[name]);
+    Analytics.trackMeetingAISkillTemplateApplied(name, meetingId);
   };
 
   const saveMeetingProfile = async () => {
@@ -171,6 +173,7 @@ export function MeetingAIHostSkillDialog({ open, onOpenChange, meetingId }: Meet
         throw new Error(body?.detail || 'Failed to save meeting AI Participant skill');
       }
       toast.success('Meeting AI Participant skill saved');
+      Analytics.trackMeetingAISkillSaved(meetingId, skillMarkdown.length);
     } catch (error) {
       console.error(error);
       toast.error(error instanceof Error ? error.message : 'Failed to save meeting AI Participant skill');
@@ -191,6 +194,7 @@ export function MeetingAIHostSkillDialog({ open, onOpenChange, meetingId }: Meet
       setSkillMarkdown('');
       setIsActive(true);
       toast.success('Meeting AI Participant skill deleted');
+      Analytics.trackMeetingAISkillDeleted(meetingId);
     } catch (error) {
       console.error(error);
       toast.error(error instanceof Error ? error.message : 'Failed to delete meeting AI Participant skill');
@@ -241,7 +245,10 @@ export function MeetingAIHostSkillDialog({ open, onOpenChange, meetingId }: Meet
               <input
                 type="checkbox"
                 checked={isActive}
-                onChange={(e) => setIsActive(e.target.checked)}
+                onChange={(e) => {
+                  setIsActive(e.target.checked);
+                  Analytics.trackMeetingAISkillActiveToggled(e.target.checked, meetingId);
+                }}
                 className="h-4 w-4 rounded border-gray-300"
               />
               Active for this meeting

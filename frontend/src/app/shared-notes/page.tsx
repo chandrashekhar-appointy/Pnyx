@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { authFetch } from '@/lib/api';
 import { Share2, Clock, User, ChevronRight } from 'lucide-react';
+import Analytics from '@/lib/analytics';
 
 export default function SharedNotesPage() {
   const router = useRouter();
@@ -11,6 +12,7 @@ export default function SharedNotesPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    Analytics.trackPageView('shared_notes');
     async function fetchShared() {
       try {
         const res = await authFetch('/api/sharing/shared-with-me');
@@ -27,7 +29,8 @@ export default function SharedNotesPage() {
     fetchShared();
   }, []);
 
-  const handleNoteClick = (meetingId: string, shareToken?: string | null) => {
+  const handleNoteClick = (meetingId: string, shareToken?: string | null, isUnread?: boolean) => {
+    Analytics.trackSharedNoteOpened({ meeting_id: meetingId, is_unread: isUnread });
     const params = new URLSearchParams({
       id: meetingId,
       shared: 'true',
@@ -59,6 +62,7 @@ export default function SharedNotesPage() {
           <Share2 className="w-12 h-12 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-700">No shared notes yet</h3>
           <p className="text-gray-500 mt-2">When someone shares meeting notes with you, they'll appear here.</p>
+          {(() => { Analytics.trackSharedNotesEmptyState(); return null; })()}
         </div>
       ) : (
         <div className="grid gap-4">
@@ -69,7 +73,7 @@ export default function SharedNotesPage() {
             return (
               <div
                 key={note.id}
-                onClick={() => handleNoteClick(note.meeting_id, note.share_token)}
+                onClick={() => handleNoteClick(note.meeting_id, note.share_token, isUnread)}
                 className={`flex items-center p-5 rounded-xl border transition-all cursor-pointer hover:shadow-md
                   ${isUnread ? 'bg-white border-blue-200 shadow-sm relative' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}
               >

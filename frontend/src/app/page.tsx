@@ -3971,7 +3971,7 @@ function HomeContent() {
                 animate={{ scale: 1 }}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => setIsChatOpen(true)}
+                onClick={() => { Analytics.trackChatPanelOpened(currentSessionId || 'current-recording'); setIsChatOpen(true); }}
                 className="p-4 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
                 title="Ask AI about this active meeting"
               >

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { authFetch } from '@/lib/api';
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import Analytics from '@/lib/analytics';
 
 interface TranscriptVersion {
   version_num: number;
@@ -63,6 +64,7 @@ export function TranscriptVersionSelector({
         method: 'DELETE'
       });
       if (response.ok) {
+        Analytics.trackTranscriptVersionDeleted(meetingId, versionNum);
         // If the deleted version was the selected one, switch back to live
         if (currentVersionNum === versionNum) {
           onVersionChange(-1);
@@ -85,7 +87,11 @@ export function TranscriptVersionSelector({
       <span className="text-sm font-medium text-gray-700">Version:</span>
       <Select
         value={currentVersionNum?.toString()}
-        onValueChange={(val: string) => onVersionChange(parseInt(val))}
+        onValueChange={(val: string) => {
+          const versionNum = parseInt(val);
+          Analytics.trackTranscriptVersionSwitched(meetingId, versionNum);
+          onVersionChange(versionNum);
+        }}
       >
         <SelectTrigger className="w-[280px]">
           <SelectValue placeholder="Select version" />

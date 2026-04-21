@@ -34,6 +34,7 @@ export default function FeedbackPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    Analytics.trackPageView('feedback');
     checkAdminStatus();
     fetchFeedback();
   }, []);

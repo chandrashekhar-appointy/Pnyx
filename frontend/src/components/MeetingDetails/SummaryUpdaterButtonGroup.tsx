@@ -34,7 +34,10 @@ export function SummaryUpdaterButtonGroup({
           variant="outline"
           size="sm"
           className="bg-purple-50 hover:bg-purple-100 border-purple-200 text-purple-700"
-          onClick={onRefine}
+          onClick={() => {
+            Analytics.trackButtonClick('refine_notes_open', 'meeting_details');
+            onRefine();
+          }}
           title="Refine with AI"
         >
           <Sparkles className="w-4 h-4 lg:mr-2" />

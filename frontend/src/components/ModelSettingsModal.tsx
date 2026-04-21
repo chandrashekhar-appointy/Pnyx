@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSidebar } from './Sidebar/SidebarProvider';
 import { authFetch } from '@/lib/api';
+import Analytics from '@/lib/analytics';
 
 import { Button } from '@/components/ui/button';
 // import { useOllamaDownload } from '@/contexts/OllamaDownloadContext';
@@ -510,6 +511,7 @@ export function ModelSettingsModal({
                   model: defaultModel,
                   apiKey: null, // Reset API key when switching providers
                 });
+                Analytics.trackModelProviderSelected(provider);
                 fetchApiKey(provider);
 
                 // Load OpenRouter models only when OpenRouter is selected

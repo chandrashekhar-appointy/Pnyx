@@ -236,6 +236,7 @@ export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRe
                                     variant="default"
                                     className="bg-green-600 hover:bg-green-700 h-8 text-xs"
                                     onClick={() => {
+                                        Analytics.trackRefineNotesApplied(meetingId);
                                         const parts = msg.content.split('|||SEPARATOR|||');
                                         if (parts.length > 1) {
                                             onApplyRefinement(parts[1].trim());

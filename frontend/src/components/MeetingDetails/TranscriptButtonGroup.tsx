@@ -44,7 +44,15 @@ export function TranscriptButtonGroup({
             size="sm"
             variant={isProcessing ? "destructive" : (diarizationStatus === 'completed' ? "outline" : "default")}
             className={isProcessing ? "" : (diarizationStatus === 'completed' ? "" : "bg-indigo-600 hover:bg-indigo-700 text-white")}
-            onClick={isProcessing ? onStopDiarize : onDiarize}
+            onClick={() => {
+              if (isProcessing) {
+                Analytics.trackButtonClick('stop_diarization', 'meeting_details');
+                onStopDiarize?.();
+              } else {
+                Analytics.trackButtonClick('start_diarization', 'meeting_details');
+                onDiarize?.();
+              }
+            }}
             disabled={(!isProcessing && isRecording) || (!isProcessing && !onDiarize) || (isProcessing && !onStopDiarize)}
           >
             {isProcessing ? (

@@ -61,7 +61,10 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={(open) => {
+      if (open) Analytics.trackShareNotesDialogOpened(meetingId);
+      if (!open) onClose();
+    }}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>Share Updated Notes?</DialogTitle>
@@ -98,7 +101,10 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
         
         <DialogFooter className="flex space-x-2 sm:space-x-0">
           <button 
-            onClick={onClose}
+            onClick={() => {
+              Analytics.trackShareNotesSkipped(meetingId);
+              onClose();
+            }}
             className="px-4 py-2 border rounded-md text-gray-700 hover:bg-gray-50 flex-1"
             disabled={isSharing}
           >

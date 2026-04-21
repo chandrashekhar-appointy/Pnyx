@@ -299,7 +299,12 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
                     </h3>
                     <div className="flex items-center gap-1">
                         <button
-                            onClick={() => setShowLinkContext(!showLinkContext)}
+                            onClick={() => {
+                                setShowLinkContext(!showLinkContext);
+                                if (!showLinkContext && linkedMeetingIds.length > 0) {
+                                    Analytics.trackChatContextLinked(linkedMeetingIds.length, meetingId);
+                                }
+                            }}
                             className={`
                                 flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-full transition-colors
                                 ${linkedMeetingIds.length > 0
@@ -312,7 +317,10 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
                             {showLinkContext ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                         </button>
                         <button
-                            onClick={onClose}
+                            onClick={() => {
+                                Analytics.trackChatPanelClosed(meetingId, messages.length);
+                                onClose();
+                            }}
                             className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors ml-1"
                         >
                             <X className="w-5 h-5 text-zinc-500" />

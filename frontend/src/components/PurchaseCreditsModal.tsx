@@ -12,6 +12,7 @@ import {
   DialogFooter
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface PurchaseCreditsModalProps {
   isOpen: boolean;
@@ -38,6 +39,7 @@ export const PurchaseCreditsModal: React.FC<PurchaseCreditsModalProps> = ({ isOp
   const handlePurchase = async (pack: typeof CREDIT_PACKS[0]) => {
     setSelectedPack(pack);
     setLoading(true);
+    Analytics.trackCreditPackSelected({ pack_label: pack.label, amount_inr: pack.amount, credits: pack.credits });
     try {
       const response = await authFetch('/api/credits/purchase', {
         method: 'POST',
@@ -51,6 +53,7 @@ export const PurchaseCreditsModal: React.FC<PurchaseCreditsModalProps> = ({ isOp
       const data = await response.json();
       setPurchaseData(data);
       setStatus('paying');
+      Analytics.trackPaymentInitiated({ purchase_id: data.purchase_id, amount_inr: pack.amount, credits: pack.credits });
     } catch (error) {
       console.error('Purchase error:', error);
       toast.error('Could not create payment QR. Please try again.');
@@ -72,12 +75,14 @@ export const PurchaseCreditsModal: React.FC<PurchaseCreditsModalProps> = ({ isOp
             const { status: currentStatus } = await response.json();
             if (currentStatus === 'completed') {
               setStatus('success');
+              Analytics.trackPaymentCompleted({ purchase_id: purchaseData.purchase_id, amount_inr: selectedPack?.amount, credits: selectedPack?.credits });
               toast.success('Credits added successfully!');
               // Dispatch event to refresh balance
               window.dispatchEvent(new CustomEvent('payment:success'));
               clearInterval(intervalId);
             } else if (currentStatus === 'failed') {
               setStatus('error');
+              Analytics.trackPaymentFailed({ purchase_id: purchaseData.purchase_id, amount_inr: selectedPack?.amount });
               clearInterval(intervalId);
             }
           }

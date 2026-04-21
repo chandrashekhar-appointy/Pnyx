@@ -453,7 +453,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/')}
+                onClick={() => { Analytics.trackNavigation('home', 'sidebar_collapsed'); router.push('/'); }}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -505,7 +505,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/shared-notes')}
+                onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar_collapsed'); router.push('/shared-notes'); }}
                 className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/shared-notes' ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -528,7 +528,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/settings')}
+                onClick={() => { Analytics.trackNavigation('settings', 'sidebar_collapsed'); router.push('/settings'); }}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -558,11 +558,11 @@ const Sidebar: React.FC = () => {
               </TooltipContent>
             </Tooltip>
             <DropdownMenuContent className="w-56 ml-4" align="start" side="right">
-              <DropdownMenuItem onClick={() => router.push('/feedback')} className="cursor-pointer">
+              <DropdownMenuItem onClick={() => { Analytics.trackNavigation('feedback', 'sidebar_collapsed'); router.push('/feedback'); }} className="cursor-pointer">
                 <MessageSquare className="w-4 h-4 mr-2" />
                 Feedback
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => router.push('/streaming-slo')} className="cursor-pointer">
+              <DropdownMenuItem onClick={() => { Analytics.trackNavigation('streaming_slo', 'sidebar_collapsed'); router.push('/streaming-slo'); }} className="cursor-pointer">
                 <Activity className="w-4 h-4 mr-2" />
                 Streaming SLO
               </DropdownMenuItem>
@@ -581,7 +581,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => { sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
+                onClick={() => { Analytics.trackLogoutClicked('sidebar_collapsed'); sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
                 className="p-2 rounded-lg transition-colors duration-150 hover:bg-red-50 group"
               >
                 <LogOut className="w-5 h-5 text-gray-600 group-hover:text-red-500" />
@@ -630,6 +630,11 @@ const Sidebar: React.FC = () => {
             if (item.type === 'folder') {
               toggleFolder(item.id);
             } else {
+              if (isMeetingItem) {
+                Analytics.trackSidebarMeetingOpened(item.id);
+              } else if (item.id.startsWith('intro-call')) {
+                Analytics.trackNewCallClicked();
+              }
               setCurrentMeeting({ id: item.id, title: item.title });
               const basePath = item.id.startsWith('intro-call') ? '/' :
                 item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
@@ -882,7 +887,7 @@ const Sidebar: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setIsImportModalOpen(true)}
+              onClick={() => { Analytics.trackImportModalOpened(); setIsImportModalOpen(true); }}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
               <Upload className="w-4 h-4 mr-2" />
@@ -890,7 +895,7 @@ const Sidebar: React.FC = () => {
             </button>
 
             <button
-              onClick={() => router.push('/shared-notes')}
+              onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar'); router.push('/shared-notes'); }}
               className={`w-full flex items-center justify-center relative px-3 py-1.5 mt-1 mb-1 text-sm font-medium rounded-lg transition-colors shadow-sm ${pathname === '/shared-notes' ? 'text-gray-800 bg-gray-300' : 'text-gray-700 bg-gray-200 hover:bg-gray-300'}`}
             >
               <Share2 className="w-4 h-4 mr-2" />
@@ -904,7 +909,7 @@ const Sidebar: React.FC = () => {
             </button>
 
             <button
-              onClick={() => router.push('/settings')}
+              onClick={() => { Analytics.trackNavigation('settings', 'sidebar'); router.push('/settings'); }}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
               <Settings className="w-4 h-4 mr-2" />
@@ -919,11 +924,11 @@ const Sidebar: React.FC = () => {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="w-56" align="center" side="top">
-                <DropdownMenuItem onClick={() => router.push('/feedback')} className="cursor-pointer">
+                <DropdownMenuItem onClick={() => { Analytics.trackNavigation('feedback', 'sidebar'); router.push('/feedback'); }} className="cursor-pointer">
                   <MessageSquare className="w-4 h-4 mr-2" />
                   Feedback
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => router.push('/streaming-slo')} className="cursor-pointer">
+                <DropdownMenuItem onClick={() => { Analytics.trackNavigation('streaming_slo', 'sidebar'); router.push('/streaming-slo'); }} className="cursor-pointer">
                   <Activity className="w-4 h-4 mr-2" />
                   Streaming SLO
                 </DropdownMenuItem>
@@ -940,11 +945,11 @@ const Sidebar: React.FC = () => {
             </DropdownMenu>
 
             <div className="px-1 mt-2 mb-2">
-              <CreditBalance onTopUpClick={() => setIsPurchaseModalOpen(true)} />
+              <CreditBalance onTopUpClick={() => { Analytics.trackPurchaseModalOpened(); setIsPurchaseModalOpen(true); }} />
             </div>
 
             <button
-              onClick={() => { sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
+              onClick={() => { Analytics.trackLogoutClicked('sidebar'); sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors shadow-sm"
             >
               <LogOut className="w-4 h-4 mr-2" />

@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react';
 import { Coins, Loader2, PlusCircle, Infinity } from 'lucide-react';
 import { authFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import Analytics from '@/lib/analytics';
 
 interface CreditBalanceData {
   weekly: number;
@@ -99,7 +100,10 @@ export const CreditBalance: React.FC<CreditBalanceProps> = ({ onTopUpClick, clas
         </div>
         
         <button
-          onClick={onTopUpClick}
+          onClick={() => {
+            Analytics.trackCreditTopUpClicked(balance?.total);
+            onTopUpClick();
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors shadow-sm"
         >
           <PlusCircle size={14} />
