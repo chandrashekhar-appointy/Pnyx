@@ -39,17 +39,63 @@ function MarkdownContent({ content }: { content: string }) {
         };
 
         const renderInline = (line: string): React.ReactNode => {
-            // Bold: **text** or __text__
-            line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            line = line.replace(/__(.+?)__/g, '<strong>$1</strong>');
-            // Italic: *text* or _text_
-            line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            // Code: `code`
-            line = line.replace(/`([^`]+)`/g, '<code class="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">$1</code>');
-            // Links: [text](url)
-            line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="text-blue-500 underline">$1</a>');
+            // Safe inline markdown renderer — builds React elements instead of raw HTML.
+            // This prevents XSS from untrusted model output (e.g. <img onerror>, javascript: links).
+            const tokens: React.ReactNode[] = [];
+            // Tokenize: bold, italic, code, links — all inline markdown patterns
+            const inlineRegex = /(\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*([^*]+)\*)/g;
+            let lastIndex = 0;
+            let match: RegExpExecArray | null;
+            let key = 0;
 
-            return <span dangerouslySetInnerHTML={{ __html: line }} />;
+            while ((match = inlineRegex.exec(line)) !== null) {
+                // Push plain text before this match
+                if (match.index > lastIndex) {
+                    tokens.push(line.slice(lastIndex, match.index));
+                }
+
+                if (match[2] !== undefined) {
+                    // **bold**
+                    tokens.push(<strong key={key++}>{match[2]}</strong>);
+                } else if (match[3] !== undefined) {
+                    // __bold__
+                    tokens.push(<strong key={key++}>{match[3]}</strong>);
+                } else if (match[4] !== undefined) {
+                    // `code`
+                    tokens.push(
+                        <code key={key++} className="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">
+                            {match[4]}
+                        </code>
+                    );
+                } else if (match[5] !== undefined && match[6] !== undefined) {
+                    // [text](url) — sanitize href to block javascript: URLs
+                    const href = match[6].trim();
+                    const isSafe = /^https?:\/\//i.test(href) || href.startsWith('/') || href.startsWith('#');
+                    tokens.push(
+                        <a
+                            key={key++}
+                            href={isSafe ? href : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 underline"
+                        >
+                            {match[5]}
+                        </a>
+                    );
+                } else if (match[7] !== undefined) {
+                    // *italic*
+                    tokens.push(<em key={key++}>{match[7]}</em>);
+                }
+
+                lastIndex = match.index + match[0].length;
+            }
+
+            // Push remaining plain text
+            if (lastIndex < line.length) {
+                tokens.push(line.slice(lastIndex));
+            }
+
+            return tokens.length > 0 ? <span>{tokens}</span> : <span>{line}</span>;
         };
 
         lines.forEach((line, index) => {

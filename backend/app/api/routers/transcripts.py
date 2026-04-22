@@ -2247,7 +2247,7 @@ async def generate_detailed_notes(
 async def generate_notes_for_meeting(
     meeting_id: str,
     request: GenerateNotesRequest = None,
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
 ):
     """Generate meeting notes for a specific meeting using the selected template."""
