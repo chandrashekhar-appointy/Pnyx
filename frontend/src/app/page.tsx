@@ -44,7 +44,6 @@ import {
 import { ChatInterface } from '@/components/MeetingDetails/ChatInterface';
 import { MicrophoneIcon } from '@heroicons/react/24/outline';
 import { toast } from 'sonner';
-import { apiUrl } from '@/lib/config';
 import { authFetch, AuthError } from '@/lib/api';
 import { recoveryService, PendingMeetingData } from '@/lib/transcriptRecovery';
 import { SetupRequirements } from '@/components/SetupRequirements';

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
-import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 
 interface UseModelConfigurationProps {

@@ -27,9 +27,15 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
+  const runtimeConfigScript = `window.__PNYX_RUNTIME_CONFIG__=${JSON.stringify({
+    backendUrl: process.env.NEXT_PUBLIC_BACKEND_URL || 'https://meet.quexio.com',
+    wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'wss://meet.quexio.com/ws/streaming-audio',
+  }).replace(/</g, '\\u003c')};`
+
   return (
     <html lang="en">
       <body className={`${sourceSans3.variable} font-sans`}>
+        <script dangerouslySetInnerHTML={{ __html: runtimeConfigScript }} />
         <AuthProvider>
           <AnalyticsProvider>
             <LayoutClient>{children}</LayoutClient>

@@ -1,7 +1,6 @@
 import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 import Analytics from '@/lib/analytics';
 import { KeyManager } from '@/lib/crypto/key_manager';
@@ -15,8 +14,7 @@ export function useMeetingOperations({
   meeting,
   notesGenerationInfo,
 }: UseMeetingOperationsProps) {
-  const { serverAddress, meetings, setCurrentMeeting, setMeetings, refetchMeetings } = useSidebar();
-  const baseUrl = serverAddress || apiUrl;
+  const { meetings, setCurrentMeeting, setMeetings, refetchMeetings } = useSidebar();
 
   // Download recording
   const handleDownloadRecording = useCallback(async () => {
@@ -144,7 +142,7 @@ export function useMeetingOperations({
         description: error instanceof Error ? error.message : 'Unknown error'
       });
     }
-  }, [meeting.id, baseUrl, meetings, setCurrentMeeting, setMeetings, refetchMeetings]);
+  }, [meeting.id, meetings, setCurrentMeeting, setMeetings, refetchMeetings]);
 
   return {
     handleDownloadRecording,

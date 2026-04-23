@@ -3,7 +3,6 @@ import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { toast } from 'sonner';
-import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 
 interface UseMeetingDataProps {

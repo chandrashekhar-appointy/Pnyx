@@ -6,7 +6,6 @@ import { Label } from './ui/label';
 import { Eye, EyeOff, Lock, Unlock, Loader2 } from 'lucide-react';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
-import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 
 
@@ -240,7 +239,6 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         </div>
     )
 }
-
 
 
 
