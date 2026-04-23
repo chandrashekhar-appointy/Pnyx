@@ -7,6 +7,7 @@ import { authFetch } from '@/lib/api';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
+import { apiUrl } from '@/lib/config';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';

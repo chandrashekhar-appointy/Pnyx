@@ -1,5 +1,5 @@
 import { getSession, signOut } from 'next-auth/react';
-import { getApiUrl } from './config';
+import { apiUrl } from './config';
 
 export class AuthError extends Error {
   constructor(message: string) {
@@ -36,7 +36,7 @@ export async function authFetch(endpoint: string, options: RequestInit & { preve
   // Ensure endpoint starts with / if not absolute
   const url = endpoint.startsWith('http') 
     ? endpoint 
-    : `${getApiUrl()}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+    : `${apiUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${session.idToken}`,

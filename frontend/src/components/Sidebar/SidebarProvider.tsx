@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
-import { getApiUrl } from '@/lib/config';
+import { apiUrl } from '@/lib/config';
 import { authFetch } from '@/lib/api';
 import { useSession } from 'next-auth/react';
 import { usePersistentRecordingSession } from '@/lib/recordingSessionStore';
@@ -223,7 +223,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const fetchSettings = async () => {
-      setServerAddress(getApiUrl());
+      setServerAddress(apiUrl);
       setTranscriptServerAddress('http://127.0.0.1:8178/stream');
     };
     fetchSettings();

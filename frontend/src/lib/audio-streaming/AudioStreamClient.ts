@@ -63,7 +63,7 @@ export interface StreamingCallbacks {
   onDisconnected?: () => void;
 }
 
-import { getWsUrl } from '../config';
+import { wsUrl } from '../config';
 
 export class AudioStreamClient {
   private audioContext: AudioContext | null = null;
@@ -96,7 +96,7 @@ export class AudioStreamClient {
   private focusHandler: (() => void) | null = null;
 
   constructor(
-    private wsUrlOverride: string = getWsUrl()
+    private wsUrlOverride: string = wsUrl
   ) {}
 
   setCallbacks(callbacks: StreamingCallbacks): void {

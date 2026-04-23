@@ -7,7 +7,7 @@ import { SummaryResponse } from '@/types/summary';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
-import { getWsUrl } from '@/lib/config';
+import { wsUrl } from '@/lib/config';
 import { AudioStreamClient } from '@/lib/audio-streaming/AudioStreamClient';
 import {
   appendStreamingTranscript,
@@ -352,7 +352,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       await syncEncryptionPublicKey();
 
       // Create new streaming audio client (uses Groq Whisper)
-      const client = new AudioStreamClient(getWsUrl());
+      const client = new AudioStreamClient(wsUrl);
       audioClientRef.current = client;
       setPersistentRecordingClient(client);
       onHostClientReady?.(client);
