@@ -1,5 +1,18 @@
 import React from 'react';
+import DOMPurify from 'isomorphic-dompurify';
 import { Clock, Users, Calendar, Tag } from 'lucide-react';
+
+const NOTE_ALLOWED_TAGS = ['h1', 'h2', 'h3', 'p', 'ul', 'ol', 'li', 'strong', 'em', 'code', 'pre', 'br', 'a'];
+const NOTE_ALLOWED_ATTR = ['href', 'target', 'rel'];
+
+function escapeHtml(s: string): string {
+    return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 interface PageProps {
   params: {
@@ -171,16 +184,20 @@ Quarterly product review session with stakeholders.
       </div>
 
       <div className="prose prose-blue max-w-none">
-        <div dangerouslySetInnerHTML={{ __html: note.content.split('\n').map(line => {
-          if (line.startsWith('# ')) {
-            return `<h1>${line.slice(2)}</h1>`;
-          } else if (line.startsWith('## ')) {
-            return `<h2>${line.slice(3)}</h2>`;
-          } else if (line.startsWith('- ')) {
-            return `<li>${line.slice(2)}</li>`;
-          }
-          return line;
-        }).join('\n') }} />
+        <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(
+          note.content.split('\n').map(line => {
+            const escaped = escapeHtml(line);
+            if (line.startsWith('# ')) {
+              return `<h1>${escapeHtml(line.slice(2))}</h1>`;
+            } else if (line.startsWith('## ')) {
+              return `<h2>${escapeHtml(line.slice(3))}</h2>`;
+            } else if (line.startsWith('- ')) {
+              return `<li>${escapeHtml(line.slice(2))}</li>`;
+            }
+            return escaped;
+          }).join('\n'),
+          { ALLOWED_TAGS: NOTE_ALLOWED_TAGS, ALLOWED_ATTR: NOTE_ALLOWED_ATTR }
+        ) }} />
       </div>
     </div>
   );

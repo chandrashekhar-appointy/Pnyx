@@ -3,6 +3,13 @@ from typing import Dict, Any, List
 from pydantic import BaseModel
 import json
 import logging
+import re
+
+# Validation pattern for user_filter when an explicit user is requested.
+# Restricts to email-shaped strings so the value is safe for parameterization
+# AND prevents abuse of the dropdown by passing arbitrary content.
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_USER_FILTER_KEYWORDS = {"all", "exclude_admin"}
 
 logger = logging.getLogger(__name__)
 
@@ -26,23 +33,48 @@ class TrackEventRequest(BaseModel):
     timestamp: str | None = None
 
 
+_EVENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,80}$")
+_MAX_PROPERTIES_BYTES = 8 * 1024  # 8 KB per event
+
+try:
+    from ...core.security import verify_google_token
+except (ImportError, ValueError):
+    from core.security import verify_google_token
+
+
 @router.post("/track")
 async def track_event(request: TrackEventRequest, req: Request):
-    """Ingest analytics events from frontend."""
-    # Try to extract user email if logged in
-    user_email = request.user_id
-    try:
-        # Since this endpoint can be called anonymously (before login),
-        # we don't enforce token presence, but we try to decode it if exists.
-        auth_header = req.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            current_user = await get_current_user(
-                auth_header
-            )  # Actually get_current_user needs Depends injected HTTPAuthorizationCredentials.
-            # We will just rely on the frontend passing the user_id for now for simplicity in public endpoints
-            pass
-    except Exception:
-        pass
+    """Ingest analytics events from frontend.
+
+    Anonymous events are accepted (pre-login analytics), but:
+    - event_name must match an alphanumeric allowlist
+    - properties payload is size-capped
+    - user_id from the request is *only* trusted if a valid Bearer token
+      verifies the same email — otherwise we record as anonymous.
+    Rate limiting is enforced globally via SlowAPI middleware.
+    """
+    # Validate event name to prevent log/db noise & analytics pollution
+    if not _EVENT_NAME_RE.match(request.event_name or ""):
+        raise HTTPException(status_code=400, detail="Invalid event_name")
+
+    # Cap payload size (frontend sometimes attaches debug objects)
+    serialized_props = json.dumps(request.properties or {})
+    if len(serialized_props) > _MAX_PROPERTIES_BYTES:
+        raise HTTPException(status_code=413, detail="properties too large")
+
+    # Verify user_id only if token is present and valid; never trust the
+    # request body for identity.
+    verified_email: str | None = None
+    auth_header = req.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            payload = await verify_google_token(token)
+            verified_email = payload.get("email")
+        except Exception:
+            verified_email = None
+
+    user_email = verified_email  # ignore client-supplied user_id entirely
 
     query = """
     INSERT INTO analytics_events (session_id, user_id, event_name, properties, timestamp)
@@ -56,11 +88,11 @@ async def track_event(request: TrackEventRequest, req: Request):
                 request.session_id,
                 user_email,
                 request.event_name,
-                json.dumps(request.properties),
+                serialized_props,
             )
     except Exception as e:
         logger.error(f"Failed to insert analytics event: {e}")
-        # Return success anyway so frontend doesn't crash on analytics failure
+        # Swallow DB errors so analytics failures don't break frontend UX
 
     return {"status": "success"}
 
@@ -70,6 +102,13 @@ async def get_dashboard_metrics(
     user_filter: str | None = None, user=Depends(get_admin_user)
 ):
     """Fetch dashboard metrics, restricted to admin."""
+    # Validate user_filter so it can never contribute SQL fragments —
+    # only a fixed keyword set, an email-shaped string, or empty.
+    if user_filter and user_filter not in _USER_FILTER_KEYWORDS:
+        if not _EMAIL_RE.match(user_filter):
+            raise HTTPException(
+                status_code=400, detail="Invalid user_filter value"
+            )
     try:
         async with db._get_connection() as conn:
             # Fetch all unique users to populate the dropdown

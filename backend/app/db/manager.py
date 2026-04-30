@@ -28,6 +28,50 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 
+# ---------------------------------------------------------------------------
+# SQL identifier safety
+# ---------------------------------------------------------------------------
+# Some queries below interpolate column names into SQL strings (asyncpg can
+# only parameterize values, not identifiers). To make this safe even if a
+# future contributor wires user input into the call site, every column-name
+# interpolation MUST go through `_safe_column()`, which raises if the value
+# isn't in a hardcoded allowlist. Combined with the regex sanity check this
+# eliminates SQL injection via dynamic identifiers.
+_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _safe_column(name: str, allowed: set[str]) -> str:
+    """Return `name` if it is in `allowed` and matches a strict identifier
+    pattern. Raise ValueError otherwise. Use the result inside f-string SQL
+    in place of an unchecked variable.
+    """
+    if not isinstance(name, str) or not _IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier rejected: {name!r}")
+    if name not in allowed:
+        raise ValueError(f"Identifier not in allowlist: {name!r}")
+    return name
+
+
+# Allowlists of column names that the dynamic-SQL helpers below may target.
+_SETTINGS_API_KEY_COLUMNS: set[str] = {
+    "openaiapikey",
+    "anthropicapikey",
+    "groqapikey",
+    "ollamaapikey",
+    "geminiapikey",
+}
+_SETTINGS_API_KEY_COLUMNS_EXTENDED: set[str] = _SETTINGS_API_KEY_COLUMNS | {
+    "deepgramapikey",
+}
+_TRANSCRIPT_API_KEY_COLUMNS: set[str] = {
+    "whisperapikey",
+    "deepgramapikey",
+    "elevenlabsapikey",
+    "groqapikey",
+    "openaiapikey",
+}
+
+
 class DatabaseManager:
     _pool = None
 
@@ -1072,7 +1116,7 @@ class DatabaseManager:
         if provider not in provider_map:
             raise ValueError(f"Invalid provider: {provider}")
 
-        column_name = provider_map[provider]
+        column_name = _safe_column(provider_map[provider], _SETTINGS_API_KEY_COLUMNS)
 
         encrypted_key = encrypt_key(api_key)
         try:
@@ -1118,7 +1162,9 @@ class DatabaseManager:
         if provider not in provider_map:
             return ""
 
-        column_name = provider_map[provider]
+        column_name = _safe_column(
+            provider_map[provider], _SETTINGS_API_KEY_COLUMNS_EXTENDED
+        )
         async with self._get_connection() as conn:
             val = await conn.fetchval(
                 f"SELECT \"{column_name}\" FROM settings WHERE id = '1'"
@@ -1584,7 +1630,9 @@ class DatabaseManager:
         if provider not in provider_map:
             raise ValueError(f"Invalid provider: {provider}")
 
-        column_name = provider_map[provider]
+        column_name = _safe_column(
+            provider_map[provider], _TRANSCRIPT_API_KEY_COLUMNS
+        )
         async with self._get_connection() as conn:
             val = await conn.fetchval(
                 f"SELECT \"{column_name}\" FROM transcript_settings WHERE id = '1'"
@@ -2867,7 +2915,9 @@ class DatabaseManager:
         if provider not in provider_map:
             raise ValueError(f"Invalid provider: {provider}")
 
-        column_name = provider_map[provider]
+        column_name = _safe_column(
+            provider_map[provider], _SETTINGS_API_KEY_COLUMNS
+        )
         async with self._get_connection() as conn:
             await conn.execute(
                 f"UPDATE settings SET \"{column_name}\" = NULL WHERE id = '1'"

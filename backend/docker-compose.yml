@@ -18,6 +18,18 @@ services:
     volumes:
       - meeting_redis_data:/data
 
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: meeting_copilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - meeting_postgres_data:/var/lib/postgresql/data
+
   # Meeting Summarizer Python App (Windows/Linux)
   meeting-copilot-backend:
     build:
@@ -251,6 +263,8 @@ volumes:
   meeting_app_logs:
     driver: local
   meeting_redis_data:
+    driver: local
+  meeting_postgres_data:
     driver: local
 
 # Networks (optional)

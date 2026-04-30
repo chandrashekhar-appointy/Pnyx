@@ -1,0 +1,14 @@
+# gitleaks config — used by the secret-scan CI job.
+# Defaults are sensible; this file just documents project-specific allowlists.
+
+title = "Meeting Co-Pilot Gitleaks Config"
+
+[allowlist]
+description = "Skip vendored / lockfile / sample data"
+paths = [
+    '''.*pnpm-lock\.yaml''',
+    '''.*package-lock\.json''',
+    '''node_modules/.*''',
+    '''.*\.example$''',
+    '''docs/.*''',
+]

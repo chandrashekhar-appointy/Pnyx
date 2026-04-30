@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 # Environment variables
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-# logger.info(f"DEBUG AUTH: Loaded GOOGLE_CLIENT_ID: '{GOOGLE_CLIENT_ID}'")
 
 # For Google, we fetch public keys from their endpoint
 GOOGLE_CERTS_URL = "https://www.googleapis.com/oauth2/v3/certs"
@@ -42,7 +41,7 @@ async def get_google_public_keys() -> Dict[str, Any]:
                 # Update cache
                 _google_keys_cache = keys
                 _google_keys_expiry = current_time + CACHE_TTL
-                logger.info("DEBUG AUTH: Refreshed Google public keys cache")
+                logger.debug("Refreshed Google public keys cache")
                 return keys
             except Exception as e:
                 logger.warning(

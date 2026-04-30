@@ -1,7 +1,7 @@
 -- Migration: Column Cleanup (Step 2)
 -- Purpose: Remove legacy AI fields and redundant metadata for better performance/clarity
 -- Date: 2026-03-21
-
+-- destructive: ack
 -- 1. transcript_segments: Remove legacy Meetily columns
 ALTER TABLE transcript_segments 
   DROP COLUMN IF EXISTS summary,

@@ -118,7 +118,7 @@ async def test_ingest_transcript_host_emits_suggestion_and_intervention(monkeypa
         engine._temp_suggestions.append(
             HostSuggestion(
                 id="test-123",
-                event_type="urgency_risk",
+                event_type="open_question",
                 title="Decision needed",
                 content="Time is running out without a clear decision.",
                 confidence=0.92,
@@ -133,6 +133,7 @@ async def test_ingest_transcript_host_emits_suggestion_and_intervention(monkeypa
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(engine, "_supplement_host_events_from_heuristics", AsyncMock())
+    monkeypatch.setattr(engine, "_should_analyze_this_cycle", lambda x: (True, "test"))
 
     payload = await engine.ingest_transcript_host(
         text="We are still debating and no decision is made.",
@@ -140,9 +141,9 @@ async def test_ingest_transcript_host_emits_suggestion_and_intervention(monkeypa
     )
 
     assert len(payload["suggestions"]) == 1
-    assert payload["suggestions"][0]["event_type"] == "urgency_risk"
+    assert payload["suggestions"][0]["event_type"] == "open_question"
     assert len(payload["interventions"]) == 1
-    assert payload["interventions"][0]["event_type"] == "urgency_risk"
+    assert payload["interventions"][0]["event_type"] == "open_question"
 
 
 @pytest.mark.asyncio
@@ -158,6 +159,7 @@ async def test_ingest_transcript_host_handles_invalid_json(monkeypatch):
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(engine, "_supplement_host_events_from_heuristics", AsyncMock())
+    monkeypatch.setattr(engine, "_should_analyze_this_cycle", lambda x: (True, "test"))
 
     payload = await engine.ingest_transcript_host(
         text="random discussion",

@@ -1,8 +1,29 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, X, Check, ArrowRight } from 'lucide-react';
+import DOMPurify from 'isomorphic-dompurify';
 import { authFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import Analytics from '@/lib/analytics';
+
+const SAFE_INLINE_TAGS = ['strong', 'em', 'code', 'a', 'br'];
+const SAFE_INLINE_ATTRS = ['class', 'href', 'target', 'rel'];
+
+function sanitizeInline(html: string): string {
+    return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: SAFE_INLINE_TAGS,
+        ALLOWED_ATTR: SAFE_INLINE_ATTRS,
+        ALLOW_DATA_ATTR: false,
+    });
+}
+
+function escapeHtml(s: string): string {
+    return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 interface Message {
     role: 'user' | 'assistant';
@@ -39,17 +60,22 @@ function MarkdownContent({ content }: { content: string }) {
         };
 
         const renderInline = (line: string): React.ReactNode => {
-            // Bold: **text** or __text__
-            line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            line = line.replace(/__(.+?)__/g, '<strong>$1</strong>');
-            // Italic: *text* or _text_
-            line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            // Code: `code`
-            line = line.replace(/`([^`]+)`/g, '<code class="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">$1</code>');
-            // Links: [text](url)
-            line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="text-blue-500 underline">$1</a>');
-
-            return <span dangerouslySetInnerHTML={{ __html: line }} />;
+            // Escape any raw HTML in the source first so AI/user-provided <script> etc. cannot execute.
+            let safe = escapeHtml(line);
+            // Re-introduce a small allowlist of inline markdown formatting.
+            safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            safe = safe.replace(/__(.+?)__/g, '<strong>$1</strong>');
+            safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            safe = safe.replace(/`([^`]+)`/g, '<code class="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">$1</code>');
+            safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
+                // Block javascript:/data: URLs — only http(s)/mailto/relative.
+                const trimmed = url.trim();
+                const ok = /^(https?:|mailto:|\/|#)/i.test(trimmed);
+                const href = ok ? trimmed : '#';
+                return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-blue-500 underline">${text}</a>`;
+            });
+            // Final defense in depth — DOMPurify strips anything still dangerous.
+            return <span dangerouslySetInnerHTML={{ __html: sanitizeInline(safe) }} />;
         };
 
         lines.forEach((line, index) => {

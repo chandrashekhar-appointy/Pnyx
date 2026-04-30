@@ -1,0 +1,66 @@
+name: Synthetic Production Monitoring
+
+on:
+  schedule:
+    # Every 15 minutes
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  synthetic-checks:
+    name: Prod Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run synthetic monitoring
+        working-directory: frontend
+        env:
+          SYNTHETIC_BASE_URL: ${{ secrets.PROD_URL || 'https://meet.quexio.com' }}
+          SYNTHETIC_BACKEND_URL: ${{ secrets.PROD_BACKEND_URL || 'https://meet.quexio.com' }}
+          E2E_REPORT_DIR: ../test-reports/synthetic
+        run: |
+          npx playwright test \
+            --config playwright.synthetic.config.ts \
+            --reporter=json,list
+
+      - name: Upload results on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: synthetic-failure-${{ github.run_number }}
+          path: test-reports/synthetic/
+          retention-days: 7
+
+      # Optional: Send alert on failure (uncomment if you have Slack webhook)
+      # - name: Alert on failure
+      #   if: failure()
+      #   uses: slackapi/slack-github-action@v1.24.0
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      #   with:
+      #     payload: |
+      #       {
+      #         "text": "🚨 Synthetic monitoring FAILED for meet.quexio.com\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      #       }

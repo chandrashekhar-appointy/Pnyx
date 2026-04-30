@@ -1,3 +1,36 @@
 -r requirements.txt
+
+# Core test runner
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
+pytest-anyio>=0.0.0
+anyio>=4.0.0
+
+# Coverage & reporting
+pytest-cov>=5.0.0
+pytest-html>=4.1.1
+pytest-md-report>=0.6.2
+pytest-json-report>=1.5.0
+
+# HTTP/WebSocket mocking
+respx>=0.21.1
+pytest-httpx>=0.30.0
+httpx-ws>=0.6.0
+
+# Ephemeral infrastructure
+testcontainers[postgres,redis]>=4.7.0
+fakeredis>=2.23.0
+
+# Quality & static analysis
+ruff>=0.5.0
+mypy>=1.10.0
+
+# Mutation testing
+mutmut>=2.5.0
+
+# LLM eval (golden set scoring)
+deepeval>=1.0.0; python_version >= "3.10"
+
+# Misc helpers used across the suite
+freezegun>=1.5.0
+faker>=24.0.0
