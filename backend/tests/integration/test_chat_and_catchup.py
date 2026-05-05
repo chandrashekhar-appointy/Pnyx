@@ -37,7 +37,8 @@ async def test_chat_meeting_streams_text(async_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_catch_up_streams_summary(async_client, monkeypatch):
-    async def fake_get_api_key(provider: str, user_email: str | None = None):
+    from typing import Optional
+    async def fake_get_api_key(provider: str, user_email: Optional[str] = None):
         return "fake-key"
 
     async def fake_stream_content_text_async(**kwargs):

@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 try:
     from ..deps import get_current_user
@@ -58,7 +58,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_error_for_ui(raw: str | None) -> str | None:
+def _sanitize_error_for_ui(raw: Optional[str]) -> Optional[str]:
     """
     Convert internal/provider errors into safe, user-facing messages.
     Raw error details remain in backend logs for debugging.

@@ -2,7 +2,8 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc
 from typing import Dict, List, Optional
 
 import httpx
@@ -47,7 +48,21 @@ class CalendarReminderScheduler:
             or os.getenv("CELERY_BROKER_URL")
             or "redis://localhost:6379/0"
         )
-        self.redis = redis.from_url(redis_url)
+        
+        # In development, fallback to fakeredis if real Redis is missing
+        if os.getenv("ENVIRONMENT") == "development" or os.getenv("NODE_ENV") == "development":
+            try:
+                # Ping test
+                import redis as redis_sync
+                r = redis_sync.from_url(redis_url)
+                r.ping()
+                self.redis = redis.from_url(redis_url)
+            except Exception:
+                logger.warning("[CalendarReminder] Redis not reachable, falling back to fakeredis")
+                import fakeredis.aioredis
+                self.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        else:
+            self.redis = redis.from_url(redis_url)
         self.worker_id = str(uuid.uuid4())
         self.lock_key = "calendar_scheduler_leader_lock"
         # TTL should be longer than the loop interval to prevent flapping
@@ -274,9 +289,12 @@ class CalendarReminderScheduler:
 
             # If lock exists, check if we own it (refresh)
             current_owner = await self.redis.get(self.lock_key)
-            if current_owner and current_owner.decode() == self.worker_id:
-                await self.redis.expire(self.lock_key, self.lock_ttl)
-                return True
+            if current_owner:
+                # Handle both bytes and str (fakeredis with decode_responses=True returns str)
+                owner_str = current_owner.decode() if hasattr(current_owner, "decode") else current_owner
+                if owner_str == self.worker_id:
+                    await self.redis.expire(self.lock_key, self.lock_ttl)
+                    return True
 
             return False
         except Exception as e:

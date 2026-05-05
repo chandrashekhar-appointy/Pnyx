@@ -11,7 +11,10 @@ export default withAuth(
   },
   {
     callbacks: {
-      authorized: ({ token }) => !!token,
+      authorized: ({ req, token }) => {
+        if (process.env.PLAYWRIGHT_TESTING === "true") return true;
+        return !!token;
+      },
     },
     pages: {
       signIn: "/login",

@@ -2,7 +2,8 @@
 const isProd = process.env.NODE_ENV === 'production';
 
 const backendOrigin =
-  process.env.NEXT_PUBLIC_BACKEND_ORIGIN || 'https://meet.quexio.com';
+  process.env.NEXT_PUBLIC_BACKEND_ORIGIN || 
+  (process.env.NODE_ENV === 'development' ? 'http://localhost:5167' : 'https://pnyx-dev-206432.bifrost.saastack.site');
 const wsOrigin = backendOrigin.replace(/^http/, 'ws');
 
 // CSP — keep loose enough for Next.js + posthog + google sign-in to function

@@ -13,6 +13,14 @@ from typing import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
+
+# Global Redis mock using fakeredis — must happen BEFORE app imports
+import fakeredis.aioredis
+import redis.asyncio
+_fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+redis.asyncio.from_url = lambda *args, **kwargs: _fake_redis
+redis.asyncio.Redis = lambda *args, **kwargs: _fake_redis
+
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 

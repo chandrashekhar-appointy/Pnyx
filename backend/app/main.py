@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from typing import Optional
 from dotenv import load_dotenv
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -173,6 +174,12 @@ async def startup_event():
 
     db_url = os.getenv("DATABASE_URL")
     if db_url:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(db_url)
+            logger.info(f"🎯 DATABASE_URL check: scheme={parsed.scheme}, host={parsed.hostname}, port={parsed.port}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not parse DATABASE_URL for debug: {e}")
         await DatabaseManager.init_pool(db_url)
 
     # Validate GCP bucket exists at startup so a name typo fails loudly with a
@@ -261,7 +268,7 @@ _RECORDINGS_BASE = Path(os.getenv("LOCAL_RECORDINGS_DIR", "./data/recordings")).
 
 
 @app.get("/audio/signed/{token}")
-async def serve_signed_audio(token: str, download: str | None = None):
+async def serve_signed_audio(token: str, download: Optional[str] = None):
     decoded = verify_signed_token(token)
     if not decoded:
         raise HTTPException(status_code=403, detail="Invalid or expired token")

@@ -163,7 +163,7 @@ run_pytest_suite() {
 
     (
         cd "$BACKEND_DIR"
-        python -m pytest $pytest_args \
+        eval "python -m pytest $pytest_args" \
             --json-report --json-report-file="$report_subdir/results.json" \
             --tb=short --no-header -q \
             2>&1
@@ -302,7 +302,7 @@ for suite in "${SUITES[@]}"; do
 
         # ── Backend: integration only ────────────────────────────────────
         integration)
-            run_pytest_suite "integration" "tests/integration -m 'not security and not chaos and not contract and not integration'"
+            run_pytest_suite "integration" "tests/integration -m \"not security and not chaos and not contract\""
             ;;
 
         # ── Security regression ──────────────────────────────────────────

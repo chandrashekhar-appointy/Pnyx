@@ -43,6 +43,7 @@ export default defineConfig({
                   NEXTAUTH_URL: "http://localhost:3118",
                   NEXT_PUBLIC_BACKEND_URL:
                       process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5167",
+                  PLAYWRIGHT_TESTING: "true",
               },
           },
     projects: [

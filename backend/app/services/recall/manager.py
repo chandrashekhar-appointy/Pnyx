@@ -71,7 +71,21 @@ class RecallManager:
             or os.getenv("CELERY_BROKER_URL")
             or "redis://localhost:6379/0"
         )
-        self.redis = aioredis.from_url(redis_url)
+        
+        # In development, fallback to fakeredis if real Redis is missing
+        if os.getenv("ENVIRONMENT") == "development" or os.getenv("NODE_ENV") == "development":
+            try:
+                # Ping test
+                import redis
+                r = redis.from_url(redis_url)
+                r.ping()
+                self.redis = aioredis.from_url(redis_url)
+            except Exception:
+                logger.warning("[RecallManager] Redis not reachable, falling back to fakeredis")
+                import fakeredis.aioredis
+                self.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        else:
+            self.redis = aioredis.from_url(redis_url)
 
     async def remove_bot(self, recall_bot_id: str):
         """Instruct the bot to leave the meeting."""

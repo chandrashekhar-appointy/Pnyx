@@ -30,7 +30,7 @@ export default defineConfig({
         ["junit", { outputFile: path.join(REPORT_DIR, "junit.xml") }],
     ],
     use: {
-        baseURL: process.env.SYNTHETIC_BASE_URL || "https://meet.quexio.com",
+        baseURL: process.env.SYNTHETIC_BASE_URL || "https://pnyx-dev-206432.bifrost.saastack.site",
         trace: "retain-on-failure",
         screenshot: "only-on-failure",
         video: "off",

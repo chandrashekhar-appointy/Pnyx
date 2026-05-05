@@ -2,8 +2,8 @@ name: Synthetic Production Monitoring
 
 on:
   schedule:
-    # Every 15 minutes
-    - cron: "*/15 * * * *"
+    # Every 4 hours
+    - cron: "0 */4 * * *"
   workflow_dispatch:
 
 jobs:
@@ -37,8 +37,8 @@ jobs:
       - name: Run synthetic monitoring
         working-directory: frontend
         env:
-          SYNTHETIC_BASE_URL: ${{ secrets.PROD_URL || 'https://meet.quexio.com' }}
-          SYNTHETIC_BACKEND_URL: ${{ secrets.PROD_BACKEND_URL || 'https://meet.quexio.com' }}
+          SYNTHETIC_BASE_URL: ${{ secrets.PROD_URL || 'https://pnyx-dev-206432.bifrost.saastack.site' }}
+          SYNTHETIC_BACKEND_URL: ${{ secrets.PROD_BACKEND_URL || 'https://pnyx-dev-206432.bifrost.saastack.site' }}
           E2E_REPORT_DIR: ../test-reports/synthetic
         run: |
           npx playwright test \

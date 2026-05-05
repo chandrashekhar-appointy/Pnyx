@@ -47,11 +47,13 @@ class StreamingTranscriptionManager:
 
         # VAD Initialization Strategy
         self.vad = None
+        vad_threshold = float(os.getenv("STREAMING_VAD_THRESHOLD", "0.5"))
 
         # 1. TenVAD (High Performance C++)
         try:
-            self.vad = TenVAD(threshold=0.5)
-            logger.info("✅ Using TenVAD (C++ based) with threshold 0.5")
+            logger.info("🎯 Attempting to initialize TenVAD (Primary)")
+            self.vad = TenVAD(threshold=vad_threshold)
+            logger.info(f"✅ Using TenVAD (C++ based) with threshold {vad_threshold}")
         except (ImportError, Exception) as e:
             logger.warning(f"⚠️ TenVAD not available or failed to load: {e}")
 
@@ -59,8 +61,10 @@ class StreamingTranscriptionManager:
 
         # 3. Fallback to SimpleVAD (Amplitude based)
         if self.vad is None:
-            self.vad = SimpleVAD(threshold=0.08)
-            logger.info("ℹ️ Using SimpleVAD (Fallback)")
+            simple_threshold = float(os.getenv("STREAMING_SIMPLE_VAD_THRESHOLD", "0.08"))
+            logger.info(f"🎯 Falling back to SimpleVAD (Threshold: {simple_threshold})")
+            self.vad = SimpleVAD(threshold=simple_threshold)
+            logger.info("ℹ️ SimpleVAD initialized as fallback")
 
         # IMPROVED: Optimized for real-time responsiveness
         # 6s window provides enough context for grammar, but is short enough to fail fast

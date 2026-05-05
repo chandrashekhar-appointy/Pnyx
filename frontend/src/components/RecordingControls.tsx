@@ -607,6 +607,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           void handleUserStartRequest();
                         }}
                         disabled={isStarting || isProcessing || isRecordingDisabled}
+                        aria-label={isStarting ? 'Starting Pnyx' : 'Start Pnyx'}
                         className={`w-10 h-10 flex items-center justify-center ${isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
                           } rounded-full text-white transition-colors relative`}
                       >

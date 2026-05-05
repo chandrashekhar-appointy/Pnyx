@@ -454,6 +454,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => { Analytics.trackNavigation('home', 'sidebar_collapsed'); router.push('/'); }}
+                aria-label="Home"
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -470,6 +471,7 @@ const Sidebar: React.FC = () => {
               <button
                 onClick={handleRecordingToggle}
                 disabled={isRecording}
+                aria-label={isRecording ? "Stop Recording" : "Start Recording"}
                 className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors duration-150 shadow-sm`}
               >
                 {isRecording ? (
@@ -491,6 +493,7 @@ const Sidebar: React.FC = () => {
                   if (isCollapsed) toggleCollapse();
                   toggleFolder('meetings');
                 }}
+                aria-label="Meeting Notes"
                 className={`p-2 rounded-lg transition-colors duration-150 ${isMeetingPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -506,6 +509,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar_collapsed'); router.push('/shared-notes'); }}
+                aria-label="Shared with Me"
                 className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/shared-notes' ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -529,6 +533,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => { Analytics.trackNavigation('settings', 'sidebar_collapsed'); router.push('/settings'); }}
+                aria-label="Settings"
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
               >
@@ -545,6 +550,7 @@ const Sidebar: React.FC = () => {
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
                   <button
+                    aria-label="More Options"
                     className={`p-2 rounded-lg transition-colors duration-150 ${
                       (pathname === '/feedback' || isSloPage || pathname === '/dashboard') ? 'bg-gray-100' : 'hover:bg-gray-100'
                     }`}
@@ -582,6 +588,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => { Analytics.trackLogoutClicked('sidebar_collapsed'); sessionStorage.clear(); localStorage.removeItem('calendarPromptSeen'); signOut(); }}
+                aria-label="Log Out"
                 className="p-2 rounded-lg transition-colors duration-150 hover:bg-red-50 group"
               >
                 <LogOut className="w-5 h-5 text-gray-600 group-hover:text-red-500" />
@@ -723,6 +730,7 @@ const Sidebar: React.FC = () => {
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
+        aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
         className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
         style={{ transform: 'translateX(50%)' }}
       >

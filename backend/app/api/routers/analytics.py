@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import json
 import logging
@@ -28,9 +28,9 @@ db = DatabaseManager()
 class TrackEventRequest(BaseModel):
     event_name: str
     properties: Dict[str, Any] = {}
-    session_id: str | None = None
-    user_id: str | None = None
-    timestamp: str | None = None
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    timestamp: Optional[str] = None
 
 
 _EVENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,80}$")
@@ -64,7 +64,7 @@ async def track_event(request: TrackEventRequest, req: Request):
 
     # Verify user_id only if token is present and valid; never trust the
     # request body for identity.
-    verified_email: str | None = None
+    verified_email: Optional[str] = None
     auth_header = req.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip()
@@ -99,7 +99,7 @@ async def track_event(request: TrackEventRequest, req: Request):
 
 @router.get("/dashboard/metrics")
 async def get_dashboard_metrics(
-    user_filter: str | None = None, user=Depends(get_admin_user)
+    user_filter: Optional[str] = None, user=Depends(get_admin_user)
 ):
     """Fetch dashboard metrics, restricted to admin."""
     # Validate user_filter so it can never contribute SQL fragments —

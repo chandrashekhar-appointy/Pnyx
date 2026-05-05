@@ -281,7 +281,8 @@ def async_client_factory():
     from app.api.routers import audio as audio_router
     from app.schemas.user import User
 
-    async def _factory(patches: dict | None = None):
+    from typing import Optional
+    async def _factory(patches: Optional[dict] = None):
         app = FastAPI()
         app.include_router(audio_router.router)
         app.include_router(chat_router.router)
