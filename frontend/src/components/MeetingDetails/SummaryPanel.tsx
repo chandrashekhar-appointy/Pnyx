@@ -2,14 +2,16 @@
 
 import { Summary, SummaryResponse, Transcript } from '@/types';
 import { EditableTitle } from '@/components/EditableTitle';
-import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
+import dynamic from 'next/dynamic';
+const BlockNoteSummaryView = dynamic(() => import('@/components/AISummary/BlockNoteSummaryView').then(mod => mod.BlockNoteSummaryView), { ssr: false });
+import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
 import { RefObject, useState } from 'react';
-import { RefineNotesSidebar } from './RefineNotesSidebar';
+const RefineNotesSidebar = dynamic(() => import('./RefineNotesSidebar').then(mod => mod.RefineNotesSidebar), { ssr: false });
 import { MeetingAIHostSkillDialog } from './MeetingAIHostSkillDialog';
 
 import { Bot, Trash2, X } from 'lucide-react'; // Add Trash2 and X icon

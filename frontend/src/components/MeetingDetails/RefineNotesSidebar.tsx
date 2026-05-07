@@ -9,6 +9,7 @@ const SAFE_INLINE_TAGS = ['strong', 'em', 'code', 'a', 'br'];
 const SAFE_INLINE_ATTRS = ['class', 'href', 'target', 'rel'];
 
 function sanitizeInline(html: string): string {
+    if (typeof window === 'undefined') return html; // Skip during SSR to avoid jsdom build errors
     return DOMPurify.sanitize(html, {
         ALLOWED_TAGS: SAFE_INLINE_TAGS,
         ALLOWED_ATTR: SAFE_INLINE_ATTRS,

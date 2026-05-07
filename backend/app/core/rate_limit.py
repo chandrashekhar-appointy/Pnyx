@@ -11,7 +11,6 @@ Default policy is permissive; expensive routes opt into tighter limits with
 import hashlib
 import logging
 import os
-from typing import Optional
 
 from fastapi import Request
 from slowapi import Limiter

@@ -14,8 +14,7 @@ import hmac
 import json
 import logging
 import os
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import redis.asyncio as aioredis
@@ -87,7 +86,7 @@ class RecallManager:
         else:
             self.redis = aioredis.from_url(redis_url)
 
-    async def remove_bot(self, recall_bot_id: str):
+    async def remove_bot_by_id(self, recall_bot_id: str):
         """Instruct the bot to leave the meeting."""
         logger.info("[RecallManager] Manually removing bot: %s", recall_bot_id)
         try:
@@ -359,7 +358,7 @@ class RecallManager:
 
         speaker = transcript_data.get("speaker") or transcript_data.get("speaker_name") or "Unknown"
         is_final = transcript_data.get("is_final", event_type == "transcript.data")
-        segment_index = data.get("sequence_id") or data.get("segment_id") or 0
+        data.get("sequence_id") or data.get("segment_id") or 0
         start_time = transcript_data.get("start_time") or transcript_data.get("start_ts")
         end_time = transcript_data.get("end_time") or transcript_data.get("end_ts")
 

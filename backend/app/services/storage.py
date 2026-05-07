@@ -60,7 +60,7 @@ def get_gcp_bucket():
                 _gcp_client = storage.Client(
                     credentials=credentials, project=credentials.project_id
                 )
-            except Exception as cred_err:
+            except Exception:
                 # Fallback: try loading json manually if the strict parser fails on some fields
                 import json
 

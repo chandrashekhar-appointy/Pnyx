@@ -403,7 +403,7 @@ class CreditManager:
         _, _, pk = _redis_keys(user_email)
 
         # Atomically increment in Redis
-        new_purchased = await self.redis.incrby(pk, amount)
+        await self.redis.incrby(pk, amount)
 
         # Update Postgres
         async with self.db._get_connection() as conn:
@@ -456,7 +456,7 @@ class CreditManager:
         _, ak, _ = _redis_keys(user_email)
 
         # Update Redis
-        new_admin = await self.redis.incrby(ak, amount)
+        await self.redis.incrby(ak, amount)
 
         # Update Postgres user_credits
         async with self.db._get_connection() as conn:

@@ -2,12 +2,10 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
-UTC = timezone.utc
-from typing import Dict, List, Optional
-
 import httpx
 import redis.asyncio as redis
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
 
 try:
     from ...db import DatabaseManager
@@ -23,6 +21,7 @@ except (ImportError, ValueError):
         from services.calendar.google_oauth import GoogleCalendarOAuthService
         from services.calendar.reminder_email import CalendarReminderEmailService
 
+UTC = timezone.utc
 logger = logging.getLogger(__name__)
 
 
@@ -236,7 +235,7 @@ class CalendarReminderScheduler:
                     f"[Reaper] Forcing bot leave for recall_bot_id={bot['recall_bot_id']} "
                     f"meeting={bot['meeting_id']} (Created: {bot['created_at']})"
                 )
-                await self.recall_manager.remove_bot(bot["recall_bot_id"])
+                await self.recall_manager.remove_bot_by_id(bot["recall_bot_id"])
         except Exception as e:
             logger.error(f"[Reaper] Error in reaper loop: {e}")
 

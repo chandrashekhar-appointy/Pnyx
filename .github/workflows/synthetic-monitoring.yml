@@ -1,9 +1,9 @@
 name: Synthetic Production Monitoring
 
 on:
-  schedule:
-    # Every 4 hours
-    - cron: "0 */4 * * *"
+#   schedule:
+#     # Every 4 hours
+#     - cron: "0 */4 * * *"
   workflow_dispatch:
 
 jobs:

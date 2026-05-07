@@ -1,11 +1,10 @@
 import os
 import logging
 import asyncio
-import subprocess
 import uuid
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional
 
 import aiofiles
 
@@ -250,7 +249,7 @@ class FileProcessor:
                 if wav_path and wav_path.exists():
                     try:
                         os.unlink(wav_path)
-                    except:
+                    except Exception:
                         pass
 
             # 5. Generate Summary
@@ -277,7 +276,7 @@ class FileProcessor:
                 # pcm_path is defined in local scope if success
                 if "pcm_path" in locals() and pcm_path and pcm_path.exists():
                     os.unlink(pcm_path)
-            except Exception as e:
+            except Exception:
                 pass
 
             # Cleanup compressed temp path
@@ -296,7 +295,7 @@ class FileProcessor:
                 rec_dir = RECORDING_DIR / meeting_id
                 if rec_dir.exists() and not any(rec_dir.iterdir()):
                     rec_dir.rmdir()
-            except:
+            except Exception:
                 pass
 
     async def _convert_to_pcm(

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 import logging
 import os
 import re

@@ -12,7 +12,7 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/gcp-service-account.json"
 
 # In container, we are in /app, so imports should work directly
 try:
-    from storage import StorageService, STORAGE_TYPE
+    from storage import StorageService
     from audio_recorder import AudioRecorder
     import aiofiles
 except ImportError as e:

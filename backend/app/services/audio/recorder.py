@@ -21,7 +21,6 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime
-import struct
 import uuid
 
 logger = logging.getLogger(__name__)

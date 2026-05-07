@@ -68,6 +68,7 @@ class PostRecordingService:
         self,
         meeting_id: str,
         trigger_diarization: bool = False,
+        trigger_notes: bool = False,
         user_email: Optional[str] = None,
         transcript_payload: Optional[List[Dict]] = None,
     ) -> Dict:
@@ -373,6 +374,11 @@ class PostRecordingService:
                             self._trigger_diarization(meeting_id, user_email)
                         )
 
+                    if trigger_notes:
+                        asyncio.create_task(
+                            self._trigger_notes_generation(meeting_id, user_email)
+                        )
+
                     return result
 
                 if not recording_dir.exists():
@@ -409,7 +415,7 @@ class PostRecordingService:
                         return result
 
                 if merged_pcm:
-                    logger.info(f"🎵 Step 2: Converting to WAV format")
+                    logger.info("🎵 Step 2: Converting to WAV format")
                     wav_path = await self._convert_to_wav(meeting_id, merged_pcm)
 
                     if not wav_path:
@@ -460,7 +466,7 @@ class PostRecordingService:
                 result["health"] = health
 
                 if self.storage_type == "gcp":
-                    logger.info(f"☁️ Step 3: Uploading to GCP")
+                    logger.info("☁️ Step 3: Uploading to GCP")
                     gcp_path = await self._upload_to_gcp(meeting_id, wav_path)
 
                     if gcp_path:
@@ -481,7 +487,7 @@ class PostRecordingService:
                             )
                             if not recovered:
                                 logger.warning(
-                                    f"GCP upload failed recovery health check, keeping local files"
+                                    "GCP upload failed recovery health check, keeping local files"
                                 )
                                 result["status"] = "recovery_failed"
                                 result["error"] = (
@@ -506,18 +512,18 @@ class PostRecordingService:
 
                         result["health"] = remote_health
                         if self.delete_local_after_upload:
-                            logger.info(f"🗑️ Step 4: Cleaning up local files")
+                            logger.info("🗑️ Step 4: Cleaning up local files")
                             await self._cleanup_local(meeting_id, keep_wav=False)
                             result["local_cleaned"] = True
                     else:
                         logger.warning(
-                            f"GCP upload failed verification, keeping local files"
+                            "GCP upload failed verification, keeping local files"
                         )
                         result["status"] = "verification_failed"
                         result["error"] = "Uploaded artifact could not be verified"
                         return result
                 else:
-                    logger.info(f"📁 Step 3: Local storage mode - skipping GCP upload")
+                    logger.info("📁 Step 3: Local storage mode - skipping GCP upload")
 
                 result["status"] = "completed"
                 logger.info(f"✅ Post-recording processing complete for {meeting_id}")
@@ -525,6 +531,11 @@ class PostRecordingService:
                 if trigger_diarization:
                     asyncio.create_task(
                         self._trigger_diarization(meeting_id, user_email)
+                    )
+
+                if trigger_notes:
+                    asyncio.create_task(
+                        self._trigger_notes_generation(meeting_id, user_email)
                     )
 
                 return result
@@ -949,7 +960,7 @@ class PostRecordingService:
                 logger.info(f"✅ Uploaded to GCP: {gcp_path}")
                 return gcp_path
             else:
-                logger.error(f"GCP upload returned False")
+                logger.error("GCP upload returned False")
                 return None
 
         except Exception as e:
@@ -1027,7 +1038,7 @@ class PostRecordingService:
             # Import here to avoid circular imports
             from ..audio.diarization import get_diarization_service
 
-            service = get_diarization_service()
+            get_diarization_service()
             logger.info(f"🎯 Auto-triggering diarization for {meeting_id}")
 
             # This would need proper integration with the diarization job system
@@ -1036,6 +1047,26 @@ class PostRecordingService:
 
         except Exception as e:
             logger.error(f"Failed to trigger diarization: {e}")
+
+    async def _trigger_notes_generation(
+        self, meeting_id: str, user_email: Optional[str] = None
+    ):
+        """Trigger background notes generation job."""
+        try:
+            logger.info(f"📝 Auto-triggering notes generation for {meeting_id}")
+            try:
+                from ...tasks.generate_notes import generate_meeting_notes_task
+            except (ImportError, ValueError):
+                from tasks.generate_notes import generate_meeting_notes_task
+                
+            generate_meeting_notes_task.delay(
+                meeting_id=meeting_id,
+                user_email=user_email or "default",
+                source="live_meeting",
+            )
+            logger.info(f"✅ Notes generation task queued for {meeting_id}")
+        except Exception as e:
+            logger.error(f"Failed to trigger notes generation: {e}")
 
 
 # Singleton instance

@@ -15,7 +15,6 @@ callers (api/routers/chat.py, transcripts.py) work without changes.
 
 import logging
 import os
-import asyncio
 from typing import List, Dict, Optional
 
 from dotenv import load_dotenv
@@ -27,22 +26,18 @@ from anthropic import AsyncAnthropic
 
 try:
     from ...db import DatabaseManager
-    from ...schemas.summary import SummaryResponse
     from ..gemini_client import (
         generate_content_text_async,
-        generate_content_text_sync,
         stream_content_text_async,
     )
 except (ImportError, ValueError):
     from db import DatabaseManager
-    from schemas.summary import SummaryResponse
     from services.gemini_client import (
         generate_content_text_async,
-        generate_content_text_sync,
         stream_content_text_async,
     )
 
-from .intent_classifier import IntentClassifier, QueryScope, ClassificationResult
+from .intent_classifier import IntentClassifier
 from .evidence_retriever import EvidenceRetriever, EvidenceBundle
 
 logger = logging.getLogger(__name__)

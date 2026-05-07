@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 

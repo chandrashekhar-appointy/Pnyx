@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from pydantic import BaseModel
 import json
 import logging
@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 try:
-    from ..deps import get_current_user, get_admin_user
+    from ..deps import get_admin_user
     from ...db import DatabaseManager
 except (ImportError, ValueError):
-    from api.deps import get_current_user, get_admin_user
+    from api.deps import get_admin_user
     from db import DatabaseManager
 
 db = DatabaseManager()

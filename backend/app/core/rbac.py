@@ -6,7 +6,6 @@ except (ImportError, ValueError):
     from schemas.user import User
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

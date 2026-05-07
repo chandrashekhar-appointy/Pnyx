@@ -4,9 +4,9 @@ import os
 import asyncio
 import hashlib
 import re
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List
-import logging
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
@@ -520,7 +520,7 @@ class DatabaseManager:
                 if isinstance(data.get("metadata"), str):
                     try:
                         data["metadata"] = json.loads(data["metadata"])
-                    except:
+                    except Exception:
                         pass
                 return data
             return None
@@ -2117,9 +2117,15 @@ class DatabaseManager:
         self, meeting_id: str, user_email: str, provider: str = "google"
     ) -> Optional[Dict]:
         async with self._get_connection() as conn:
+            meeting = await conn.fetchrow(
+                "SELECT created_at FROM meetings WHERE meeting_id = $1", meeting_id
+            )
+            if not meeting:
+                return None
+
             session = await conn.fetchrow(
                 """
-                SELECT metadata
+                SELECT metadata, started_at
                 FROM recording_sessions
                 WHERE meeting_id = $1
                   AND user_email = $2

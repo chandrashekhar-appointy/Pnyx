@@ -611,6 +611,7 @@ class DiarizationService:
         """
         start_time = datetime.utcnow()
         provider = provider or self.provider
+        audio_url = None
 
         if not self.enabled:
             return DiarizationResult(
@@ -968,7 +969,7 @@ class DiarizationService:
                     )
 
                 audio_url = upload_response.json().get("upload_url")
-                logger.info(f"Audio uploaded to AssemblyAI")
+                logger.info("Audio uploaded to AssemblyAI")
 
             # Step 2: Request transcription with diarization
             transcript_response = await client.post(
@@ -1144,7 +1145,6 @@ class DiarizationService:
 
         # 1. Prepare segments for the LLM
         # We need a format that is easy to parse back. JSON is best.
-        import json
 
         payload_segments = []
         for index, seg in enumerate(aligned_transcripts):

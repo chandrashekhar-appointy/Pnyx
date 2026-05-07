@@ -95,8 +95,6 @@ class CalendarReminderEmailRequest(BaseModel):
     attendees: Optional[List[str]] = None
     include_attendees: Optional[bool] = None
 
-from datetime import datetime
-from typing import Optional, List
 
 class SyncOAuthRequest(BaseModel):
     access_token: str

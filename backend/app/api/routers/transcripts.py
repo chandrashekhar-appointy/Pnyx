@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List
 import logging
 import json
 import uuid
@@ -25,8 +25,6 @@ try:
     from ...db import DatabaseManager
     from ...core.rbac import RBAC
     from ...services.summarization import SummarizationService
-    from ...services.audio.vad import SimpleVAD
-    from ...services.audio.groq_client import GroqTranscriptionClient
     from ...services.chat import ChatService
     from ...services.gemini_client import (
         generate_content_text_async,
@@ -50,8 +48,6 @@ except (ImportError, ValueError):
     from db import DatabaseManager
     from core.rbac import RBAC
     from services.summarization import SummarizationService
-    from services.audio.vad import SimpleVAD
-    from services.audio.groq_client import GroqTranscriptionClient
     from services.chat import ChatService
     from services.gemini_client import (
         generate_content_text_async,
@@ -81,101 +77,6 @@ DECISION_CUE_RE = re.compile(
 
 
 # --- Meeting Templates with Optimized Prompts ---
-def get_template_prompt(template_id: str) -> str:
-    """
-    Get the structured prompt for a specific meeting template.
-    Optimized for token efficiency while maintaining quality.
-    """
-    templates = {
-        "standard_meeting": """Generate professional meeting notes as valid JSON:
-
-{
-  "MeetingName": "Descriptive title from content",
-  "People": {"title": "Participants", "blocks": [{"content": "Name - Role"}]},
-  "SessionSummary": {"title": "Executive Summary", "blocks": [{"content": "2-3 paragraphs: purpose, topics, outcomes"}]},
-  "KeyItemsDecisions": {"title": "Key Decisions", "blocks": [{"content": "Decision - Rationale - Owner/Date"}]},
-  "ImmediateActionItems": {"title": "Action Items", "blocks": [{"content": "[Person] will [action] by [deadline]"}]},
-  "NextSteps": {"title": "Next Steps", "blocks": [{"content": "What's next - Timeline - Owner"}]},
-  "CriticalDeadlines": {"title": "Deadlines", "blocks": [{"content": "[Date] - [Deliverable] - Owner"}]},
-  "MeetingNotes": {"meeting_name": "Same as MeetingName", "sections": [{"title": "Topic", "blocks": [{"content": "Details"}]}]}
-}
-
-Rules: Extract names/dates/commitments. Make action items SMART. Capture discussions AND decisions. Flag blockers/risks. Be concise. Empty blocks [] if missing. Organize by topic.
-""",
-        "daily_standup": """Generate Daily Standup notes as valid JSON:
-
-{
-  "MeetingName": "Daily Standup - [Team] - [Date]",
-  "People": {"title": "Team Members", "blocks": [{"content": "Name - Role"}]},
-  "SessionSummary": {"title": "Overview", "blocks": [{"content": "Team progress, velocity, blockers"}]},
-  "MeetingNotes": {"meeting_name": "Same as MeetingName", "sections": [{"title": "[Person] - Updates", "blocks": [{"content": "✅ Done: [Task]"}, {"content": "🎯 Today: [Task]"}, {"content": "🚧 Blocked: [Issue]"}]}]},
-  "KeyItemsDecisions": {"title": "Decisions", "blocks": [{"content": "Decision - Context"}]},
-  "ImmediateActionItems": {"title": "Actions", "blocks": [{"content": "[Person] will [action] - By when"}]},
-  "CriticalDeadlines": {"title": "Sprint Deadlines", "blocks": [{"content": "[Date] - [Milestone]"}]},
-  "NextSteps": {"title": "Next Standup", "blocks": [{"content": "Items to track"}]}
-}
-
-Rules: One section per person. Use ✅ done, 🎯 today, 🚧 blocked. Extract task names/IDs. Highlight dependencies/blockers. Flag recurring issues. Keep brief.
-""",
-        "brainstorming": """Generate Brainstorming notes as valid JSON:
-
-{
-  "MeetingName": "Brainstorming - [Topic]",
-  "People": {"title": "Participants", "blocks": [{"content": "Name - Expertise"}]},
-  "SessionSummary": {"title": "Overview", "blocks": [{"content": "Problem statement"}, {"content": "Approach used"}, {"content": "Ideas count & selection"}]},
-  "MeetingNotes": {"meeting_name": "Same as MeetingName", "sections": [{"title": "Ideas - [Theme]", "blocks": [{"content": "💡 [Title]: Description - By [Person] - Pros/cons"}]}, {"title": "Top Ideas", "blocks": [{"content": "⭐ [Title]: Why selected - Next steps"}]}, {"title": "Parked", "blocks": [{"content": "🅿️ [Title]: Reason - Revisit conditions"}]}]},
-  "KeyItemsDecisions": {"title": "Decisions", "blocks": [{"content": "Ideas to pursue - Criteria - Timeline"}]},
-  "ImmediateActionItems": {"title": "Validation", "blocks": [{"content": "[Person] will [test] [idea] by [date]"}]},
-  "CriticalDeadlines": {"title": "Validation Deadlines", "blocks": [{"content": "[Date] - [Milestone] - Owner"}]},
-  "NextSteps": {"title": "Follow-up", "blocks": [{"content": "Reconvene when - Prepare what"}]}
-}
-
-Rules: Group by theme. Attribute ideas. Note WHY selected/parked. Document constraints. ID quick wins vs long-term. Use 💡 all, ⭐ selected, 🅿️ parked.
-""",
-        "interview": """Generate Interview Assessment as valid JSON:
-
-{
-  "MeetingName": "Interview - [Candidate] - [Position]",
-  "People": {"title": "Panel", "blocks": [{"content": "Name - Role - Focus"}]},
-  "SessionSummary": {"title": "Candidate Overview", "blocks": [{"content": "Background summary"}, {"content": "Format & areas"}, {"content": "Overall: Hire/No Hire/Maybe"}]},
-  "MeetingNotes": {"meeting_name": "Same as MeetingName", "sections": [{"title": "Technical Skills", "blocks": [{"content": "✅ Strength: [Skill] - Evidence"}, {"content": "⚠️ Gap: [Skill] - Example"}]}, {"title": "Behavioral", "blocks": [{"content": "✅ Strength: [Skill] - Examples"}, {"content": "⚠️ Concern: [Area] - Behaviors"}]}, {"title": "Cultural Fit", "blocks": [{"content": "Fit assessment - Examples"}]}, {"title": "Candidate Questions", "blocks": [{"content": "Question - Quality"}]}]},
-  "KeyItemsDecisions": {"title": "Assessment", "blocks": [{"content": "Recommendation: [Strong Yes/Yes/Maybe/No/Strong No] - Why"}, {"content": "Salary: [If discussed]"}, {"content": "Notice: [If discussed]"}]},
-  "ImmediateActionItems": {"title": "Next Steps", "blocks": [{"content": "[Recruiter] will [action] by [date]"}]},
-  "NextSteps": {"title": "Follow-up", "blocks": [{"content": "References - Who"}, {"content": "Additional rounds - Focus"}, {"content": "Comp discussion"}]},
-  "CriticalDeadlines": {"title": "Timeline", "blocks": [{"content": "[Date] - Decision deadline"}]}
-}
-
-Rules: Use specific examples not impressions. Separate technical/soft skills. Note red flags professionally. Capture candidate questions. Document comp factually. Use ✅ strengths, ⚠️ gaps.
-""",
-        "project_kickoff": """Generate Project Kickoff notes as valid JSON:
-
-{
-  "MeetingName": "Project Kickoff - [Project]",
-  "People": {"title": "Team & Stakeholders", "blocks": [{"content": "Name - Role - Responsibilities"}]},
-  "SessionSummary": {"title": "Overview", "blocks": [{"content": "Vision & goals"}, {"content": "Success criteria & metrics"}, {"content": "Constraints (budget, timeline, resources)"}]},
-  "MeetingNotes": {"meeting_name": "Same as MeetingName", "sections": [{"title": "Scope", "blocks": [{"content": "✅ In: [Item] - Why"}, {"content": "❌ Out: [Item] - Why"}]}, {"title": "RACI", "blocks": [{"content": "[Person] - Responsible for [area] - Accountable to [who]"}]}, {"title": "Timeline", "blocks": [{"content": "[Date/Phase] - [Milestone] - Deliverables"}]}, {"title": "Risks", "blocks": [{"content": "🚨 [Risk] - Impact: H/M/L - Mitigation - Owner"}]}, {"title": "Dependencies", "blocks": [{"content": "Depends on [what] - Impact if delayed"}]}, {"title": "Communication", "blocks": [{"content": "Meeting cadence - Attendees - Purpose"}, {"content": "Status reports - Format - Frequency"}]}]},
-  "KeyItemsDecisions": {"title": "Decisions", "blocks": [{"content": "Decision on [what] - Rationale - Alternatives"}]},
-  "ImmediateActionItems": {"title": "Immediate Actions", "blocks": [{"content": "[Person] will [action] by [date]"}]},
-  "CriticalDeadlines": {"title": "Milestones", "blocks": [{"content": "[Date] - [Milestone] - Owner - Dependencies"}]},
-  "NextSteps": {"title": "Follow-up", "blocks": [{"content": "Next meeting: [Date] - Agenda"}, {"content": "Docs to create: [What] - Owner - Due"}]}
-}
-
-Rules: Clear in/out scope. Explicit roles. Assess risks early. Document decision rationale. Use ✅ in-scope, ❌ out, 🚨 risks. Flag dependencies.
-""",
-    }
-
-    templates[
-        "smart_notes"
-    ] = """Generate intelligent meeting notes as valid JSON. Do not force any rigid structure.
-Instead, read the transcript and let the content itself dictate the best headings, sections, bullet points, and formats (e.g. Action Items, Decisions, Summary only if they make sense).
-Return exactly this JSON:
-{
-  "MeetingName": "Descriptive title from content",
-  "MarkdownNotes": "Your fully formatted, custom markdown notes here..."
-}
-"""
-
-    return templates.get(template_id, templates["standard_meeting"])
 
 
 # Override prompt set with stricter anti-redundancy and meeting-title quality rules.
@@ -1242,10 +1143,10 @@ async def generate_notes_with_gemini_background(
         notes_audio_enabled = (
             os.getenv("NOTES_AUDIO_ENABLED", "false").lower() == "true"
         )
-        allow_audio = bool(use_audio_context) and notes_audio_enabled
-        effective_audio_mode = audio_mode or os.getenv(
-            "NOTES_AUDIO_DEFAULT_MODE", "auto"
-        )
+        bool(use_audio_context) and notes_audio_enabled
+        # effective_audio_mode = audio_mode or os.getenv(
+        #     "NOTES_AUDIO_DEFAULT_MODE", "auto"
+        # )
 
         # ---------------------------------------------------------------------
         # USER OVERRIDE: COMMENTED OUT AUDIO USAGE FOR NOTES GENERATION
@@ -1492,11 +1393,6 @@ async def generate_notes_with_gemini_background(
                         action_items.append(block.get("content", ""))
 
                 # Check if this is a regeneration
-                existing_shares = await db.get_shared_notes_for_user(user_email)
-                # Wait, getting shared notes FOR user means notes shared WITH user.
-                # We need to see if the host has already shared this meeting.
-                # Let's query using a custom check or get_shared_note for an attendee.
-                # A simple way: check if any shared note exists for this meeting.
                 async with db._get_connection() as conn:
                     existing_count = await conn.fetchval(
                         "SELECT COUNT(*) FROM shared_meeting_notes WHERE meeting_id = $1",
@@ -1578,7 +1474,7 @@ async def generate_notes_with_gemini_background(
                     "audio_mode_selected": "failed",
                 },
             )
-        except:
+        except Exception:
             pass
 
 
@@ -2031,6 +1927,20 @@ async def save_transcript(
             except Exception as rename_error:
                 logger.error(f"Failed to rename recording folder: {rename_error}")
 
+        # Initialize summary process status to indicate finalization has started
+        try:
+            async with db._get_connection() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO summary_processes (meeting_id, status, start_time, end_time)
+                    VALUES ($1, 'finalizing_audio', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (meeting_id) DO UPDATE SET status = 'finalizing_audio'
+                    """,
+                    meeting_id
+                )
+        except Exception as e:
+            logger.warning(f"Could not initialize summary process for {meeting_id}: {e}")
+
         # Trigger post-recording processing (merge, upload to GCP, cleanup) in background
         try:
             # Avoid premature finalize while WS session is still active.
@@ -2069,6 +1979,7 @@ async def save_transcript(
                 post_service.finalize_recording,
                 meeting_id,
                 trigger_diarization=False,
+                trigger_notes=True,
                 user_email=current_user.email,
             )
             logger.info(f"Scheduled post-recording processing for meeting {meeting_id}")
@@ -2357,7 +2268,7 @@ async def refine_notes(
             )
 
         # 2. Construct Prompt
-        refine_prompt = f"""You are an expert meeting notes editor.
+        f"""You are an expert meeting notes editor.
 Your task is to REFINE the Current Meeting Notes based strictly on the User Instruction and the provided Context (Transcript).
 
 Context (Meeting Transcript):

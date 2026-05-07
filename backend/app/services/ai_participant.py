@@ -33,7 +33,7 @@ try:
         HostSuggestion,
         MeetingHostState,
     )
-    from ..schemas.behavior_spec import BehaviorSpec, OutputCategory, build_default_spec
+    from ..schemas.behavior_spec import BehaviorSpec, build_default_spec
     from .gemini_client import generate_content_text_async
     from .ai_participant_skills import (
         load_system_skill_templates,
@@ -52,7 +52,7 @@ except (ImportError, ValueError):
         HostSuggestion,
         MeetingHostState,
     )
-    from schemas.behavior_spec import BehaviorSpec, OutputCategory, build_default_spec
+    from schemas.behavior_spec import BehaviorSpec, build_default_spec
     from services.gemini_client import generate_content_text_async
     from services.ai_participant_skills import (
         load_system_skill_templates,
@@ -984,7 +984,7 @@ class AIParticipantEngine:
             self._stats["llm_calls"] += 1
             # Run the agentic observer
             # It will call tools like add_decision and update_summary
-            result = await self.agent.run(
+            await self.agent.run(
                 self._build_host_prompt(transcript_window), deps=self, model=model
             )
             logger.info("[AIParticipant] Agent run complete.")

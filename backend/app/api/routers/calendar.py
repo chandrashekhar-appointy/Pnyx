@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -168,7 +169,6 @@ async def google_calendar_callback(
         params = urlencode({"calendar": "error", "reason": "oauth_failed"})
         return RedirectResponse(f"{frontend_settings_url}?{params}")
 
-from datetime import datetime
 
 @router.post("/sync-oauth")
 async def sync_oauth_tokens(

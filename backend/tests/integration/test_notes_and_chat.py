@@ -51,10 +51,11 @@ async def test_chat_routes_meeting_id_to_rag_service(async_client, monkeypatch):
         "model": "gemini",
         "model_name": "gemini-3-pro-preview",
         "context_text": "Decision: ship by Friday.",
+        "allowed_meeting_ids": ["meeting-rag-1"]
     }
     response = await async_client.post("/chat-meeting", json=payload)
     assert response.status_code == 200
-    assert captured.get("meeting_id") == "meeting-rag-1"
+    assert captured.get("allowed_meeting_ids") == ["meeting-rag-1"]
 
 
 @pytest.mark.anyio

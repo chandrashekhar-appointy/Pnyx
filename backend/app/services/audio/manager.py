@@ -19,9 +19,8 @@ import os
 from collections import deque
 from typing import Optional, Callable, Set, List, Dict, Any, Tuple
 
-from .groq_client import GroqTranscriptionClient
 from .buffer import RollingAudioBuffer
-from .vad import SimpleVAD, SileroVAD, TenVAD
+from .vad import SimpleVAD, TenVAD
 
 logger = logging.getLogger(__name__)
 
@@ -610,8 +609,7 @@ class StreamingTranscriptionManager:
         current_time = time.time()
         time_since_last = current_time - self.last_transcription_time
 
-        # Trigger transcription if:
-        # 1. Buffer is full
+        # 1. Buffer is full (or we want a fast start)
         # 2. Enough time passed since last transcribe
         # 3. We have heard speech recently (within the window duration)
         #    This prevents transcribing 12s of pure silence.
@@ -619,7 +617,13 @@ class StreamingTranscriptionManager:
             self.buffer.window_duration_ms / 1000
         )
 
-        if is_full and time_since_last >= self.min_transcription_interval:
+        # Allow transcribing earlier than 6 seconds for the very first utterance
+        is_first_transcription = self.last_transcription_time == 0
+        can_fast_start = is_first_transcription and buffer_duration >= 2500
+        # Reduce wait time slightly for faster updates
+        dynamic_interval = 2.0 if is_first_transcription else self.min_transcription_interval
+
+        if (is_full or can_fast_start) and time_since_last >= dynamic_interval:
             if has_recent_speech:
                 logger.info(
                     f"🚀 Transcription triggered (buffer={buffer_duration:.0f}ms)"
@@ -1068,7 +1072,7 @@ class StreamingTranscriptionManager:
         # Trigger 4: Complete sentence + stable (2+ repeats)
         elif self.same_text_count >= 2 and is_complete_sentence:
             trigger_reason = "sentence_complete"
-            logger.info(f"⏱️ SMART TRIGGER: Sentence complete + stable")
+            logger.info("⏱️ SMART TRIGGER: Sentence complete + stable")
 
         if trigger_reason:
             boundary_score = self._compute_boundary_score(

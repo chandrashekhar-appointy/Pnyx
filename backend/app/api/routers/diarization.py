@@ -22,9 +22,7 @@ try:
     from ...core.rbac import RBAC
     from ...services.audio.diarization import (
         get_diarization_service,
-        DiarizationService,
         DiarizationResult,
-        SpeakerSegment,
     )
     from ...services.audio.recorder import AudioRecorder
     from ...services.document_storage import DocumentStorageService
@@ -42,9 +40,7 @@ except (ImportError, ValueError):
     from core.rbac import RBAC
     from services.audio.diarization import (
         get_diarization_service,
-        DiarizationService,
         DiarizationResult,
-        SpeakerSegment,
     )
     from services.audio.recorder import AudioRecorder
     from services.document_storage import DocumentStorageService
@@ -167,7 +163,7 @@ async def run_diarization_job(meeting_id: str, provider: str, user_email: str):
         f"💎 Starting Diarization Job for {meeting_id} with provider: {provider}"
     )
     try:
-        start_time_total = datetime.utcnow()
+        datetime.utcnow()
         logger.info(f"🎯 Starting simplified diarization job for meeting {meeting_id}")
 
         diarization_service = get_diarization_service()
