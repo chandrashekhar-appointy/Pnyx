@@ -5,7 +5,7 @@ import asyncio
 try:
     from ...db import DatabaseManager
     from ...services.credit_manager import CreditManager
-    from ..deps import get_current_user, get_admin_user
+    from ..deps import get_admin_user
     from ...schemas.credits import (
         AdminCreditOverrideRequest,
         AdminSetUnlimitedRequest,
@@ -15,7 +15,7 @@ try:
 except (ImportError, ValueError):
     from db import DatabaseManager
     from services.credit_manager import CreditManager
-    from api.deps import get_current_user, get_admin_user
+    from api.deps import get_admin_user
     from schemas.credits import (
         AdminCreditOverrideRequest,
         AdminSetUnlimitedRequest,
@@ -35,7 +35,7 @@ async def reindex_all(admin: User = Depends(get_admin_user)):
     debug_logs = []
     try:
         try:
-            import sentence_transformers
+            import sentence_transformers  # noqa: F401
 
             debug_logs.append("sentence_transformers imported successfully")
         except ImportError:

@@ -1,0 +1,35 @@
+# Install: pip install pre-commit && pre-commit install
+# Or use the standalone: cp scripts/pre-commit-checklist.sh .git/hooks/pre-commit
+
+repos:
+  # ── Python lint ────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff
+        args: [check, --fix, --exit-non-zero-on-fix]
+        files: ^backend/
+
+  # ── Prevent committing test reports & env files ────────────────────────
+  - repo: local
+    hooks:
+      - id: block-test-reports
+        name: Block test-reports from commit
+        entry: bash -c 'echo "ERROR: test-reports/ files should not be committed" && exit 1'
+        language: system
+        files: ^test-reports/|TEST_REPORT\.md$
+        pass_filenames: false
+
+      - id: block-env-files
+        name: Block .env files from commit
+        entry: bash -c 'echo "ERROR: .env files should not be committed" && exit 1'
+        language: system
+        files: \.env\.(prod|staging|local|dev)$
+        pass_filenames: false
+
+  # ── Secret scanning ────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        args: [--config, .gitleaks.toml]

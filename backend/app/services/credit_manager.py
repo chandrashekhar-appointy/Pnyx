@@ -113,9 +113,25 @@ class CreditManager:
         self.ledger = LedgerService(self.db)
 
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.redis: aioredis.Redis = aioredis.from_url(
-            redis_url, decode_responses=True
-        )
+        
+        # In development, fallback to fakeredis if real Redis is missing
+        if os.getenv("ENVIRONMENT") == "development" or os.getenv("NODE_ENV") == "development":
+            try:
+                # Ping test
+                import redis
+                r = redis.from_url(redis_url)
+                r.ping()
+                self.redis: aioredis.Redis = aioredis.from_url(
+                    redis_url, decode_responses=True
+                )
+            except Exception:
+                logger.warning("[CreditManager] Redis not reachable, falling back to fakeredis")
+                import fakeredis.aioredis
+                self.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        else:
+            self.redis: aioredis.Redis = aioredis.from_url(
+                redis_url, decode_responses=True
+            )
 
         # Pre-register the Lua script (will be loaded on first use)
         self._deduct_script = self.redis.register_script(DEDUCT_CREDITS_LUA)
@@ -387,7 +403,7 @@ class CreditManager:
         _, _, pk = _redis_keys(user_email)
 
         # Atomically increment in Redis
-        new_purchased = await self.redis.incrby(pk, amount)
+        await self.redis.incrby(pk, amount)
 
         # Update Postgres
         async with self.db._get_connection() as conn:
@@ -440,7 +456,7 @@ class CreditManager:
         _, ak, _ = _redis_keys(user_email)
 
         # Update Redis
-        new_admin = await self.redis.incrby(ak, amount)
+        await self.redis.incrby(ak, amount)
 
         # Update Postgres user_credits
         async with self.db._get_connection() as conn:

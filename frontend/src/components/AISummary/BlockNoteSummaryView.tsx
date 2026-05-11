@@ -71,6 +71,63 @@ function detectSummaryFormat(data: any): { format: SummaryFormat; data: any } {
   return { format: 'legacy', data: null };
 }
 
+function legacySummaryToMarkdown(data: any): string {
+  if (!data || typeof data !== 'object') return '';
+
+  const lines: string[] = [];
+  const meetingName = data.MeetingName || data.meeting_name || data.title;
+  if (typeof meetingName === 'string' && meetingName.trim()) {
+    lines.push(`# ${meetingName.trim()}`, '');
+  }
+
+  const appendBlock = (block: any) => {
+    if (!block) return;
+    if (typeof block === 'string') {
+      if (block.trim()) lines.push(`- ${block.trim()}`);
+      return;
+    }
+    const text =
+      block.text ||
+      block.content ||
+      block.description ||
+      block.title ||
+      block.value;
+    if (typeof text === 'string' && text.trim()) {
+      lines.push(`- ${text.trim()}`);
+    }
+  };
+
+  const appendSection = (title: string, section: any) => {
+    const sectionTitle = section?.title || title;
+    if (sectionTitle) lines.push(`## ${String(sectionTitle).trim()}`);
+
+    const blocks = Array.isArray(section?.blocks)
+      ? section.blocks
+      : Array.isArray(section?.sections)
+        ? section.sections
+        : Array.isArray(section)
+          ? section
+          : [];
+
+    blocks.forEach(appendBlock);
+    lines.push('');
+  };
+
+  const meetingNotes = data.MeetingNotes;
+  if (meetingNotes?.sections && Array.isArray(meetingNotes.sections)) {
+    meetingNotes.sections.forEach((section: any, index: number) =>
+      appendSection(section?.title || `Section ${index + 1}`, section)
+    );
+  } else {
+    Object.entries(data).forEach(([key, section]) => {
+      if (key === 'MeetingName' || key === 'meeting_name' || key === 'title') return;
+      if (section && typeof section === 'object') appendSection(key, section);
+    });
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNoteSummaryViewProps>(({
   summaryData,
   onSave,
@@ -200,8 +257,14 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
           }
         }
 
-        // For legacy format - return empty (handled by parent)
-        console.warn('⚠️ Cannot generate markdown for legacy format, returning empty');
+        // For legacy format, convert the structured notes so Refine has real content.
+        if (format === 'legacy') {
+          const markdown = legacySummaryToMarkdown(summaryData);
+          console.log('📝 Converted legacy summary to markdown, length:', markdown.length);
+          return markdown;
+        }
+
+        console.warn('⚠️ Cannot generate markdown, returning empty');
         return '';
       } catch (err) {
         console.error('❌ Failed to generate markdown:', err);
@@ -209,7 +272,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       }
     },
     isDirty
-  }), [handleSave, isDirty, editor, format, currentBlocks, data]);
+  }), [handleSave, isDirty, editor, format, currentBlocks, data, summaryData]);
 
   // Render legacy format
   if (format === 'legacy') {

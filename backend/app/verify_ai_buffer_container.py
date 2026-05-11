@@ -1,7 +1,6 @@
 import asyncio
 import time
 import os
-import sys
 
 from services.ai_participant import AIParticipantEngine, MeetingContext
 

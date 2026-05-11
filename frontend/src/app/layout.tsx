@@ -4,6 +4,7 @@ import { Toaster } from 'sonner'
 import "sonner/dist/styles.css"
 import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { AuthProvider } from '@/components/AuthProvider'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Metadata } from 'next'
 import LayoutClient from './LayoutClient'
 
@@ -30,11 +31,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${sourceSans3.variable} font-sans`}>
-        <AuthProvider>
-          <AnalyticsProvider>
-            <LayoutClient>{children}</LayoutClient>
-          </AnalyticsProvider>
-        </AuthProvider>
+        <ErrorBoundary>
+          <AuthProvider>
+            <AnalyticsProvider>
+              <LayoutClient>{children}</LayoutClient>
+            </AnalyticsProvider>
+          </AuthProvider>
+        </ErrorBoundary>
         <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>

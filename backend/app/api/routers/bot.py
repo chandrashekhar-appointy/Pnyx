@@ -18,18 +18,15 @@ from pydantic import BaseModel
 
 try:
     from ..deps import get_current_user
-    from ...db import DatabaseManager
     from ...services.recall.manager import RecallManager
     from ...schemas.user import User
 except (ImportError, ValueError):
     try:
         from app.api.deps import get_current_user
-        from app.db import DatabaseManager
         from app.services.recall.manager import RecallManager
         from app.schemas.user import User
     except (ImportError, ValueError):
         from api.deps import get_current_user
-        from db import DatabaseManager
         from services.recall.manager import RecallManager
         from schemas.user import User
 

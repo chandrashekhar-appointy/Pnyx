@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
+import { useRouter } from 'next/navigation';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ export function ImportModal({ isOpen, onClose }: ImportModalProps) {
   const [uploadProgress, setUploadProgress] = useState(0); // Mock progress for now
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { refetchMeetings } = useSidebar();
+  const router = useRouter();
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -90,8 +92,11 @@ export function ImportModal({ isOpen, onClose }: ImportModalProps) {
       setTitle('');
       setUploadProgress(0);
       
-      // Refresh sidebar list
-      refetchMeetings();
+      // Refresh sidebar list and open the imported meeting immediately.
+      await refetchMeetings();
+      if (data.meeting_id) {
+        router.push(`/meeting-details?id=${encodeURIComponent(data.meeting_id)}`);
+      }
 
     } catch (error) {
       console.error("Upload error:", error);

@@ -14,8 +14,7 @@ import hmac
 import json
 import logging
 import os
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import redis.asyncio as aioredis
@@ -71,9 +70,23 @@ class RecallManager:
             or os.getenv("CELERY_BROKER_URL")
             or "redis://localhost:6379/0"
         )
-        self.redis = aioredis.from_url(redis_url)
+        
+        # In development, fallback to fakeredis if real Redis is missing
+        if os.getenv("ENVIRONMENT") == "development" or os.getenv("NODE_ENV") == "development":
+            try:
+                # Ping test
+                import redis
+                r = redis.from_url(redis_url)
+                r.ping()
+                self.redis = aioredis.from_url(redis_url)
+            except Exception:
+                logger.warning("[RecallManager] Redis not reachable, falling back to fakeredis")
+                import fakeredis.aioredis
+                self.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        else:
+            self.redis = aioredis.from_url(redis_url)
 
-    async def remove_bot(self, recall_bot_id: str):
+    async def remove_bot_by_id(self, recall_bot_id: str):
         """Instruct the bot to leave the meeting."""
         logger.info("[RecallManager] Manually removing bot: %s", recall_bot_id)
         try:
@@ -345,7 +358,7 @@ class RecallManager:
 
         speaker = transcript_data.get("speaker") or transcript_data.get("speaker_name") or "Unknown"
         is_final = transcript_data.get("is_final", event_type == "transcript.data")
-        segment_index = data.get("sequence_id") or data.get("segment_id") or 0
+        data.get("sequence_id") or data.get("segment_id") or 0
         start_time = transcript_data.get("start_time") or transcript_data.get("start_ts")
         end_time = transcript_data.get("end_time") or transcript_data.get("end_ts")
 

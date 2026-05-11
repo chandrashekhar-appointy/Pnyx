@@ -60,7 +60,7 @@ def get_gcp_bucket():
                 _gcp_client = storage.Client(
                     credentials=credentials, project=credentials.project_id
                 )
-            except Exception as cred_err:
+            except Exception:
                 # Fallback: try loading json manually if the strict parser fails on some fields
                 import json
 
@@ -189,17 +189,27 @@ class StorageService:
         """
         Generate a temporary accessible URL for a file.
         For GCP: Generates a Signed URL.
-        For Local: Returns a static file path (assuming served via FastAPI StaticFiles).
+        For Local: Returns a HMAC-signed URL served by /audio/signed/{token}.
         """
         if STORAGE_TYPE == "gcp":
             return await StorageService._generate_gcp_signed_url(
                 path, expiration_seconds, download_filename=download_filename
             )
-        else:
-            # Local dev mode: Return relative URL to be served by StaticFiles
-            # We assume 'data/recordings' is mounted at '/audio'
-            # path is like 'meeting-123/recording.wav'
-            return f"/audio/{path}"
+        # Local dev / VM deployment: mint a HMAC-signed token so the URL can be
+        # used directly in <audio src> without sending an Authorization header.
+        try:
+            from .audio.signed_urls import mint_signed_token
+        except (ImportError, ValueError):
+            from services.audio.signed_urls import mint_signed_token
+
+        # path is "{meeting_id}/{filename}" — extract the meeting id for binding
+        meeting_id = path.split("/", 1)[0] if "/" in path else "unknown"
+        token = mint_signed_token(meeting_id, path, ttl_seconds=expiration_seconds)
+        url = f"/audio/signed/{token}"
+        if download_filename:
+            from urllib.parse import quote
+            url += f"?download={quote(download_filename)}"
+        return url
 
     @staticmethod
     async def check_file_exists(path: str) -> bool:

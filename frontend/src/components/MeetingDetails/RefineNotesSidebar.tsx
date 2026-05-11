@@ -1,13 +1,37 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, X, Check, ArrowRight } from 'lucide-react';
+import DOMPurify from 'isomorphic-dompurify';
 import { authFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import Analytics from '@/lib/analytics';
 
+const SAFE_INLINE_TAGS = ['strong', 'em', 'code', 'a', 'br'];
+const SAFE_INLINE_ATTRS = ['class', 'href', 'target', 'rel'];
+
+function sanitizeInline(html: string): string {
+    if (typeof window === 'undefined') return html; // Skip during SSR to avoid jsdom build errors
+    return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: SAFE_INLINE_TAGS,
+        ALLOWED_ATTR: SAFE_INLINE_ATTRS,
+        ALLOW_DATA_ATTR: false,
+    });
+}
+
+function escapeHtml(s: string): string {
+    return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 interface Message {
     role: 'user' | 'assistant';
-    content: string;
-    isRefinement?: boolean; // If true, this message contains a refined version of notes
+    content: string;            // Chat-display text (for user messages, errors, "thinking" placeholder)
+    isRefinement?: boolean;     // If true, this message represents a refined version
+    changes?: string[];         // Changelog bullets to show in chat (changes-only view)
+    updatedDocument?: string;   // Full refined notes — used by Apply button, not shown in chat
 }
 
 interface RefineNotesSidebarProps {
@@ -39,17 +63,22 @@ function MarkdownContent({ content }: { content: string }) {
         };
 
         const renderInline = (line: string): React.ReactNode => {
-            // Bold: **text** or __text__
-            line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            line = line.replace(/__(.+?)__/g, '<strong>$1</strong>');
-            // Italic: *text* or _text_
-            line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            // Code: `code`
-            line = line.replace(/`([^`]+)`/g, '<code class="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">$1</code>');
-            // Links: [text](url)
-            line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="text-blue-500 underline">$1</a>');
-
-            return <span dangerouslySetInnerHTML={{ __html: line }} />;
+            // Escape any raw HTML in the source first so AI/user-provided <script> etc. cannot execute.
+            let safe = escapeHtml(line);
+            // Re-introduce a small allowlist of inline markdown formatting.
+            safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            safe = safe.replace(/__(.+?)__/g, '<strong>$1</strong>');
+            safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            safe = safe.replace(/`([^`]+)`/g, '<code class="bg-zinc-200 dark:bg-zinc-700 px-1 rounded text-xs">$1</code>');
+            safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
+                // Block javascript:/data: URLs — only http(s)/mailto/relative.
+                const trimmed = url.trim();
+                const ok = /^(https?:|mailto:|\/|#)/i.test(trimmed);
+                const href = ok ? trimmed : '#';
+                return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-blue-500 underline">${text}</a>`;
+            });
+            // Final defense in depth — DOMPurify strips anything still dangerous.
+            return <span dangerouslySetInnerHTML={{ __html: sanitizeInline(safe) }} />;
         };
 
         lines.forEach((line, index) => {
@@ -118,70 +147,93 @@ export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRe
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!input.trim() || isLoading) return;
+        console.log('[RefineNotes] handleSubmit fired', {
+            inputLength: input.trim().length,
+            isLoading,
+            currentNotesLength: currentNotes?.length ?? 0,
+            meetingId,
+        });
+        if (!input.trim() || isLoading) {
+            console.warn('[RefineNotes] Aborting: empty input or already loading');
+            return;
+        }
 
         const userMessage = input.trim();
         setInput('');
         setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
         setIsLoading(true);
 
+        Analytics.trackNotesRefined(userMessage.length, {
+            meeting_id: meetingId,
+            current_notes_length: currentNotes.length,
+        }).catch(err => console.warn('[RefineNotes] Analytics failed (ignored):', err));
+
         try {
-            await Analytics.trackNotesRefined(userMessage.length, {
-                meeting_id: meetingId,
-                current_notes_length: currentNotes.length,
-            });
-            // Placeholder for streaming response
             setMessages(prev => [...prev, { role: 'assistant', content: '', isRefinement: true }]);
 
-            // We need a way to accumulate the stream into the LAST message
-            let accumulatedContent = "";
-
+            console.log('[RefineNotes] Calling /refine-notes …');
             const response = await authFetch('/refine-notes', {
                 method: 'POST',
                 body: JSON.stringify({
                     meeting_id: meetingId,
                     current_notes: currentNotes,
                     user_instruction: userMessage,
-                    model: 'gemini', // Default to gemini for now
-                    model_name: 'gemini-2.5-flash'
+                    model: 'gemini',
+                    model_name: 'gemini-2.5-flash',
                 }),
             });
+            console.log('[RefineNotes] /refine-notes responded', response.status);
 
             if (!response.ok) {
-                throw new Error(`Request failed: ${response.status}`);
+                let detail = `Request failed: ${response.status}`;
+                try {
+                    const body = await response.json();
+                    if (body && typeof body.detail === 'string') detail = body.detail;
+                } catch {
+                    try { detail = await response.text(); } catch { /* keep default */ }
+                }
+                throw new Error(detail);
             }
 
-            if (!response.body) throw new Error('No response body');
+            const data = await response.json();
+            const changes: string[] = Array.isArray(data.changes) ? data.changes : [];
+            const updatedDocument: string = typeof data.updated_document === 'string' ? data.updated_document : '';
 
-            const reader = response.body.getReader();
+            console.log('[RefineNotes] Parsed response', {
+                changesCount: changes.length,
+                updatedDocumentLength: updatedDocument.length,
+            });
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = new TextDecoder().decode(value);
-                accumulatedContent += chunk;
-
-                setMessages(prev => {
-                    const newMessages = [...prev];
-                    const lastMessage = newMessages[newMessages.length - 1];
-                    if (lastMessage.role === 'assistant') {
-                        lastMessage.content = accumulatedContent;
-                    }
-                    return newMessages;
-                });
+            if (!updatedDocument.trim()) {
+                throw new Error('Refine returned an empty document. Please rephrase your request.');
             }
 
-        } catch (error) {
-            console.error('Refinement error:', error);
             setMessages(prev => {
-                // Remove the empty assistant message if it failed immediately or append error
+                const newMessages = [...prev];
+                const last = newMessages[newMessages.length - 1];
+                if (last && last.role === 'assistant' && last.isRefinement) {
+                    last.changes = changes.length > 0 ? changes : ['Updated your notes.'];
+                    last.updatedDocument = updatedDocument;
+                    last.content = ''; // changelog is rendered from `changes`, not `content`
+                }
+                return newMessages;
+            });
+        } catch (error) {
+            console.error('[RefineNotes] Refinement error:', error);
+            const errorText = error instanceof Error ? error.message : String(error);
+            setMessages(prev => {
                 const newMessages = [...prev];
                 const lastMessage = newMessages[newMessages.length - 1];
-                if (lastMessage.role === 'assistant' && lastMessage.content === '') {
-                    newMessages.pop(); // Remove empty placeholder
+                if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.changes && !lastMessage.content) {
+                    newMessages.pop();
                 }
-                return [...newMessages, { role: 'assistant', content: 'Sorry, I encountered an error while refining your notes.' }];
+                return [
+                    ...newMessages,
+                    {
+                        role: 'assistant',
+                        content: `Sorry, I couldn't refine the notes.\n\n**Error:** ${errorText}`,
+                    },
+                ];
             });
         } finally {
             setIsLoading(false);
@@ -217,33 +269,69 @@ export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRe
                                 ? 'bg-blue-600 text-white'
                                 : 'bg-white text-zinc-800 border border-zinc-200'}
                         `}>
-                            {msg.role === 'assistant' && !msg.content && isLoading && idx === messages.length - 1 ? (
+                            {msg.role === 'assistant' && !msg.content && !msg.changes && isLoading && idx === messages.length - 1 ? (
                                 <div className="flex items-center gap-2 text-zinc-500">
                                     <Loader2 className="w-4 h-4 animate-spin" />
                                     <span className="text-sm">Thinking...</span>
                                 </div>
+                            ) : msg.role === 'assistant' && msg.changes && msg.changes.length > 0 ? (
+                                <div>
+                                    <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">
+                                        Changes
+                                    </p>
+                                    <ul className="list-disc ml-4 space-y-1">
+                                        {msg.changes.map((c, ci) => (
+                                            <li key={ci} className="text-sm text-zinc-800">{c}</li>
+                                        ))}
+                                    </ul>
+                                </div>
                             ) : (
-                                /* Split content logic */
-                                <MarkdownContent content={msg.content.split('|||SEPARATOR|||')[0]} />
+                                <MarkdownContent content={msg.content} />
                             )}
                         </div>
 
                         {/* Apply Button for Refinements */}
-                        {msg.role === 'assistant' && msg.isRefinement && msg.content && !isLoading && idx === messages.length - 1 && (
+                        {msg.role === 'assistant' && msg.isRefinement && msg.updatedDocument && !isLoading && idx === messages.length - 1 && (
                             <div className="flex gap-2 mt-1">
                                 <Button
                                     size="sm"
                                     variant="default"
                                     className="bg-green-600 hover:bg-green-700 h-8 text-xs"
                                     onClick={() => {
-                                        Analytics.trackRefineNotesApplied(meetingId);
-                                        const parts = msg.content.split('|||SEPARATOR|||');
-                                        if (parts.length > 1) {
-                                            onApplyRefinement(parts[1].trim());
-                                        } else {
-                                            // Fallback: Apply whole content if no separator found
-                                            onApplyRefinement(msg.content.trim());
+                                        const refined = (msg.updatedDocument || '').trim();
+                                        const currentLen = currentNotes.length;
+                                        const refinedLen = refined.length;
+                                        const shrinkRatio =
+                                            currentLen > 0 ? refinedLen / currentLen : 1;
+                                        console.log('[RefineNotes] Apply requested', {
+                                            currentLen,
+                                            refinedLen,
+                                            shrinkRatio: Number(shrinkRatio.toFixed(3)),
+                                        });
+
+                                        // Safety net: a targeted edit should produce a doc
+                                        // approximately the same size as the input. If the
+                                        // refined output drops below 70% of the input length,
+                                        // the model likely rewrote everything instead of
+                                        // editing in place.
+                                        if (currentLen > 200 && shrinkRatio < 0.7) {
+                                            const shrinkPct = Math.round((1 - shrinkRatio) * 100);
+                                            const confirmed = window.confirm(
+                                                `⚠️ Heads up: the refined version is ${shrinkPct}% shorter than your current notes ` +
+                                                `(${currentLen} → ${refinedLen} chars).\n\n` +
+                                                `This usually means the AI replaced your whole document instead of ` +
+                                                `editing the part you asked about. Applying will overwrite everything ` +
+                                                `with the shorter version.\n\n` +
+                                                `Apply anyway? (Cancel = keep your current notes)`
+                                            );
+                                            if (!confirmed) {
+                                                console.log('[RefineNotes] Apply cancelled by user (shrink guard)');
+                                                return;
+                                            }
                                         }
+
+                                        Analytics.trackRefineNotesApplied(meetingId);
+                                        onApplyRefinement(refined);
                                     }}
                                 >
                                     <Check className="w-3 h-3 mr-1" />

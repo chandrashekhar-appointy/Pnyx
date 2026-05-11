@@ -13,7 +13,6 @@ Each evidence tier is clearly labeled so the LLM knows the source.
 
 import logging
 import os
-import json
 import asyncio
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field

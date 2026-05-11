@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
-from typing import List, Dict, Optional
-import os
+from typing import Dict
 
 try:
     from ..deps import get_current_user

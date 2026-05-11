@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import os
 from celery import shared_task
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,13 +8,11 @@ try:
     from ..db import DatabaseManager
     from ..api.routers.transcripts import (
         _resolve_notes_transcript,
-        generate_notes_with_gemini_background,
     )
 except (ImportError, ValueError):
     from db import DatabaseManager
     from api.routers.transcripts import (
         _resolve_notes_transcript,
-        generate_notes_with_gemini_background,
     )
 
 

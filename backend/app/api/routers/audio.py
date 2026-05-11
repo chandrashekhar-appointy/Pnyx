@@ -18,6 +18,7 @@ import struct
 import json
 import asyncio
 import re
+import tempfile
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,7 +27,7 @@ import httpx
 
 try:
     from ..deps import get_current_user
-    from ...schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest, TranscriptSegment
+    from ...schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest
     from ...schemas.user import User
     from ...db import DatabaseManager
     from ...core.rbac import RBAC
@@ -46,7 +47,7 @@ try:
     from ...services.credit_manager import CreditManager
 except (ImportError, ValueError):
     from api.deps import get_current_user
-    from schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest, TranscriptSegment
+    from schemas.audio import StreamingSessionHealthResponse, EncryptedFinalizeRequest
     from schemas.user import User
     from db import DatabaseManager
     from core.rbac import RBAC
@@ -694,6 +695,7 @@ async def _finalize_session(
                 result = await post_service.finalize_recording(
                     recorder_key,
                     trigger_diarization=False,
+                    trigger_notes=True,
                     user_email=user_email,
                 )
                 integrity_summary = {
@@ -1233,10 +1235,11 @@ async def websocket_streaming_audio(
                     if state_restored:
                         initial_state = ai_engine.get_host_state_snapshot()
                         if initial_state:
-                            await _publish_ai_host_state_delta_payload(
-                                state_delta=initial_state,
-                                ai_stats=ai_engine.get_stats_snapshot(),
-                            )
+                            await websocket.send_json({
+                                "type": "ai_host_state_delta",
+                                "state": initial_state,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
 
                     # Send behavior spec sync to frontend
                     behavior_payload = ai_engine.get_behavior_sync_payload()
@@ -1313,10 +1316,11 @@ async def websocket_streaming_audio(
             if state_restored:
                 initial_state = ai_engine.get_host_state_snapshot()
                 if initial_state:
-                    await _publish_ai_host_state_delta_payload(
-                        state_delta=initial_state,
-                        ai_stats=ai_engine.get_stats_snapshot(),
-                    )
+                    await websocket.send_json({
+                        "type": "ai_host_state_delta",
+                        "state": initial_state,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
 
             logger.info(
                 "[AIParticipant] Engine initialized session=%s meeting=%s restored=%s enabled=%s model=%s interval=%ss min_window_chars=%s verbose_logs=%s decision_logs=%s goal=%s agenda_chars=%s participants=%s host_policy_source=%s",
@@ -1923,6 +1927,33 @@ async def websocket_streaming_audio(
                             await state_service.mark_stop_requested(session_id)
                         except Exception:
                             pass
+                            
+                        # FORCE FLUSH BEFORE STOP_ACK
+                        if manager:
+                            try:
+                                await manager.force_flush()
+                            except Exception as e:
+                                logger.error(f"Force flush failed during explicit stop for session {session_id}: {e}")
+                        
+                        if enable_recording and audio_recorder:
+                            try:
+                                r_key = session_context.get(session_id, {}).get("recorder_key") or session_id
+                                flushed_chunk = await flush_recorder(r_key)
+                                if flushed_chunk:
+                                    chunk_index = flushed_chunk.get("chunk_index")
+                                    storage_path = flushed_chunk.get("storage_path")
+                                    size_bytes = int(flushed_chunk.get("size_bytes") or 0)
+                                    if chunk_index is not None and storage_path:
+                                        await db.upsert_recording_chunk(
+                                            session_id=session_id,
+                                            chunk_index=int(chunk_index),
+                                            byte_size=size_bytes,
+                                            storage_path=storage_path,
+                                            upload_status="uploaded",
+                                        )
+                            except Exception as e:
+                                logger.error(f"Recorder flush failed during explicit stop for session {session_id}: {e}")
+
                         await websocket.send_json({"type": "stop_ack"})
                         explicit_stop = True
                         break
@@ -2140,7 +2171,7 @@ async def websocket_streaming_audio(
                             }
                         )
                         continue
-                except:
+                except Exception:
                     pass
 
             if "bytes" in message:
@@ -2162,7 +2193,7 @@ async def websocket_streaming_audio(
                         timestamp_bytes = message_bytes[:8]
                         (timestamp,) = struct.unpack("<d", timestamp_bytes)
                         audio_chunk = message_bytes[8:]
-                    except:
+                    except Exception:
                         audio_chunk = message_bytes
 
                 if audio_recorder:
@@ -2340,7 +2371,7 @@ async def websocket_streaming_audio(
         await audio_queue.put(None)
         try:
             await asyncio.wait_for(worker_task, timeout=5.0)
-        except:
+        except Exception:
             pass
 
         # Connection tracking cleanup / deferred finalize for resume support
@@ -2455,8 +2486,6 @@ async def websocket_streaming_audio(
                     _schedule_deferred_cleanup(session_id)
 
 
-import tempfile
-import shutil
 
 
 @router.post("/upload-meeting-recording")
@@ -2526,6 +2555,7 @@ async def upload_meeting_recording(
             temp_path,  # Pass local cached copy for speed
             meeting_title,
             file_ext,  # Pass extension to help identify file type
+            current_user.email if current_user else "default",
         )
     except ImportError as e:
         logger.error(f"file_processing module import failed: {e}")
@@ -2559,14 +2589,18 @@ async def finalize_recording_encrypted(
     segments = [s.model_dump() for s in payload.transcript_segments]
 
     post_service = get_post_recording_service()
-    
-    # Run in background to avoid timeout
+
+    # Run in background to avoid timeout. trigger_notes defaults to False on
+    # the service signature, but the frontend's stop flow hits this endpoint
+    # as its primary finalize path (E2EE) and the user expects notes to
+    # auto-generate, so opt in explicitly here.
     asyncio.create_task(
         post_service.finalize_recording(
             meeting_id,
             trigger_diarization=payload.trigger_diarization,
+            trigger_notes=True,
             user_email=current_user.email,
-            transcript_payload=segments
+            transcript_payload=segments,
         )
     )
 

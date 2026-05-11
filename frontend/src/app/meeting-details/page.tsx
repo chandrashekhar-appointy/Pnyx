@@ -37,18 +37,22 @@ function MeetingDetailsContent() {
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
   const [hasCheckedAutoGen, setHasCheckedAutoGen] = useState<boolean>(false);
 
-  // Check if gemma3:1b model is available in Ollama
+  // Check if gemma3:1b model is available in Ollama. Skip entirely in production
+  // since the only valid host is the local dev machine — pinging localhost:11434
+  // from a deployed app generates noisy console errors and CORS failures.
   const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
+    const ollamaHost = process.env.NEXT_PUBLIC_OLLAMA_URL;
+    if (process.env.NODE_ENV !== 'development' && !ollamaHost) {
+      return false;
+    }
+    const url = (ollamaHost || 'http://localhost:11434') + '/api/tags';
     try {
-      const response = await fetch('http://localhost:11434/api/tags');
+      const response = await fetch(url);
       if (!response.ok) throw new Error('Failed to fetch models');
       const data = await response.json();
       const models = data.models || [];
-      const hasGemma = models.some((m: any) => m.name === 'gemma3:1b');
-      console.log('🔍 Checked for gemma3:1b:', hasGemma);
-      return hasGemma;
-    } catch (error) {
-      console.error('❌ Failed to check Ollama models:', error);
+      return models.some((m: any) => m.name === 'gemma3:1b');
+    } catch {
       return false;
     }
   }, []);

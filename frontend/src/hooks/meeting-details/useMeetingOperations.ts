@@ -18,6 +18,12 @@ export function useMeetingOperations({
   const { serverAddress, meetings, setCurrentMeeting, setMeetings, refetchMeetings } = useSidebar();
   const baseUrl = serverAddress || apiUrl;
 
+  const resolveBackendUrl = useCallback((url: string) => {
+    if (!url) return url;
+    if (/^https?:\/\//i.test(url) || url.startsWith('blob:')) return url;
+    return `${baseUrl.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`;
+  }, [baseUrl]);
+
   // Download recording
   const handleDownloadRecording = useCallback(async () => {
     try {
@@ -95,7 +101,7 @@ export function useMeetingOperations({
         });
         // Trigger download
         const link = document.createElement('a');
-        link.href = data.url;
+        link.href = resolveBackendUrl(data.url);
         const ext = data.format || 'wav';
         link.download = data.filename || `recording-${meeting.id}.${ext}`;
         link.rel = 'noopener noreferrer';
@@ -107,7 +113,7 @@ export function useMeetingOperations({
       console.error('Failed to download recording:', error);
       toast.error('Failed to download recording');
     }
-  }, [meeting.id, notesGenerationInfo]);
+  }, [meeting.id, notesGenerationInfo, resolveBackendUrl]);
 
   // Delete meeting
   const handleDeleteMeeting = useCallback(async (router: any) => {

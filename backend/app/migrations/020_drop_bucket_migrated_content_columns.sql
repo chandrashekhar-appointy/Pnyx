@@ -1,5 +1,5 @@
 -- Migration 020: Drop old inline content columns after bucket migration
-
+-- destructive: ack
 ALTER TABLE full_transcripts
     DROP COLUMN IF EXISTS transcript_text;
 

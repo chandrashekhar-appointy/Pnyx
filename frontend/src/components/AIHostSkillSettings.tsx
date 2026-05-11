@@ -30,6 +30,12 @@ export function AIHostSkillSettings() {
   const [draftMarkdown, setDraftMarkdown] = useState('');
   const [draftActive, setDraftActive] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  // When isCreating is true, the editor starts in "describe" mode (user types
+  // a plain-English description and clicks Generate). Once generated, it
+  // switches to the markdown editor so the user can fine-tune.
+  const [creationStep, setCreationStep] = useState<'describe' | 'edit'>('describe');
+  const [describePrompt, setDescribePrompt] = useState('');
+  const [generating, setGenerating] = useState(false);
   const hasTrackedAskBeforeMeetingRef = useRef(false);
   const [askBeforeMeeting, setAskBeforeMeeting] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -85,9 +91,47 @@ export function AIHostSkillSettings() {
 
   const startCreate = () => {
     setIsCreating(true);
-    setDraftName('My Custom Participant Style');
-    setDraftMarkdown(`---\nname: "My Custom Participant"\ndescription: "A focused AI participant tuned for my team."\n---\n\n# Role\nYou are the AI Participant for this meeting. Keep the team focused and surface concrete actions.\n\n# Goals\n1. Capture explicit decisions only when the group clearly agrees.\n2. Surface unresolved discussion that still needs closure.\n3. Flag the team-specific signals that matter most.\n\n# Allowed Custom Event Types\n- \`blocker_detected\`: When someone cannot proceed without help.\n- \`scope_creep\`: When new work appears outside the active goal.\n- \`owner_missing\`: When work is discussed without a clear owner.\n\n# Rules\n- Be concise and evidence-based.\n- Do not invent facts.\n- Prefer actionable observations over commentary.\n\n\`\`\`yaml\nrole_mode: facilitator\nmin_confidence: 0.70\nsuggestion_cooldown_seconds: 45\nintervention_cooldown_seconds: 120\nallow_interruptions: false\nthreshold_decision_candidate: 0.72\nthreshold_open_discussion: 0.70\nthreshold_blocker_detected: 0.70\nforbidden_actions: shame_participants, legal_advice\n\`\`\``);
+    setCreationStep('describe');
+    setDescribePrompt('');
+    setDraftName('');
+    setDraftMarkdown('');
     setDraftActive(true);
+  };
+
+  const cancelCreate = () => {
+    setIsCreating(false);
+    setCreationStep('describe');
+    setDescribePrompt('');
+    setSelectedStyleId(defaultStyleId || 'system:facilitator');
+  };
+
+  const generateFromPrompt = async () => {
+    const prompt = describePrompt.trim();
+    if (!prompt) {
+      toast.error('Please describe how you want your AI to behave');
+      return;
+    }
+    setGenerating(true);
+    try {
+      const res = await authFetch('/api/user/ai-host-skill/generate-from-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ prompt, suggested_name: draftName.trim() || undefined }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || 'Failed to generate skill');
+      }
+      const data = (await res.json()) as { name: string; skill_markdown: string };
+      setDraftName(data.name || 'Custom Style');
+      setDraftMarkdown(data.skill_markdown || '');
+      setCreationStep('edit');
+      toast.success('Generated. Review and tweak before saving.');
+    } catch (error) {
+      console.error('[AIHostSkill] generate failed', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to generate skill');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const save = async () => {
@@ -260,61 +304,138 @@ export function AIHostSkillSettings() {
           Current default: <span className="font-medium">{defaultStyleId}</span>
         </div>
 
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-gray-600">Style name</label>
-          <input
-            value={draftName}
-            onChange={(e) => setDraftName(e.target.value)}
-            disabled={readOnly}
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
-          />
-        </div>
+        {isCreating && creationStep === 'describe' ? (
+          <div className="space-y-3 rounded-lg border border-purple-200 bg-purple-50/40 p-4">
+            <div>
+              <h4 className="text-sm font-semibold text-purple-900">
+                Describe how you want your AI to behave
+              </h4>
+              <p className="mt-1 text-xs text-purple-800/80">
+                Write it like you'd brief a teammate. We'll turn it into a
+                style document you can review and edit before saving.
+              </p>
+            </div>
 
-        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={draftActive}
-            onChange={(e) => setDraftActive(e.target.checked)}
-            disabled={readOnly}
-            className="h-4 w-4 rounded border-gray-300"
-          />
-          Active style
-        </label>
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-600">
+                Style name <span className="text-gray-400">(optional)</span>
+              </label>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="e.g. Quiet Note-Taker"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+              />
+            </div>
 
-        <textarea
-          value={draftMarkdown}
-          onChange={(e) => setDraftMarkdown(e.target.value)}
-          disabled={readOnly}
-          className="w-full min-h-[320px] rounded-md border border-gray-300 p-3 text-sm font-mono focus:border-gray-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
-        />
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-600">
+                Tell us what you want
+              </label>
+              <textarea
+                value={describePrompt}
+                onChange={(e) => setDescribePrompt(e.target.value)}
+                placeholder={
+                  'Examples:\n• "Be quiet during the meeting and only flag decisions and risks."\n• "Catch when we go off-agenda and remind us politely."\n• "Track every action item with an owner and due date."'
+                }
+                className="w-full min-h-[160px] rounded-md border border-gray-300 p-3 text-sm focus:border-purple-500 focus:outline-none"
+                disabled={generating}
+              />
+              <div className="text-[11px] text-gray-500">
+                {describePrompt.length} / 4000 characters
+              </div>
+            </div>
 
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-gray-500">
-            {draftMarkdown.split('\n').length} lines · {draftMarkdown.length} chars · Max 20000 chars
-          </div>
-          <div className="flex items-center gap-2">
-            {isCreating && (
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setIsCreating(false);
-                  setSelectedStyleId(defaultStyleId || 'system:facilitator');
-                }}
-                className="rounded border border-gray-300 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                onClick={cancelCreate}
+                disabled={generating}
+                className="rounded border border-gray-300 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
               >
                 Cancel
               </button>
-            )}
-            <button
-              type="button"
-              onClick={save}
-              disabled={saving || readOnly || draftMarkdown.length > 20000 || !draftName.trim()}
-              className="rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-            >
-              {saving ? 'Saving...' : isCreating ? 'Create Style' : 'Save Changes'}
-            </button>
+              <button
+                type="button"
+                onClick={generateFromPrompt}
+                disabled={generating || !describePrompt.trim()}
+                className="rounded bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {generating ? 'Generating…' : 'Generate Style'}
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-600">Style name</label>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                disabled={readOnly}
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+              />
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={draftActive}
+                onChange={(e) => setDraftActive(e.target.checked)}
+                disabled={readOnly}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Active style
+            </label>
+
+            {isCreating && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-900">
+                Generated from your description. Edit any line below before saving.
+              </div>
+            )}
+
+            <textarea
+              value={draftMarkdown}
+              onChange={(e) => setDraftMarkdown(e.target.value)}
+              disabled={readOnly}
+              className="w-full min-h-[320px] rounded-md border border-gray-300 p-3 text-sm font-mono focus:border-gray-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
+            />
+
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-500">
+                {draftMarkdown.split('\n').length} lines · {draftMarkdown.length} chars · Max 20000 chars
+              </div>
+              <div className="flex items-center gap-2">
+                {isCreating && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setCreationStep('describe')}
+                      className="rounded border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100"
+                    >
+                      ← Re-describe
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelCreate}
+                      className="rounded border border-gray-300 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={saving || readOnly || draftMarkdown.length > 20000 || !draftName.trim()}
+                  className="rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : isCreating ? 'Create Style' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

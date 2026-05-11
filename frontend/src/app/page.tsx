@@ -1271,14 +1271,17 @@ function HomeContent() {
 
   const decisionsForPanel = useMemo(() => {
     const merged = new Map<string, AIHostSuggestion>();
-    // Only include core decision types in the Decisions panel
+    // Show live decisions immediately; pinned decisions keep their pinned status.
+    pendingDecisions.forEach((item) => {
+      merged.set(item.id, { ...item, status: 'suggested' });
+    });
     [...hostStatePinnedItems, ...pinnedHostSuggestions].forEach((item) => {
       if (item.event_type === 'decision_candidate') {
         merged.set(item.id, { ...item, status: 'pinned' });
       }
     });
     return Array.from(merged.values()).slice(0, 8);
-  }, [hostStatePinnedItems, pinnedHostSuggestions]);
+  }, [pendingDecisions, hostStatePinnedItems, pinnedHostSuggestions]);
 
   const discussionsForPanel = useMemo(() => {
     const fromSuggestions = hostSuggestionQueue
@@ -2972,7 +2975,7 @@ function HomeContent() {
                       <div className="w-full max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-3">
                           <CheckCircle2 className="h-3.5 w-3.5" />
-                          Pinned Decisions ({activeDecisions.length})
+                          Decisions ({activeDecisions.length})
                         </h4>
                         <div className="space-y-2">
                           {activeDecisions.map((item) => (

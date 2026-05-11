@@ -31,18 +31,23 @@ async def get_current_user(
     token = credentials.credentials
 
     if not GOOGLE_CLIENT_ID:
-        logger.warning("DEBUG AUTH: GOOGLE_CLIENT_ID is None")
+        logger.error("Auth misconfiguration: GOOGLE_CLIENT_ID is not set")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is not configured on this server",
+        )
 
     try:
         payload = await verify_google_token(token)
-        logger.info(f"DEBUG AUTH: Payload extracted for {payload.get('email')}")
-    except HTTPException as e:
-        raise e
+        logger.debug("Auth payload verified")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"DEBUG AUTH: Unexpected verification error: {str(e)}")
+        # Don't leak internal exception details to the client.
+        logger.error(f"Unexpected token verification error: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Could not validate credentials: {str(e)}",
+            detail="Could not validate credentials",
         )
 
     email = payload.get("email")

@@ -12,6 +12,8 @@ try:
         UserApiKeySaveRequest,
         UserAIHostSkillRequest,
         UserAIHostSkillResponse,
+        UserAIHostSkillGenerateRequest,
+        UserAIHostSkillGenerateResponse,
         AIHostStyleItem,
         AIHostStylesListResponse,
         UserAIHostStyleCreateRequest,
@@ -22,6 +24,7 @@ try:
     from ...db import DatabaseManager
     from ...services.ai_participant import SYSTEM_HOST_SKILLS
     from ...services.ai_participant_skills import parse_skill_markdown
+    from ...services.gemini_client import generate_content_text_async
 except (ImportError, ValueError):
     from api.deps import get_current_user
     from schemas.user import User
@@ -32,6 +35,8 @@ except (ImportError, ValueError):
         UserApiKeySaveRequest,
         UserAIHostSkillRequest,
         UserAIHostSkillResponse,
+        UserAIHostSkillGenerateRequest,
+        UserAIHostSkillGenerateResponse,
         AIHostStyleItem,
         AIHostStylesListResponse,
         UserAIHostStyleCreateRequest,
@@ -42,6 +47,7 @@ except (ImportError, ValueError):
     from db import DatabaseManager
     from services.ai_participant import SYSTEM_HOST_SKILLS
     from services.ai_participant_skills import parse_skill_markdown
+    from services.gemini_client import generate_content_text_async
 
 # Initialize services
 db = DatabaseManager()
@@ -346,6 +352,145 @@ async def save_user_ai_host_skill(
     except Exception as e:
         logger.error(f"Error saving user ai host skill: {e}")
         raise HTTPException(status_code=500, detail="Failed to save AI host skill")
+
+
+_SKILL_GENERATOR_SYSTEM_PROMPT = """You convert a non-technical user's plain-English description of how they want their meeting AI assistant to behave into a SHORT, FRIENDLY skill markdown document.
+
+The output must follow this EXACT structure (the parser is strict):
+
+```
+---
+name: "<short title for this style, max 60 chars>"
+description: "<one warm sentence describing what this AI does, max 180 chars>"
+---
+
+# Role
+<2-4 sentences in plain, warm English describing who the AI is in this meeting and the tone it should take. Speak in second person to the AI: "You are…", "You help…". No jargon, no bullet points here — write it like a short note to a teammate.>
+
+# Goals
+1. <Goal 1 — short, plain-English sentence>
+2. <Goal 2>
+3. <Goal 3>
+(2 to 5 goals total)
+
+# Allowed Custom Event Types
+- `<event_type_name>`: <Plain English explanation of when to flag this.>
+- `<event_type_name>`: <Plain English explanation.>
+(2 to 5 event types. Use lowercase_with_underscores for the name.)
+
+# Rules
+- <Rule 1 — short do/don't sentence>
+- <Rule 2>
+- <Rule 3>
+(3 to 6 rules total)
+```
+
+CRITICAL constraints:
+- Output ONLY the markdown above. No preamble, no commentary, no code fences around the whole document.
+- Keep section headers EXACTLY as shown ("# Role", "# Goals", "# Allowed Custom Event Types", "# Rules"). Capitalisation matters.
+- Frontmatter keys must be exactly `name` and `description`, both quoted.
+- Event type names must be lowercase_with_underscores wrapped in single backticks.
+- Use plain, warm, encouraging language — this will be shown to non-technical users who should feel comfortable editing it. Avoid technical jargon (no "threshold", "confidence", "callback", etc.).
+- The user's intent should genuinely shape what's emitted — don't just paraphrase a generic template."""
+
+
+_SKILL_GENERATOR_USER_PROMPT_TEMPLATE = """The user described what they want their meeting AI to do:
+
+\"\"\"
+{user_prompt}
+\"\"\"
+
+Suggested name (optional, may be empty): "{suggested_name}"
+
+Generate the skill markdown now. Remember: output ONLY the markdown, nothing else."""
+
+
+def _strip_outer_code_fence(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("```"):
+        # remove first fence line
+        first_newline = s.find("\n")
+        if first_newline != -1:
+            s = s[first_newline + 1 :]
+        if s.endswith("```"):
+            s = s[: -3]
+    return s.strip()
+
+
+@router.post(
+    "/api/user/ai-host-skill/generate-from-prompt",
+    response_model=UserAIHostSkillGenerateResponse,
+)
+async def generate_user_ai_host_skill(
+    request: UserAIHostSkillGenerateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Convert a plain-English description into a structured skill markdown
+    document. Lets non-technical users describe how they want their meeting
+    assistant to behave without writing the markdown by hand.
+    """
+    import os
+
+    user_prompt = (request.prompt or "").strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    if len(user_prompt) > 4000:
+        raise HTTPException(
+            status_code=400, detail="prompt too long (max 4000 chars)"
+        )
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        try:
+            api_key = await db.get_api_key("gemini", user_email=current_user.email)
+        except Exception:
+            api_key = None
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini API key not configured. Add GEMINI_API_KEY or save a Gemini key in Settings.",
+        )
+
+    suggested_name = (request.suggested_name or "").strip()
+    user_block = _SKILL_GENERATOR_USER_PROMPT_TEMPLATE.format(
+        user_prompt=user_prompt, suggested_name=suggested_name
+    )
+    model = os.getenv("AI_HOST_SKILL_GENERATOR_MODEL", "gemini-2.5-flash")
+
+    try:
+        raw = await generate_content_text_async(
+            api_key=api_key,
+            model=model,
+            contents=user_block,
+            config={
+                "system_instruction": _SKILL_GENERATOR_SYSTEM_PROMPT,
+                "temperature": 0.4,
+            },
+        )
+    except Exception as exc:
+        logger.error("Skill generation failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502, detail=f"Failed to generate skill: {exc}"
+        )
+
+    markdown = _strip_outer_code_fence(raw or "")
+    if not markdown.lstrip().startswith("---"):
+        raise HTTPException(
+            status_code=502,
+            detail="Generator returned unexpected output (no frontmatter). Try rephrasing your description.",
+        )
+
+    parsed = parse_skill_markdown(markdown)
+    name = str(parsed.get("name") or "").strip() or suggested_name or "Custom Style"
+
+    if not parsed.get("role") or not parsed.get("rules") or not parsed.get("goals"):
+        raise HTTPException(
+            status_code=502,
+            detail="Generator returned an incomplete document (missing Role/Goals/Rules). Try rephrasing your description.",
+        )
+
+    return UserAIHostSkillGenerateResponse(name=name, skill_markdown=markdown)
 
 
 @router.delete("/api/user/ai-host-skill")

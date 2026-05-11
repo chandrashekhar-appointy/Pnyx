@@ -103,6 +103,49 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Production Celery Beat (scheduled tasks: weekly credit reset, etc.)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    image: meeting-copilot-backend:latest
+    container_name: meeting-copilot-celery-beat
+    restart: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    volumes:
+      # Persist beat schedule so we don't double-fire after a restart
+      - celery_beat_data:/app/.celerybeat
+      - ./logs:/app/logs
+    command:
+      [
+        "celery",
+        "-A",
+        "celery_app:celery_app",
+        "beat",
+        "-l",
+        "INFO",
+        "--schedule",
+        "/app/.celerybeat/celerybeat-schedule",
+      ]
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq 'celery.*beat' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 volumes:
   redis_data:
+    driver: local
+  celery_beat_data:
     driver: local

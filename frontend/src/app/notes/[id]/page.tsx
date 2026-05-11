@@ -1,5 +1,7 @@
 import React from 'react';
-import { Clock, Users, Calendar, Tag } from 'lucide-react';
+import dynamic from 'next/dynamic';
+
+const NoteContent = dynamic(() => import('./NoteContent'), { ssr: false });
 
 interface PageProps {
   params: {
@@ -17,7 +19,6 @@ interface Note {
 }
 
 export function generateStaticParams() {
-  // Return all possible note IDs
   return [
     { id: 'team-sync-dec-26' },
     { id: 'product-review' },
@@ -27,7 +28,6 @@ export function generateStaticParams() {
 }
 
 const NotePage = ({ params }: PageProps) => {
-  // This would normally come from your database
   const sampleData: Record<string, Note> = {
     'team-sync-dec-26': {
       title: 'Team Sync - Dec 26',
@@ -132,58 +132,7 @@ Quarterly product review session with stakeholders.
     return <div className="p-8">Note not found</div>;
   }
 
-  return (
-    <div className="p-8 max-w-4xl mx-auto">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-4">{note.title}</h1>
-        
-        <div className="flex flex-wrap gap-4 text-gray-600">
-          {note.date && (
-            <div className="flex items-center gap-1">
-              <Calendar className="w-4 h-4" />
-              <span>{note.date}</span>
-            </div>
-          )}
-          
-          {note.time && (
-            <div className="flex items-center gap-1">
-              <Clock className="w-4 h-4" />
-              <span>{note.time}</span>
-            </div>
-          )}
-          
-          {note.attendees && (
-            <div className="flex items-center gap-1">
-              <Users className="w-4 h-4" />
-              <span>{note.attendees.join(', ')}</span>
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-2 mt-4">
-          {note.tags.map((tag) => (
-            <div key={tag} className="flex items-center gap-1 bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-sm">
-              <Tag className="w-3 h-3" />
-              {tag}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="prose prose-blue max-w-none">
-        <div dangerouslySetInnerHTML={{ __html: note.content.split('\n').map(line => {
-          if (line.startsWith('# ')) {
-            return `<h1>${line.slice(2)}</h1>`;
-          } else if (line.startsWith('## ')) {
-            return `<h2>${line.slice(3)}</h2>`;
-          } else if (line.startsWith('- ')) {
-            return `<li>${line.slice(2)}</li>`;
-          }
-          return line;
-        }).join('\n') }} />
-      </div>
-    </div>
-  );
+  return <NoteContent note={note} />;
 };
 
 export default NotePage;

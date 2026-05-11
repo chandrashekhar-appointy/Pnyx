@@ -2,14 +2,16 @@
 
 import { Summary, SummaryResponse, Transcript } from '@/types';
 import { EditableTitle } from '@/components/EditableTitle';
-import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
+import dynamic from 'next/dynamic';
+const BlockNoteSummaryView = dynamic(() => import('@/components/AISummary/BlockNoteSummaryView').then(mod => mod.BlockNoteSummaryView), { ssr: false });
+import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
 import { RefObject, useState } from 'react';
-import { RefineNotesSidebar } from './RefineNotesSidebar';
+const RefineNotesSidebar = dynamic(() => import('./RefineNotesSidebar').then(mod => mod.RefineNotesSidebar), { ssr: false });
 import { MeetingAIHostSkillDialog } from './MeetingAIHostSkillDialog';
 
 import { Bot, Trash2, X } from 'lucide-react'; // Add Trash2 and X icon
@@ -100,11 +102,23 @@ export function SummaryPanel({
   const [isHostSkillDialogOpen, setIsHostSkillDialogOpen] = useState(false);
 
   const handleOpenRefine = async () => {
+    console.log('[Refine] Open clicked', {
+      summaryRefReady: !!summaryRef.current,
+      summaryDataKeys: summaryResponse ? Object.keys(summaryResponse) : null,
+    });
+    let md = '';
     if (summaryRef.current) {
-      const md = await summaryRef.current.getMarkdown();
-      setCurrentNotesContent(md);
-      setIsRefineSidebarOpen(true);
+      try {
+        md = await summaryRef.current.getMarkdown();
+        console.log('[Refine] Pulled markdown from editor, length =', md.length);
+      } catch (err) {
+        console.error('[Refine] getMarkdown() threw, falling back', err);
+      }
+    } else {
+      console.warn('[Refine] summaryRef.current is null — opening sidebar with empty notes');
     }
+    setCurrentNotesContent(md);
+    setIsRefineSidebarOpen(true);
   };
 
   const handleApplyRefinement = (newNotes: string) => {

@@ -19,9 +19,8 @@ import os
 from collections import deque
 from typing import Optional, Callable, Set, List, Dict, Any, Tuple
 
-from .groq_client import GroqTranscriptionClient
 from .buffer import RollingAudioBuffer
-from .vad import SimpleVAD, SileroVAD, TenVAD
+from .vad import SimpleVAD, TenVAD
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +46,13 @@ class StreamingTranscriptionManager:
 
         # VAD Initialization Strategy
         self.vad = None
+        vad_threshold = float(os.getenv("STREAMING_VAD_THRESHOLD", "0.5"))
 
         # 1. TenVAD (High Performance C++)
         try:
-            self.vad = TenVAD(threshold=0.5)
-            logger.info("✅ Using TenVAD (C++ based) with threshold 0.5")
+            logger.info("🎯 Attempting to initialize TenVAD (Primary)")
+            self.vad = TenVAD(threshold=vad_threshold)
+            logger.info(f"✅ Using TenVAD (C++ based) with threshold {vad_threshold}")
         except (ImportError, Exception) as e:
             logger.warning(f"⚠️ TenVAD not available or failed to load: {e}")
 
@@ -59,13 +60,15 @@ class StreamingTranscriptionManager:
 
         # 3. Fallback to SimpleVAD (Amplitude based)
         if self.vad is None:
-            self.vad = SimpleVAD(threshold=0.08)
-            logger.info("ℹ️ Using SimpleVAD (Fallback)")
+            simple_threshold = float(os.getenv("STREAMING_SIMPLE_VAD_THRESHOLD", "0.08"))
+            logger.info(f"🎯 Falling back to SimpleVAD (Threshold: {simple_threshold})")
+            self.vad = SimpleVAD(threshold=simple_threshold)
+            logger.info("ℹ️ SimpleVAD initialized as fallback")
 
-        # IMPROVED: Optimized for real-time responsiveness
-        # 6s window provides enough context for grammar, but is short enough to fail fast
-        initial_window_ms = int(os.getenv("STREAMING_WINDOW_MS_BASE", "6000"))
-        initial_slide_ms = int(os.getenv("STREAMING_SLIDE_MS_BASE", "2000"))
+        # Optimized for live feedback: short enough to surface early partials,
+        # while still leaving overlap for Whisper context and deduplication.
+        initial_window_ms = int(os.getenv("STREAMING_WINDOW_MS_BASE", "4500"))
+        initial_slide_ms = int(os.getenv("STREAMING_SLIDE_MS_BASE", "1000"))
         self.buffer = RollingAudioBuffer(
             window_duration_ms=initial_window_ms,
             slide_duration_ms=initial_slide_ms,
@@ -100,9 +103,12 @@ class StreamingTranscriptionManager:
         self.total_alignment_fallbacks = 0
         self.total_silence_holds = 0
         self.total_force_flush_emits = 0
+        self.total_transcription_skipped_in_flight = 0
         self.segment_finalize_latency_sum = 0.0
         self.segment_finalize_latency_count = 0
         self.first_stable_emit_latency_seconds: Optional[float] = None
+        self.transcription_in_flight = False
+        self.pending_transcription_task: Optional[asyncio.Task] = None
         self.session_wallclock_start = time.time()
         self.stability_threshold = float(
             os.getenv("STREAMING_STABILITY_THRESHOLD", "0.55")
@@ -133,8 +139,8 @@ class StreamingTranscriptionManager:
         self.current_policy_name = "base"
         self.window_policy_switches = 0
         self.recent_speech_flags = deque(maxlen=120)
-        self.base_window_ms = int(os.getenv("STREAMING_WINDOW_MS_BASE", "6000"))
-        self.base_slide_ms = int(os.getenv("STREAMING_SLIDE_MS_BASE", "2000"))
+        self.base_window_ms = int(os.getenv("STREAMING_WINDOW_MS_BASE", "4500"))
+        self.base_slide_ms = int(os.getenv("STREAMING_SLIDE_MS_BASE", "1000"))
         self.high_density_window_ms = int(
             os.getenv("STREAMING_WINDOW_MS_HIGH_DENSITY", "8000")
         )
@@ -167,10 +173,10 @@ class StreamingTranscriptionManager:
 
         # Smart trigger thresholds
         self.silence_threshold_ms = 1000  # 1.0s silence → finalize
-        self.max_buffer_duration_ms = 6000  # 6s max → force finalize (matches window)
+        self.max_buffer_duration_ms = 4500  # base max → force finalize (matches window)
         self.punctuation_min_duration_ms = 2000  # Punctuation + 2s → finalize
         self.min_transcription_interval = (
-            3.0  # Check every 3.0s (less frequency to avoid Groq 429)
+            1.5  # Check frequently enough for live partials without hammering Groq
         )
 
         logger.info(
@@ -606,8 +612,7 @@ class StreamingTranscriptionManager:
         current_time = time.time()
         time_since_last = current_time - self.last_transcription_time
 
-        # Trigger transcription if:
-        # 1. Buffer is full
+        # 1. Buffer is full (or we want a fast start)
         # 2. Enough time passed since last transcribe
         # 3. We have heard speech recently (within the window duration)
         #    This prevents transcribing 12s of pure silence.
@@ -615,57 +620,37 @@ class StreamingTranscriptionManager:
             self.buffer.window_duration_ms / 1000
         )
 
-        if is_full and time_since_last >= self.min_transcription_interval:
+        # Allow transcribing earlier than 6 seconds for the very first utterance
+        is_first_transcription = self.last_transcription_time == 0
+        can_fast_start = is_first_transcription and buffer_duration >= 2500
+        # Reduce wait time slightly for faster updates
+        dynamic_interval = 2.0 if is_first_transcription else self.min_transcription_interval
+
+        if (is_full or can_fast_start) and time_since_last >= dynamic_interval:
             if has_recent_speech:
                 logger.info(
                     f"🚀 Transcription triggered (buffer={buffer_duration:.0f}ms)"
                 )
 
-                # Get window and transcribe
-                window_bytes = self.buffer.get_window_bytes()
-                self.last_transcription_time = current_time
-
-                if on_before_transcription:
-                    should_transcribe = await on_before_transcription()
-                    if should_transcribe is False:
-                        return
-
-                # Transcribe with the configured async client — no thread pool needed.
-                prompt = self._construct_prompt()
-                result = await self.transcription_client.transcribe_audio_async(
-                    window_bytes,
-                    "auto",  # Auto-detect language
-                    prompt,
-                    True,  # translate_to_english=True
-                )
-
-                provider_name = getattr(self.transcription_client, 'provider', 'Transcription').capitalize()
-                
-                if result.get("error") == "rate_limit_exceeded":
-                    logger.warning(f"⚠️ {provider_name} Rate Limit Exceeded")
-                    if on_error:
-                        await on_error(
-                            f"{provider_name} API Rate Limit Reached. Please wait a moment or check your plan.",
-                            code=f"{provider_name.upper()}_RATE_LIMIT",
+                if self.transcription_in_flight:
+                    self.total_transcription_skipped_in_flight += 1
+                    self.last_transcription_time = current_time
+                else:
+                    # Snapshot the current window, then let ingestion continue while
+                    # the external provider call is in flight.
+                    window_bytes = self.buffer.get_window_bytes()
+                    prompt = self._construct_prompt()
+                    self.last_transcription_time = current_time
+                    self.transcription_in_flight = True
+                    self.pending_transcription_task = asyncio.create_task(
+                        self._transcribe_window_background(
+                            window_bytes=window_bytes,
+                            prompt=prompt,
+                            on_partial=on_partial,
+                            on_final=on_final,
+                            on_error=on_error,
+                            on_before_transcription=on_before_transcription,
                         )
-                elif result.get("error") and (
-                    "401" in str(result.get("error"))
-                    or "invalid_api_key" in str(result.get("error"))
-                ):
-                    logger.error(f"❌ {provider_name} Invalid API Key")
-                    if on_error:
-                        await on_error(
-                            f"{provider_name} API Key is invalid or missing. Please check your settings.",
-                            code=f"{provider_name.upper()}_KEY_REQUIRED",
-                        )
-                elif result["text"]:
-                    self.total_transcriptions += 1
-                    await self._handle_transcript(
-                        text=result["text"],
-                        confidence=result.get("confidence", 1.0),
-                        on_partial=on_partial,
-                        on_final=on_final,
-                        metadata=result,
                     )
             else:
                 # Buffer is full but it's just silence.
@@ -679,6 +664,69 @@ class StreamingTranscriptionManager:
         processing_time = time.time() - start_time
         if processing_time > 0.1:  # Log if taking >100ms
             logger.debug(f"⏱️  Chunk processing: {processing_time * 1000:.1f}ms")
+
+    async def _transcribe_window_background(
+        self,
+        *,
+        window_bytes: bytes,
+        prompt: str,
+        on_partial: Optional[Callable],
+        on_final: Optional[Callable],
+        on_error: Optional[Callable],
+        on_before_transcription: Optional[Callable],
+    ) -> None:
+        try:
+            if on_before_transcription:
+                should_transcribe = await on_before_transcription()
+                if should_transcribe is False:
+                    return
+
+            result = await self.transcription_client.transcribe_audio_async(
+                window_bytes,
+                "auto",  # Auto-detect language
+                prompt,
+                True,  # translate_to_english=True
+            )
+
+            provider_name = getattr(
+                self.transcription_client, "provider", "Transcription"
+            ).capitalize()
+
+            if result.get("error") == "rate_limit_exceeded":
+                logger.warning(f"⚠️ {provider_name} Rate Limit Exceeded")
+                if on_error:
+                    await on_error(
+                        f"{provider_name} API Rate Limit Reached. Please wait a moment or check your plan.",
+                        code=f"{provider_name.upper()}_RATE_LIMIT",
+                    )
+            elif result.get("error") and (
+                "401" in str(result.get("error"))
+                or "invalid_api_key" in str(result.get("error"))
+            ):
+                logger.error(f"❌ {provider_name} Invalid API Key")
+                if on_error:
+                    await on_error(
+                        f"{provider_name} API Key is invalid or missing. Please check your settings.",
+                        code=f"{provider_name.upper()}_KEY_REQUIRED",
+                    )
+            elif result.get("text"):
+                self.total_transcriptions += 1
+                await self._handle_transcript(
+                    text=result["text"],
+                    confidence=result.get("confidence", 1.0),
+                    on_partial=on_partial,
+                    on_final=on_final,
+                    metadata=result,
+                )
+        except Exception as exc:
+            logger.error("Background transcription failed: %s", exc, exc_info=True)
+            if on_error:
+                await on_error(
+                    "Transcription temporarily failed. Continuing to listen.",
+                    code="TRANSCRIPTION_WINDOW_FAILED",
+                )
+        finally:
+            self.transcription_in_flight = False
 
     def _word_similarity(self, words1: list, words2: list) -> float:
         """Calculate similarity between two word lists (0.0 to 1.0)."""
@@ -1064,7 +1112,7 @@ class StreamingTranscriptionManager:
         # Trigger 4: Complete sentence + stable (2+ repeats)
         elif self.same_text_count >= 2 and is_complete_sentence:
             trigger_reason = "sentence_complete"
-            logger.info(f"⏱️ SMART TRIGGER: Sentence complete + stable")
+            logger.info("⏱️ SMART TRIGGER: Sentence complete + stable")
 
         if trigger_reason:
             boundary_score = self._compute_boundary_score(
@@ -1140,6 +1188,7 @@ class StreamingTranscriptionManager:
             "alignment_fallbacks": self.total_alignment_fallbacks,
             "silence_holds": self.total_silence_holds,
             "silence_force_flush_emits": self.total_force_flush_emits,
+            "transcription_skipped_in_flight": self.total_transcription_skipped_in_flight,
             "window_policy": self.current_policy_name,
             "window_policy_switches": self.window_policy_switches,
             "speech_density_recent": (
@@ -1179,6 +1228,11 @@ class StreamingTranscriptionManager:
         self.total_alignment_fallbacks = 0
         self.total_silence_holds = 0
         self.total_force_flush_emits = 0
+        self.total_transcription_skipped_in_flight = 0
+        if self.pending_transcription_task and not self.pending_transcription_task.done():
+            self.pending_transcription_task.cancel()
+        self.pending_transcription_task = None
+        self.transcription_in_flight = False
         self.window_policy_switches = 0
         self.segment_finalize_latency_sum = 0.0
         self.segment_finalize_latency_count = 0
@@ -1197,6 +1251,10 @@ class StreamingTranscriptionManager:
 
     def cleanup(self):
         """Cleanup resources"""
+        if self.pending_transcription_task and not self.pending_transcription_task.done():
+            self.pending_transcription_task.cancel()
+        self.pending_transcription_task = None
+        self.transcription_in_flight = False
         logger.info("🧹 Manager cleanup complete")
 
     async def force_flush(self):

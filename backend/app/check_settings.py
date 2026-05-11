@@ -1,4 +1,5 @@
-import asyncio, os
+import asyncio
+import os
 from db.manager import DatabaseManager
 async def main():
     db = DatabaseManager()

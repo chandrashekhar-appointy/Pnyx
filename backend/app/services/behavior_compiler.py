@@ -173,7 +173,7 @@ The user wrote a behavior card in natural language. Your job is to extract struc
   "suggestion_cooldown_seconds": 60,
   "intervention_cooldown_seconds": 120,
   "summary_visibility": "background",
-  "warmup_seconds": 30
+  "warmup_seconds": 0
 }}
 
 ## Rules:
@@ -390,7 +390,7 @@ class BehaviorCompiler:
             speak_triggers=_str_list(data.get("speak_triggers")),
             silence_triggers=_str_list(data.get("silence_triggers")),
             topic_filters=_str_list(data.get("topic_filters")),
-            warmup_seconds=max(0, int(data.get("warmup_seconds") or 30)),
+            warmup_seconds=max(0, int(data.get("warmup_seconds") or 0)),
             output_categories=categories,
             ignore_topics=_str_list(data.get("ignore_topics")),
             tone_instruction=str(data.get("tone_instruction") or ""),

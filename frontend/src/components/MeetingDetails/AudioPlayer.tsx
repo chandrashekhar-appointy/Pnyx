@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, Loader2 } from 'lucide-react';
 import { authFetch } from '@/lib/api';
+import { apiUrl } from '@/lib/config';
 import { toast } from 'sonner';
 
 interface AudioPlayerProps {
@@ -19,6 +20,12 @@ export function AudioPlayer({ meetingId }: AudioPlayerProps) {
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  const resolveBackendUrl = (url: string) => {
+    if (!url) return url;
+    if (/^https?:\/\//i.test(url) || url.startsWith('blob:')) return url;
+    return `${apiUrl.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`;
+  };
+
   useEffect(() => {
     const fetchUrl = async () => {
       setIsLoading(true);
@@ -27,7 +34,11 @@ export function AudioPlayer({ meetingId }: AudioPlayerProps) {
         const res = await authFetch(`/meetings/${meetingId}/recording-url`);
         if (res.ok) {
           const data = await res.json();
-          setAudioUrl(data.url);
+          if (data.encrypted) {
+            setError("Encrypted");
+            return;
+          }
+          setAudioUrl(resolveBackendUrl(data.url));
         } else {
           if (res.status === 404) {
              setError("No recording");
@@ -92,6 +103,7 @@ export function AudioPlayer({ meetingId }: AudioPlayerProps) {
 
   if (error === "No recording") return null;
   if (error === "Processing") return null;
+  if (error === "Encrypted") return null;
   if (isLoading) return null; // Don't show skeleton to keep UI clean, just pop in when ready
   if (!audioUrl) return null;
 

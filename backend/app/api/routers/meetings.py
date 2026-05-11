@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 import logging
+import uuid
+from pydantic import BaseModel
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -35,8 +37,6 @@ except (ImportError, ValueError):
     from core.rbac import RBAC
     from services.storage import StorageService
 
-from pydantic import BaseModel
-import uuid
 
 class CreateMeetingRequest(BaseModel):
     title: str = "Live Bot Session"

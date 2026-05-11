@@ -14,13 +14,32 @@ export default function LoginPage() {
 
     useEffect(() => { Analytics.trackPageView('login'); }, []);
 
+    // Preserve the URL the user was originally trying to reach (and its query
+    // params — important for the calendar email "Start Pnyx" flow which sends
+    // ?autoStart=true). NextAuth's withAuth middleware appends ?callbackUrl=
+    // when bouncing unauth users here; honor it instead of forcing '/'.
+    const getCallbackUrl = (): string => {
+        if (typeof window === 'undefined') return '/';
+        const params = new URLSearchParams(window.location.search);
+        const cb = params.get('callbackUrl');
+        if (!cb) return '/';
+        // Only allow same-origin relative paths to prevent open-redirect abuse.
+        try {
+            const parsed = new URL(cb, window.location.origin);
+            if (parsed.origin !== window.location.origin) return '/';
+            return parsed.pathname + parsed.search + parsed.hash;
+        } catch {
+            return '/';
+        }
+    };
+
     const handleGoogleSignIn = async () => {
         setIsLoading(true);
         setError(null);
         Analytics.trackLoginAttempted('google');
 
         try {
-            await signIn('google', { callbackUrl: '/' });
+            await signIn('google', { callbackUrl: getCallbackUrl() });
         } catch (err) {
             setError('Failed to sign in. Please try again.');
             Analytics.trackLoginFailed('google', 'Failed to sign in');

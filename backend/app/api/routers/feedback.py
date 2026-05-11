@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException
+from typing import List
 import os
 import uuid
 import logging
