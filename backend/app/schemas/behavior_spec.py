@@ -123,7 +123,7 @@ class BehaviorSpec(BaseModel):
         description="If non-empty, only analyze when transcript matches these topics.",
     )
     warmup_seconds: int = Field(
-        default=30,
+        default=0,
         ge=0,
         description="Wait this many seconds into the meeting before first analysis.",
     )
@@ -325,6 +325,7 @@ def build_default_spec() -> BehaviorSpec:
         output_categories=list(DEFAULT_OUTPUT_CATEGORIES),
         tone_instruction="Neutral and concise. State facts, not opinions. One sentence per insight.",
         max_words_per_insight=30,
+        warmup_seconds=0,
         base_confidence=0.70,
         summary_visibility="background",
         compiled_at=datetime.utcnow().isoformat(),

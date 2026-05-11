@@ -2555,6 +2555,7 @@ async def upload_meeting_recording(
             temp_path,  # Pass local cached copy for speed
             meeting_title,
             file_ext,  # Pass extension to help identify file type
+            current_user.email if current_user else "default",
         )
     except ImportError as e:
         logger.error(f"file_processing module import failed: {e}")
@@ -2588,14 +2589,18 @@ async def finalize_recording_encrypted(
     segments = [s.model_dump() for s in payload.transcript_segments]
 
     post_service = get_post_recording_service()
-    
-    # Run in background to avoid timeout
+
+    # Run in background to avoid timeout. trigger_notes defaults to False on
+    # the service signature, but the frontend's stop flow hits this endpoint
+    # as its primary finalize path (E2EE) and the user expects notes to
+    # auto-generate, so opt in explicitly here.
     asyncio.create_task(
         post_service.finalize_recording(
             meeting_id,
             trigger_diarization=payload.trigger_diarization,
+            trigger_notes=True,
             user_email=current_user.email,
-            transcript_payload=segments
+            transcript_payload=segments,
         )
     )
 

@@ -46,7 +46,12 @@ class FileProcessor:
         RECORDING_DIR.mkdir(parents=True, exist_ok=True)
 
     async def process_file(
-        self, meeting_id: str, file_path: Path, title: str, file_ext: str = ""
+        self,
+        meeting_id: str,
+        file_path: Path,
+        title: str,
+        file_ext: str = "",
+        user_email: str = "default",
     ):
         """
         Background task to process an uploaded file.
@@ -163,8 +168,9 @@ class FileProcessor:
                     timestamp=seg["timestamp"],
                     audio_start_time=seg["audio_start_time"],
                     audio_end_time=seg["audio_end_time"],
-                    duration=seg["duration"],
                     source="upload",
+                    speaker=seg["speaker"],
+                    speaker_confidence=seg["speaker_confidence"],
                 )
 
             # Save full transcript text as well
@@ -253,8 +259,38 @@ class FileProcessor:
                         pass
 
             # 5. Generate Summary
-            logger.info(f"🧠 Generating summary for {meeting_id}...")
-            # Trigger summary generation logic here if needed
+            if full_text.strip():
+                logger.info(f"🧠 Generating notes for imported meeting {meeting_id}...")
+                try:
+                    try:
+                        from ..api.routers.transcripts import (
+                            generate_notes_with_gemini_background,
+                        )
+                    except (ImportError, ValueError):
+                        from api.routers.transcripts import (
+                            generate_notes_with_gemini_background,
+                        )
+
+                    await generate_notes_with_gemini_background(
+                        meeting_id=meeting_id,
+                        full_transcript_text=full_text,
+                        transcript_source="import",
+                        template_id="standard_meeting",
+                        meeting_title=title,
+                        custom_context="",
+                        user_email=user_email,
+                        use_audio_context=False,
+                        audio_mode="transcript_only",
+                        audio_url="",
+                        max_audio_minutes=120,
+                    )
+                except Exception as notes_error:
+                    logger.error(
+                        "Failed to auto-generate notes for imported meeting %s: %s",
+                        meeting_id,
+                        notes_error,
+                        exc_info=True,
+                    )
 
             logger.info(f"🎉 Processing complete for {meeting_id}")
 

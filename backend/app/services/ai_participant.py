@@ -65,6 +65,19 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_HOST_SKILLS: Dict[str, str] = load_system_skill_templates()
 CORE_EVENT_TYPES = {"decision_candidate", "open_discussion"}
+BEHAVIOR_CATEGORY_ALIASES = {
+    "decision_candidate": {"decision_candidate", "decision", "decisions"},
+    "open_discussion": {
+        "open_discussion",
+        "open_question",
+        "open_questions",
+        "discussion",
+        "discussions",
+    },
+    "follow_up_needed": {"follow_up_needed", "action_item", "action_items"},
+    "risk_signal": {"risk_signal", "key_insight", "insight", "insights"},
+    "ai_insight": {"ai_insight", "key_insight", "insight", "insights"},
+}
 DEFAULT_PROVIDER_MODELS = {
     "gemini": "gemini-3.1-pro",
     "openai": "gpt-5.4",
@@ -73,11 +86,16 @@ DEFAULT_PROVIDER_MODELS = {
 }
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 DECISION_CUE_RE = re.compile(
-    r"\b("
-    r"decide(?:d|s)?|decision|agreed?|finali[sz]ed?|approved?|confirmed?|"
+    r"("
+    r"\b(?:decide(?:d|s)?|decision|agreed?|finali[sz]ed?|approved?|confirmed?|"
     r"we(?:'ll| will)|let(?:'s| us) go with|ship(?:ping)?|proceed(?:ing)? with|"
-    r"move forward with|lock(?:ed|ing)? in|chosen?|settled on"
-    r")\b",
+    r"move forward with|lock(?:ed|ing)? in|chosen?|settled on)\b|"
+    r"(?:निर्णय|फैसला|तय|फाइनल|सहमत|मंजूर|पक्का|लॉक|करेंगे|जाएंगे|जायेंगे)"
+    r")",
+    flags=re.IGNORECASE,
+)
+DECISION_META_RE = re.compile(
+    r"(surface|surfacing|show|showing|display|दिख|नहीं दिख|नही दिख|नज़र|नजर)",
     flags=re.IGNORECASE,
 )
 UNRESOLVED_CUE_RE = re.compile(
@@ -153,6 +171,19 @@ class RollingTranscriptBuffer:
 
     def get_text(self) -> str:
         return "\n".join(item[1] for item in self._items)
+
+    def get_recent_text(self, seconds: float) -> str:
+        """Return text from the last N seconds of the buffer (for cue-word scanning)."""
+        if not self._items:
+            return ""
+        cutoff = self._items[-1][0] - seconds
+        return "\n".join(text for ts, text in self._items if ts >= cutoff)
+
+    def get_last_gap_seconds(self) -> float:
+        """Gap between the two most recent transcript items. 0 if <2 items."""
+        if len(self._items) < 2:
+            return 0.0
+        return max(0.0, self._items[-1][0] - self._items[-2][0])
 
     def get_char_count(self) -> int:
         return max(0, self._char_count)
@@ -365,8 +396,33 @@ class AIParticipantEngine:
         self.llm_timeout_seconds = float(
             os.getenv("AI_PARTICIPANT_LLM_TIMEOUT_SECONDS", "12")
         )
+        # Heartbeat: max gap between any two analysis runs, used as a fallback
+        # to keep the rolling summary fresh even when nothing "interesting" is
+        # happening. Event-driven triggers usually fire much sooner than this.
         self.analysis_interval_seconds = int(
             os.getenv("AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS", "25")
+        )
+        # Event-driven cadence ceiling: even if a trigger fires, don't run the
+        # expensive analysis more often than this. Bounds LLM cost.
+        self.analysis_cadence_ceiling_seconds = float(
+            os.getenv("AI_PARTICIPANT_CADENCE_CEILING_SECONDS", "8")
+        )
+        # Speaker-pause threshold: a gap ≥ this between two transcript finals
+        # often marks the end of a thought / decision and is a strong trigger.
+        self.pause_trigger_seconds = float(
+            os.getenv("AI_PARTICIPANT_PAUSE_TRIGGER_SECONDS", "2.0")
+        )
+        # Fast probe: cheap LLM (Gemini Flash by default) decides whether the
+        # expensive agent should run this cycle. Disable to always run agent.
+        self.fast_probe_enabled = (
+            os.getenv("AI_PARTICIPANT_FAST_PROBE_ENABLED", "true").strip().lower()
+            == "true"
+        )
+        self.fast_probe_model = os.getenv(
+            "AI_PARTICIPANT_FAST_PROBE_MODEL", "gemini-2.5-flash"
+        )
+        self.fast_probe_timeout_seconds = float(
+            os.getenv("AI_PARTICIPANT_FAST_PROBE_TIMEOUT_SECONDS", "4")
         )
         self.verbose_logs = (
             os.getenv("AI_PARTICIPANT_VERBOSE_LOGS", "false").strip().lower() == "true"
@@ -414,10 +470,19 @@ class AIParticipantEngine:
         )
         self._session_start_time: float = time.time()
 
+        self._last_heartbeat_at: float = 0.0
         self._stats: Dict[str, Any] = {
             "analysis_attempts": 0,
             "analysis_skipped_small_window": 0,
             "analysis_skipped_interval": 0,
+            "trigger_pause": 0,
+            "trigger_cue_word": 0,
+            "trigger_ceiling": 0,
+            "trigger_heartbeat": 0,
+            "fast_probe_calls": 0,
+            "fast_probe_interesting": 0,
+            "fast_probe_skipped_uninteresting": 0,
+            "fast_probe_failures": 0,
             "llm_calls": 0,
             "llm_failures": 0,
             "llm_timeouts": 0,
@@ -842,19 +907,27 @@ class AIParticipantEngine:
             self._stats["analysis_skipped_small_window"] += 1
             return payload
 
-        if now_ts - self._last_analysis_at < self.analysis_interval_seconds:
+        # ── Event-driven trigger (replaces fixed-interval polling) ───────────
+        should_attempt, trigger_reason = self._evaluate_analysis_trigger(now_ts)
+        if not should_attempt:
             self._stats["analysis_skipped_interval"] += 1
             return payload
 
         async with self._lock:
             now_ts = time.time()
-            if now_ts - self._last_analysis_at < self.analysis_interval_seconds:
+            # Re-check under lock to avoid double-running back-to-back triggers
+            should_attempt, trigger_reason = self._evaluate_analysis_trigger(now_ts)
+            if not should_attempt:
                 self._stats["analysis_skipped_interval"] += 1
                 return payload
 
             self._last_analysis_at = now_ts
+            self._stats[f"trigger_{trigger_reason}"] = (
+                int(self._stats.get(f"trigger_{trigger_reason}") or 0) + 1
+            )
             self._stats["analysis_attempts"] += 1
             self._stats["last_analysis_at"] = datetime.utcnow().isoformat()
+            self._stats["last_trigger_reason"] = trigger_reason
 
             # Behavior Gate: check if BehaviorSpec allows analysis this cycle
             transcript_text = self.buffer.get_text()
@@ -879,10 +952,47 @@ class AIParticipantEngine:
                     )
                 return payload
 
-            # The new agentic path handles summary updates and collects suggestions via tools
+            # ── Fast probe gate ────────────────────────────────────────────
+            # The probe exists to filter out noise on weak triggers (pause,
+            # ceiling). Skip it for triggers we already trust:
+            #   - "cue_word": regex already matched a decision/unresolved cue,
+            #     running another LLM gate just adds latency + false negatives.
+            #   - "heartbeat": exists specifically to refresh the rolling
+            #     summary during quiet stretches; never gate that.
+            run_full_agent = True
+            probe_bypass_reasons = {"cue_word", "heartbeat"}
+            if (
+                trigger_reason not in probe_bypass_reasons
+                and self.fast_probe_enabled
+            ):
+                interesting = await self._fast_probe_interesting(transcript_text)
+                if not interesting:
+                    run_full_agent = False
+                    logger.info(
+                        "[AIParticipant] Fast probe → not interesting "
+                        "(trigger=%s, model=%s); skipping full agent",
+                        trigger_reason,
+                        self.fast_probe_model,
+                    )
+
             self._temp_suggestions = []
-            await self._reason_host_events()
-            await self._supplement_host_events_from_heuristics(self.buffer.get_text())
+            if run_full_agent:
+                await self._reason_host_events()
+                await self._supplement_host_events_from_heuristics(
+                    self.buffer.get_text()
+                )
+                if trigger_reason == "heartbeat":
+                    self._last_heartbeat_at = now_ts
+            else:
+                # Probe said no — still update the rolling summary cheaply via
+                # the heuristic fallback so the side-panel summary doesn't
+                # stagnate, but skip the expensive agent + tool calls.
+                self._build_fallback_host_events(
+                    transcript_window=transcript_text,
+                    reason="fast_probe_skipped",
+                )
+                # Mark heartbeat consumed so we don't immediately re-fire.
+                self._last_heartbeat_at = now_ts
 
             # Behavior Post-Filter: enforce behavior constraints on output
             if self._temp_suggestions and self._behavior_spec.output_categories:
@@ -1208,8 +1318,36 @@ Recent transcript window:
         skill_rules = skill_definition.get("rules") or []
         allowed_custom_types = skill_definition.get("allowed_custom_event_types") or []
 
-        pinned_titles = [item.title for item in self._host_state.pinned_items]
-        pinned_line = ", ".join(pinned_titles) if pinned_titles else "None"
+        # Include both title AND a content snippet so the LLM has enough context
+        # to recognize when new transcript content restates an already-pinned
+        # decision (rewording is the most common false-positive source).
+        if self._host_state.pinned_items:
+            pinned_block_lines: List[str] = []
+            for item in self._host_state.pinned_items[:15]:
+                snippet = " ".join(str(item.content or "").split())
+                if len(snippet) > 200:
+                    snippet = snippet[:197].rstrip() + "..."
+                pinned_block_lines.append(
+                    f"- [{item.event_type}] {item.title}: {snippet}"
+                )
+            pinned_line = "\n" + "\n".join(pinned_block_lines)
+        else:
+            pinned_line = "None"
+
+        # Also surface recently-suggested (not yet pinned) items so the LLM
+        # doesn't re-emit the same suggestion across consecutive cycles.
+        if self._host_state.suggested_items:
+            recent_block_lines: List[str] = []
+            for item in self._host_state.suggested_items[:10]:
+                snippet = " ".join(str(item.content or "").split())
+                if len(snippet) > 160:
+                    snippet = snippet[:157].rstrip() + "..."
+                recent_block_lines.append(
+                    f"- [{item.event_type}] {item.title}: {snippet}"
+                )
+            recent_suggestions_line = "\n" + "\n".join(recent_block_lines)
+        else:
+            recent_suggestions_line = "None"
         goals_block = (
             "\n".join(f"- {goal_item}" for goal_item in skill_goals)
             if skill_goals
@@ -1240,7 +1378,8 @@ Meeting Context:
 - Role Mode: {role}
 - Rolling meeting summary so far:
 {self._host_state.meeting_summary or "None"}
-- Already Pinned Decisions/Topics: {pinned_line}
+- Already Pinned Decisions/Topics (DO NOT re-suggest these, even reworded): {pinned_line}
+- Recently Suggested (still in side panel — DO NOT re-emit): {recent_suggestions_line}
 - Skill Name: {skill_name}
 - Skill Description: {skill_description}
 
@@ -1268,7 +1407,7 @@ Rules:
 - Treat the rolling meeting summary above as cumulative context from earlier parts of the meeting. Update it incrementally using the latest transcript window.
 - Preserve still-relevant earlier decisions and open discussions unless the newest transcript clearly changes them.
 - If no action is needed, simply finish your turn without calling any tools.
-- Do NOT suggest events for topics or decisions that are already in the "Already Pinned Decisions/Topics" list.
+- Do NOT suggest events for topics or decisions that are already in the "Already Pinned Decisions/Topics" or "Recently Suggested" lists. This includes the same idea reworded, paraphrased, translated, or expressed at a different level of detail. If the new transcript only restates, confirms, or elaborates an already-pinned decision, do nothing — only emit a NEW item if the meeting has reached a clearly NEW decision/topic the lists do not yet cover.
 - Call `add_decision` whenever participants make an explicit commitment, a clearly agreed choice, or a final resolution. Do not skip a real decision because the wording is informal.
 - If a direction is "unclear", "conflicted", or "unresolved", DO NOT use `add_decision`. Instead, use `add_action_item` to record it as a follow-up or `add_discussion` to mark it as unresolved.
 - Use `add_action_item` for specific tasks, unowned follow-ups, or resolving unclear points. These will be shown directly in the UI.
@@ -1320,6 +1459,40 @@ Recent transcript window:
         normalized = self._normalize_compare_text(content)
         return f"{event_type}:{normalized}"
 
+    # English stopwords stripped before token-overlap dedup; they swamp Jaccard
+    # scores and make any two short sentences look "similar."
+    _DEDUP_STOPWORDS = frozenset({
+        "a", "an", "the", "and", "or", "but", "if", "of", "to", "in", "on", "for",
+        "with", "by", "at", "from", "as", "is", "are", "was", "were", "be", "been",
+        "being", "this", "that", "these", "those", "it", "its", "we", "our", "us",
+        "they", "them", "their", "i", "me", "my", "you", "your", "he", "she", "his",
+        "her", "will", "would", "should", "could", "can", "may", "might", "do",
+        "does", "did", "have", "has", "had", "not", "no", "yes", "so", "than",
+        "then", "there", "here", "about", "into", "onto", "over", "out", "up",
+        "down", "also", "very", "more", "most", "some", "any", "all", "such",
+    })
+
+    @classmethod
+    def _significant_tokens(cls, text: str) -> set:
+        normalized = cls._normalize_compare_text(text)
+        return {
+            tok for tok in normalized.split()
+            if len(tok) > 2 and tok not in cls._DEDUP_STOPWORDS
+        }
+
+    @classmethod
+    def _token_overlap(cls, a: str, b: str) -> float:
+        tokens_a = cls._significant_tokens(a)
+        tokens_b = cls._significant_tokens(b)
+        if not tokens_a or not tokens_b:
+            return 0.0
+        intersection = len(tokens_a & tokens_b)
+        # Use min-length denominator (Szymkiewicz–Simpson) so a short new
+        # suggestion that's fully covered by a long existing one still scores
+        # as duplicate, even if the longer one has extra detail.
+        denom = min(len(tokens_a), len(tokens_b))
+        return intersection / denom if denom else 0.0
+
     def _has_similar_host_item(self, event_type: str, title: str, content: str) -> bool:
         candidate_title = self._normalize_compare_text(title)
         candidate_content = self._normalize_compare_text(content)
@@ -1344,6 +1517,15 @@ Recent transcript window:
                 candidate_content in existing_content
                 or existing_content in candidate_content
             ):
+                return True
+            # Fuzzy: catch reworded / paraphrased / translated restatements.
+            # Title similarity gets a lower bar (titles are short and often
+            # share most significant tokens when they refer to the same idea).
+            if self._token_overlap(content, item.content or "") >= 0.7:
+                return True
+            if candidate_title and existing_title and self._token_overlap(
+                title, item.title or ""
+            ) >= 0.6:
                 return True
 
         # Check historical handled items (dismissed or pinned in the past)
@@ -1492,27 +1674,29 @@ Recent transcript window:
             snippet = line.strip(" .,:;")
             if not snippet:
                 continue
-            if DECISION_CUE_RE.search(snippet):
+            if DECISION_CUE_RE.search(snippet) and not DECISION_META_RE.search(snippet):
+                quote = snippet[:220]
                 events.append(
                     {
                         "event_type": "decision_candidate",
-                        "title": "Decision Captured",
-                        "content": snippet[:220],
-                        "confidence": 0.78,
-                        "priority": "high",
-                        "source_excerpt": snippet[:220],
+                        "title": "Possible decision (auto-detected)",
+                        "content": f"“{quote}”",
+                        "confidence": 0.65,
+                        "priority": "medium",
+                        "source_excerpt": quote,
                     }
                 )
                 continue
             if UNRESOLVED_CUE_RE.search(snippet):
+                quote = snippet[:220]
                 events.append(
                     {
                         "event_type": "open_discussion",
-                        "title": "Open Discussion",
-                        "content": snippet[:220],
-                        "confidence": 0.72,
+                        "title": "Open discussion (auto-detected)",
+                        "content": f"“{quote}”",
+                        "confidence": 0.6,
                         "priority": "medium",
-                        "source_excerpt": snippet[:220],
+                        "source_excerpt": quote,
                     }
                 )
         return events
@@ -1521,7 +1705,13 @@ Recent transcript window:
         self,
         transcript_window: str,
     ) -> None:
+        # Don't let regex heuristics overwrite AI-summarized output for an event
+        # type the LLM already covered this cycle — the heuristic only stores raw
+        # transcript quotes, which is exactly what we want to avoid in the UI.
+        llm_event_types = {s.event_type for s in self._temp_suggestions}
         for event in self._extract_candidate_host_events(transcript_window):
+            if event.get("event_type") in llm_event_types:
+                continue
             suggestion = self._build_host_suggestion(event)
             if not suggestion:
                 continue
@@ -1576,6 +1766,156 @@ Recent transcript window:
             seen.add(key)
             deduped.append(event)
         return deduped[:4]
+
+    def _evaluate_analysis_trigger(self, now_ts: float) -> Tuple[bool, str]:
+        """
+        Event-driven trigger: should we attempt analysis right now?
+
+        Returns (should_attempt, reason). Cadence floor is enforced via
+        _last_analysis_at (bumped on every attempt, even probe-only) so the
+        floor governs total cost regardless of probe outcome.
+
+        Trigger priority (semantic strength first — strongest signal wins so
+        downstream code can decide whether to bypass the fast-probe gate):
+          - "cue_word": decision/unresolved cue matches in last 30s of transcript
+          - "pause": gap between last two transcript items ≥ pause_trigger_seconds
+          - "heartbeat": ≥ analysis_interval since last attempt (summary refresh)
+          - "ceiling": ≥ 2 × cadence_ceiling since last attempt (force-probe)
+          - "no_trigger" / "below_cadence_ceiling": skip
+        """
+        seconds_since_attempt = now_ts - self._last_analysis_at
+        # Cadence floor — never run more often than this
+        if seconds_since_attempt < self.analysis_cadence_ceiling_seconds:
+            return False, "below_cadence_ceiling"
+
+        # Cue word detection in recent slice — strongest semantic signal, so
+        # check it FIRST. A pause that happens to coincide with a cue-bearing
+        # transcript shouldn't get demoted to "pause" and risk a false NO from
+        # the probe.
+        recent = self.buffer.get_recent_text(seconds=30.0)
+        if recent and (
+            DECISION_CUE_RE.search(recent) or UNRESOLVED_CUE_RE.search(recent)
+        ):
+            return True, "cue_word"
+
+        # Pause detection — weaker signal (could be filler / dead air)
+        if self.buffer.get_last_gap_seconds() >= self.pause_trigger_seconds:
+            return True, "pause"
+
+        # Heartbeat — periodic refresh of the rolling summary
+        if (now_ts - self._last_heartbeat_at) >= self.analysis_interval_seconds:
+            return True, "heartbeat"
+
+        # Cadence ceiling reached — probe even without other signals
+        if seconds_since_attempt >= self.analysis_cadence_ceiling_seconds * 2:
+            return True, "ceiling"
+
+        return False, "no_trigger"
+
+    async def _fast_probe_interesting(self, transcript_window: str) -> bool:
+        """
+        Cheap LLM call (Gemini Flash) gating the expensive agent.
+
+        Returns True if the recent transcript contains anything worth a deeper
+        look (decision, action, unresolved question, agenda drift, risk, etc.).
+        Fails open: on error/timeout returns True so we never silently drop work.
+        """
+        if not self.fast_probe_enabled:
+            return True
+        if not transcript_window or not transcript_window.strip():
+            return False
+
+        try:
+            from .gemini_client import generate_content_text_async
+        except ImportError:
+            return True
+
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            try:
+                api_key = await self.db.get_api_key(
+                    "gemini", user_email=self.user_email
+                )
+            except Exception:
+                api_key = None
+        if not api_key:
+            # No Gemini key available — bypass the probe rather than blocking.
+            return True
+
+        # Only consider the most recent slice — older content was already probed
+        # in earlier cycles. Cap to keep latency and cost low.
+        recent_slice = self.buffer.get_recent_text(seconds=45.0) or transcript_window
+        recent_slice = recent_slice[-2500:]
+
+        prompt = (
+            "You are a permissive relevance gate for a meeting AI. Decide if "
+            "the recent transcript contains ANY content worth deeper analysis.\n"
+            "\n"
+            "**MULTILINGUAL**: Transcript is often Hindi / Hinglish / mixed. "
+            "Treat words like 'decide', 'करेंगे', 'जाएंगे', 'फाइनल', 'तय', "
+            "'सहमत', 'agreed', 'will', 'next step', 'deploy', 'ship', 'block', "
+            "'issue', 'risk', 'todo', 'action', 'follow up' as strong signals.\n"
+            "\n"
+            "Answer YES if ANY of these are present (even informally / partially):\n"
+            "  - A decision, commitment, plan, or 'we will' statement\n"
+            "  - An action item, owner, or due-date mention\n"
+            "  - An open question, blocker, risk, or concern\n"
+            "  - Off-agenda drift or the team getting stuck\n"
+            "  - A concrete fact, metric, name, or date worth recording\n"
+            "  - Substantive discussion of project/product/process work\n"
+            "\n"
+            "Answer NO ONLY if the transcript is purely greetings, jokes, "
+            "personal chat, dead air, or unintelligible filler.\n"
+            "\n"
+            "**When in doubt, answer YES.** False positives are cheap; missing "
+            "a real decision is expensive.\n"
+            "\n"
+            "Respond with EXACTLY one token: YES or NO. Nothing else.\n"
+            "\n"
+            "Transcript:\n"
+            f"{recent_slice}"
+        )
+
+        self._stats["fast_probe_calls"] = (
+            int(self._stats.get("fast_probe_calls") or 0) + 1
+        )
+        try:
+            raw = await asyncio.wait_for(
+                generate_content_text_async(
+                    api_key=api_key,
+                    model=self.fast_probe_model,
+                    contents=prompt,
+                    config={"temperature": 0.0, "max_output_tokens": 4},
+                ),
+                timeout=self.fast_probe_timeout_seconds,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            self._stats["fast_probe_failures"] = (
+                int(self._stats.get("fast_probe_failures") or 0) + 1
+            )
+            return True
+        except Exception as exc:
+            self._stats["fast_probe_failures"] = (
+                int(self._stats.get("fast_probe_failures") or 0) + 1
+            )
+            logger.warning(
+                "[AIParticipant] Fast probe error (%s); failing open: %s",
+                self.fast_probe_model,
+                exc,
+            )
+            return True
+
+        verdict = (raw or "").strip().upper()
+        interesting = verdict.startswith("YES")
+        if interesting:
+            self._stats["fast_probe_interesting"] = (
+                int(self._stats.get("fast_probe_interesting") or 0) + 1
+            )
+        else:
+            self._stats["fast_probe_skipped_uninteresting"] = (
+                int(self._stats.get("fast_probe_skipped_uninteresting") or 0) + 1
+            )
+        return interesting
 
     def _refresh_host_state_from_events(self, events: List[Dict[str, Any]]) -> None:
         current_topic = ""
@@ -1715,7 +2055,12 @@ Recent transcript window:
 
         for s in suggestions:
             # 1. Category must exist in the spec
-            if s.event_type not in allowed_ids:
+            behavior_ids = BEHAVIOR_CATEGORY_ALIASES.get(s.event_type, {s.event_type})
+            matched_category_id = next(
+                (category_id for category_id in behavior_ids if category_id in allowed_ids),
+                None,
+            )
+            if not matched_category_id:
                 logger.info(
                     "[AIParticipant] Filter REJECTED '%s': category '%s' not in behavior spec",
                     s.title,
@@ -1727,11 +2072,11 @@ Recent transcript window:
                 continue
 
             # 2. Category must not be suppressed by auto-tuner
-            if not spec.is_category_active(s.event_type):
+            if not spec.is_category_active(matched_category_id):
                 logger.info(
                     "[AIParticipant] Filter REJECTED '%s': category '%s' suppressed by auto-tuner (negative feedback)",
                     s.title,
-                    s.event_type,
+                    matched_category_id,
                 )
                 self._stats["host_suggestions_suppressed"] = (
                     int(self._stats.get("host_suggestions_suppressed") or 0) + 1
@@ -1739,14 +2084,14 @@ Recent transcript window:
                 continue
 
             # 3. Confidence must meet threshold
-            threshold = spec.get_effective_threshold(s.event_type)
+            threshold = spec.get_effective_threshold(matched_category_id)
             if s.confidence < threshold:
                 logger.info(
                     "[AIParticipant] Filter REJECTED '%s': confidence %.2f < threshold %.2f (category: %s)",
                     s.title,
                     s.confidence,
                     threshold,
-                    s.event_type,
+                    matched_category_id,
                 )
                 continue
 

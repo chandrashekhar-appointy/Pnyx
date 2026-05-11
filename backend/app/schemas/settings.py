@@ -68,6 +68,16 @@ class UserAIHostStyleDefaultRequest(BaseModel):
     style_id: str
 
 
+class UserAIHostSkillGenerateRequest(BaseModel):
+    prompt: str
+    suggested_name: Optional[str] = None
+
+
+class UserAIHostSkillGenerateResponse(BaseModel):
+    name: str
+    skill_markdown: str
+
+
 class CalendarConnectRequest(BaseModel):
     request_write_scope: bool = False
 

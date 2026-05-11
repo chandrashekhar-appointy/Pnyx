@@ -2122,6 +2122,8 @@ async def generate_detailed_notes(
             raise HTTPException(status_code=404, detail="Meeting not found.")
         meeting_title = meeting_data.get("title", "Untitled Meeting")
 
+        await db.create_process(request.meeting_id)
+
         # 2. Start background processing (non-blocking)
         background_tasks.add_task(
             generate_notes_with_gemini_background,
@@ -2208,6 +2210,8 @@ async def generate_notes_for_meeting(
             raise HTTPException(status_code=404, detail="Meeting not found.")
         meeting_title = meeting_data.get("title", "Untitled Meeting")
 
+        await db.create_process(actual_meeting_id)
+
         # 2. Start background processing (non-blocking)
         background_tasks.add_task(
             generate_notes_with_gemini_background,
@@ -2249,7 +2253,8 @@ async def refine_notes(
 ):
     """
     Refine existing meeting notes based on user instructions and transcript context.
-    Streams the refined notes back.
+    Returns a structured JSON response with the changelog (shown in chat) and
+    the full updated document (applied to the editor on confirm).
     """
     if not await rbac.can(current_user, "ai_interact", request.meeting_id):
         raise HTTPException(status_code=403, detail="Permission denied to refine notes")
@@ -2259,7 +2264,6 @@ async def refine_notes(
             f"Refining notes for meeting {request.meeting_id} with instruction: {request.user_instruction[:50]}..."
         )
 
-        # 1. Fetch meeting transcripts for context
         meeting_data = await db.get_meeting(request.meeting_id)
         full_transcript = ""
         if meeting_data and meeting_data.get("transcripts"):
@@ -2267,31 +2271,9 @@ async def refine_notes(
                 [t["text"] for t in meeting_data["transcripts"]]
             )
 
-        # 2. Construct Prompt
-        f"""You are an expert meeting notes editor.
-Your task is to REFINE the Current Meeting Notes based strictly on the User Instruction and the provided Context (Transcript).
-
-Context (Meeting Transcript):
----
-{full_transcript[:30000]} {(len(full_transcript) > 30000) and "...(truncated)" or ""}
----
-
-Current Meeting Notes:
----
-{request.current_notes}
----
-
-User Instruction: {request.user_instruction}
-
-Guidelines:
-1. You MUST start your response with a detailed bulleted list of changes made.
-2. You MUST then output exactly: "|||SEPARATOR|||" (without quotes).
-3. After the separator, provide the FULL updated notes content.
-"""
-
         chat_service = ChatService(db)
 
-        generator = await chat_service.refine_notes(
+        result = await chat_service.refine_notes(
             notes=request.current_notes,
             instruction=request.user_instruction,
             transcript_context=full_transcript,
@@ -2299,9 +2281,11 @@ Guidelines:
             model_name=request.model_name,
             user_email=current_user.email,
         )
+        return result
 
-        return StreamingResponse(generator, media_type="text/plain")
-
+    except ValueError as ve:
+        logger.warning(f"Refine validation error: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Error in refine_notes: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

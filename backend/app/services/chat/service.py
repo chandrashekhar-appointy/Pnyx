@@ -13,8 +13,10 @@ Same public interface as the old monolithic ChatService so all existing
 callers (api/routers/chat.py, transcripts.py) work without changes.
 """
 
+import json
 import logging
 import os
+import re
 from typing import List, Dict, Optional
 
 from dotenv import load_dotenv
@@ -501,35 +503,430 @@ USER QUESTION: {question}
         model: str,
         model_name: str,
         user_email: Optional[str] = None,
-    ):
+    ) -> Dict[str, object]:
         """
-        Refine meeting notes based on user instruction and transcript context.
+        Refine meeting notes using a PATCH-BASED contract:
+          1. Backend parses the notes into addressable sections by markdown heading.
+          2. Model receives the sections by ID + heading + content.
+          3. Model returns ONLY the edits/inserts it wants to make — never the full doc.
+          4. Backend deterministically rebuilds the document, leaving every section
+             the model did not name byte-for-byte identical to the input.
+
+        This makes the "rewrite-the-whole-doc" failure mode structurally impossible
+        even on small/fast models, because the LLM physically cannot drop sections —
+        if it doesn't reference a section_id, that section is copied verbatim.
+
+        Returns: {"changes": [str, ...], "updated_document": str}
         """
         if not model or not model_name:
-            model = "openai"
-            model_name = "gpt-5.4"
-        system_prompt = f"""You are an expert meeting notes editor.
-Your task is to REFINE the Current Meeting Notes based strictly on the User Instruction and the provided Context (Transcript).
+            model = "gemini"
+            model_name = "gemini-2.5-flash"
 
-Context (Meeting Transcript):
+        sections = self._split_notes_into_sections(notes)
+        sections_block = self._format_sections_for_prompt(sections)
+
+        system_prompt = f"""You are a precise meeting notes editor. The user's notes are pre-split into addressable sections. Your job is to return ONLY the targeted edits — the system will reassemble the document.
+
+# Hard rules
+- You CANNOT modify a section unless you reference it by section_id in `edits`.
+- Sections you do not reference are kept BYTE-FOR-BYTE identical. This is enforced by the system, not you.
+- Section headings cannot be changed (they are document anchors). To rename, you must delete + create.
+- `new_content` for an edit is the BODY ONLY of that section. Do NOT include the heading line — the heading is preserved automatically.
+
+# Operations available
+1. **edits** — replace the body of an existing section. Use for "make X in points", "rewrite Y", "shorten Z".
+2. **insertions** — add a brand-new section. Use for "add a section about X". Specify `after_section_id` (or null to insert at top).
+3. **append_to_section** — append new content to the end of an existing section's body, leaving the original content intact. **Use this for "add more bullets to X", "add another item to Y"** — it is the safest way to extend a section.
+4. **deletions** — remove an entire section. Only when user EXPLICITLY asks to delete.
+
+# Decision guide
+- "add more X to <section>" → `append_to_section` (not edits — append preserves existing content)
+- "make <section> in points / rewrite <section> / fix typos in <section>" → `edits`
+- "add a section about Y" → `insertions`
+- "remove the <section>" → `deletions`
+- If the user's instruction is vague, prefer `append_to_section` (safer than `edits`).
+
+# Reference material (don't add new info unless asked)
+Meeting Transcript (reference only):
 ---
 {transcript_context[:30000]}
 ---
 
-Guidelines:
-1. You MUST start your response with a detailed bulleted list of changes made.
-2. You MUST then output exactly: "|||SEPARATOR|||" (without quotes).
-3. After the separator, provide the FULL updated notes content.
+# Output format — STRICT JSON, NO PROSE, NO CODE FENCES
+Respond with EXACTLY one JSON object:
+
+{{
+  "changes": [
+    "<short user-facing bullet describing what you changed, e.g. 'Added 3 bullets to Next Steps section.'>"
+  ],
+  "edits": [
+    {{ "section_id": <int>, "new_content": "<replacement body for this section, no heading>" }}
+  ],
+  "append_to_section": [
+    {{ "section_id": <int>, "appended_content": "<content to append after the existing body>" }}
+  ],
+  "insertions": [
+    {{ "heading": "<heading text>", "level": <2 or 3>, "content": "<body content>", "after_section_id": <int or null> }}
+  ],
+  "deletions": [ <int section_id>, ... ]
+}}
+
+Empty arrays for unused operations. `changes` should describe ONLY what you actually emitted; do not invent unchanged-section reassurances.
 """
 
-        user_query = f"""Current Meeting Notes:
----
-{notes}
----
+        user_query = f"""User instruction: {instruction}
 
-User Instruction: {instruction}
-"""
+Current notes broken into sections:
 
-        return await self.stream_response(
-            system_prompt, user_query, model, model_name, user_email
+{sections_block}
+
+Reminder: return ONLY a JSON object with the targeted edits. Sections you don't reference will be preserved verbatim by the system."""
+
+        raw_text = await self._refine_call_llm(
+            system_prompt=system_prompt,
+            user_query=user_query,
+            model=model,
+            model_name=model_name,
+            user_email=user_email,
         )
+
+        patch = self._parse_refine_patch_json(raw_text, num_sections=len(sections))
+
+        updated_document = self._apply_patch_to_sections(sections, patch)
+
+        changes = patch.get("changes") or []
+        if not changes:
+            changes = ["Updated your notes."]
+
+        return {"changes": changes, "updated_document": updated_document}
+
+    # ── Patch helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _split_notes_into_sections(notes: str) -> List[Dict[str, object]]:
+        """
+        Split markdown notes by # / ## / ### headings into addressable sections.
+        Each section: {id, heading, level, prefix, body}.
+        - id: integer index (0-based)
+        - heading: text of heading (without # marks). Empty string for preamble.
+        - level: 0 (preamble / no heading) or 1..6 (heading depth).
+        - prefix: the exact heading line as it appeared (so we can rebuild verbatim),
+                  empty for level 0.
+        - body: everything after the heading line up to the next heading (or end),
+                with trailing newlines trimmed.
+        """
+        lines = notes.split("\n")
+        sections: List[Dict[str, object]] = []
+        current = {"heading": "", "level": 0, "prefix": "", "body_lines": []}
+
+        def commit_current():
+            body = "\n".join(current["body_lines"]).rstrip("\n")
+            sections.append(
+                {
+                    "id": len(sections),
+                    "heading": current["heading"],
+                    "level": current["level"],
+                    "prefix": current["prefix"],
+                    "body": body,
+                }
+            )
+
+        heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+        for line in lines:
+            m = heading_re.match(line)
+            if m:
+                # Close current section before starting new one
+                if current["heading"] or any(s.strip() for s in current["body_lines"]):
+                    commit_current()
+                current = {
+                    "heading": m.group(2).strip(),
+                    "level": len(m.group(1)),
+                    "prefix": line,
+                    "body_lines": [],
+                }
+            else:
+                current["body_lines"].append(line)
+        if current["heading"] or any(s.strip() for s in current["body_lines"]):
+            commit_current()
+
+        # Edge case: empty notes
+        if not sections:
+            sections.append({"id": 0, "heading": "", "level": 0, "prefix": "", "body": ""})
+        return sections
+
+    @staticmethod
+    def _format_sections_for_prompt(sections: List[Dict[str, object]]) -> str:
+        out: List[str] = []
+        for s in sections:
+            heading_repr = s["heading"] or "(preamble — no heading)"
+            level = s["level"]
+            body = str(s["body"]).strip()
+            if not body:
+                body = "(empty)"
+            out.append(
+                f"--- SECTION_ID={s['id']} | level={level} | heading={heading_repr!r} ---\n{body}"
+            )
+        return "\n\n".join(out)
+
+    @staticmethod
+    def _parse_refine_patch_json(raw_text: str, num_sections: int) -> Dict[str, object]:
+        text = (raw_text or "").strip()
+        if not text:
+            raise ValueError("Empty response from refine LLM")
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise ValueError("Refine response was not valid JSON")
+            data = json.loads(text[start : end + 1])
+
+        def _list(key: str) -> list:
+            val = data.get(key)
+            return val if isinstance(val, list) else []
+
+        # Defensive normalization & range-check
+        edits = []
+        for e in _list("edits"):
+            if not isinstance(e, dict):
+                continue
+            sid = e.get("section_id")
+            new_content = e.get("new_content")
+            if isinstance(sid, int) and 0 <= sid < num_sections and isinstance(new_content, str):
+                edits.append({"section_id": sid, "new_content": new_content})
+
+        appends = []
+        for a in _list("append_to_section"):
+            if not isinstance(a, dict):
+                continue
+            sid = a.get("section_id")
+            appended = a.get("appended_content")
+            if isinstance(sid, int) and 0 <= sid < num_sections and isinstance(appended, str):
+                appends.append({"section_id": sid, "appended_content": appended})
+
+        insertions = []
+        for ins in _list("insertions"):
+            if not isinstance(ins, dict):
+                continue
+            heading = ins.get("heading")
+            content = ins.get("content")
+            level = ins.get("level")
+            after = ins.get("after_section_id")
+            if not isinstance(heading, str) or not isinstance(content, str):
+                continue
+            if not isinstance(level, int) or level < 1 or level > 6:
+                level = 2
+            if after is not None:
+                if not isinstance(after, int) or after < -1 or after >= num_sections:
+                    after = None
+            insertions.append(
+                {
+                    "heading": heading.strip(),
+                    "level": level,
+                    "content": content,
+                    "after_section_id": after,
+                }
+            )
+
+        deletions = []
+        for sid in _list("deletions"):
+            if isinstance(sid, int) and 0 <= sid < num_sections:
+                deletions.append(sid)
+
+        changes = []
+        for c in _list("changes"):
+            c_str = str(c).strip()
+            if c_str:
+                changes.append(c_str)
+
+        # Sanity: if model returned zero ops, we have no work to do
+        if not edits and not appends and not insertions and not deletions:
+            logger.warning(
+                "[RefineNotes] Model returned no operations. Raw: %s",
+                text[:500],
+            )
+
+        return {
+            "changes": changes,
+            "edits": edits,
+            "append_to_section": appends,
+            "insertions": insertions,
+            "deletions": deletions,
+        }
+
+    @staticmethod
+    def _apply_patch_to_sections(
+        sections: List[Dict[str, object]], patch: Dict[str, object]
+    ) -> str:
+        """
+        Deterministically apply the model's patch to the section list, then
+        rebuild the markdown document. Sections never referenced are kept
+        byte-for-byte identical.
+        """
+        # Work on a shallow copy so we don't mutate input
+        sections = [dict(s) for s in sections]
+
+        # 1. Apply edits (replace body)
+        edits = patch.get("edits") or []
+        if isinstance(edits, list):
+            for e in edits:
+                sid = e.get("section_id")
+                if isinstance(sid, int) and 0 <= sid < len(sections):
+                    sections[sid]["body"] = str(e.get("new_content") or "").rstrip("\n")
+
+        # 2. Apply appends
+        appends = patch.get("append_to_section") or []
+        if isinstance(appends, list):
+            for a in appends:
+                sid = a.get("section_id")
+                if isinstance(sid, int) and 0 <= sid < len(sections):
+                    existing = str(sections[sid]["body"] or "").rstrip("\n")
+                    appended = str(a.get("appended_content") or "").rstrip("\n")
+                    if existing and appended:
+                        sections[sid]["body"] = existing + "\n" + appended
+                    elif appended:
+                        sections[sid]["body"] = appended
+
+        # 3. Apply deletions (mark; remove after we know indices stay valid for inserts)
+        deletions = set(patch.get("deletions") or [])
+
+        # 4. Build output preserving section order, with insertions placed after their anchor.
+        # Group new insertions by their after_section_id (or None for top).
+        insertions = patch.get("insertions") or []
+        ins_by_anchor: Dict[object, List[Dict[str, object]]] = {}
+        for ins in insertions:
+            anchor = ins.get("after_section_id")
+            key = anchor if isinstance(anchor, int) else None
+            ins_by_anchor.setdefault(key, []).append(ins)
+
+        out_chunks: List[str] = []
+
+        def render_section(sec: Dict[str, object]) -> str:
+            body = str(sec.get("body") or "").rstrip("\n")
+            prefix = str(sec.get("prefix") or "")
+            if prefix:
+                return prefix + ("\n" + body if body else "")
+            return body
+
+        def render_insertion(ins: Dict[str, object]) -> str:
+            level = int(ins.get("level") or 2)
+            heading = str(ins.get("heading") or "").strip()
+            content = str(ins.get("content") or "").rstrip("\n")
+            heading_line = ("#" * level) + " " + heading if heading else ""
+            if heading_line and content:
+                return heading_line + "\n" + content
+            return heading_line or content
+
+        # Insertions anchored at "top" (after_section_id == None)
+        for ins in ins_by_anchor.get(None, []):
+            rendered = render_insertion(ins)
+            if rendered:
+                out_chunks.append(rendered)
+
+        for sec in sections:
+            sid = sec.get("id")
+            if sid in deletions:
+                continue
+            rendered = render_section(sec)
+            if rendered:
+                out_chunks.append(rendered)
+            # Insertions anchored after this section
+            for ins in ins_by_anchor.get(sid, []):
+                rendered_ins = render_insertion(ins)
+                if rendered_ins:
+                    out_chunks.append(rendered_ins)
+
+        # Insertions anchored after a deleted/invalid section_id (-1 or stale)
+        # were already filtered to None or valid IDs; nothing extra to do here.
+
+        return "\n\n".join(chunk for chunk in out_chunks if chunk.strip())
+
+    async def _refine_call_llm(
+        self,
+        system_prompt: str,
+        user_query: str,
+        model: str,
+        model_name: str,
+        user_email: Optional[str],
+    ) -> str:
+        """Non-streaming, JSON-mode LLM call for refine_notes."""
+        if model == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                api_key = await self.db.get_api_key("gemini", user_email=user_email)
+            if not api_key:
+                raise ValueError("Gemini API key not found")
+
+            text = await generate_content_text_async(
+                api_key=api_key,
+                model=model_name,
+                contents=user_query,
+                config={
+                    "system_instruction": system_prompt,
+                    "temperature": 0.2,
+                    "response_mime_type": "application/json",
+                },
+            )
+            return text or ""
+
+        if model == "openai":
+            api_key = await self.db.get_api_key("openai", user_email=user_email)
+            if not api_key:
+                raise ValueError("OpenAI API key not found")
+            client = AsyncOpenAI(api_key=api_key)
+            response = await client.chat.completions.create(
+                model=model_name,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_query},
+                ],
+            )
+            return response.choices[0].message.content or ""
+
+        if model == "anthropic" or model == "claude":
+            api_key = await self.db.get_api_key("claude", user_email=user_email)
+            if not api_key:
+                raise ValueError("Anthropic API key not found")
+            client = AsyncAnthropic(api_key=api_key)
+            response = await client.messages.create(
+                model=model_name,
+                max_tokens=8192,
+                temperature=0.2,
+                system=system_prompt
+                + "\n\nReturn ONLY a JSON object. No prose, no code fences.",
+                messages=[{"role": "user", "content": user_query}],
+            )
+            parts: List[str] = []
+            for block in response.content:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(text)
+            return "".join(parts)
+
+        if model == "groq":
+            api_key = await self.db.get_api_key("groq", user_email=user_email)
+            if not api_key:
+                api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                raise ValueError("Groq API key not found")
+            client = AsyncGroq(api_key=api_key)
+            response = await client.chat.completions.create(
+                model=model_name,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_query},
+                ],
+            )
+            return response.choices[0].message.content or ""
+
+        raise ValueError(f"Unsupported model provider for refine: {model}")
+

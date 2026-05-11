@@ -73,9 +73,9 @@ class MeetingHostState(BaseModel):
 class HostPolicyConfig(BaseModel):
     role_mode: HostRoleMode = HostRoleMode.FACILITATOR
     intervention_channel: str = "in_app_cards"
-    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    suggestion_cooldown_seconds: int = 60
-    intervention_cooldown_seconds: int = 120
+    min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    suggestion_cooldown_seconds: int = 30
+    intervention_cooldown_seconds: int = 45
     max_suggestions_buffer: int = 30
     max_intervention_history: int = 30
     max_pinned_items: int = 100
