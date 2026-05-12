@@ -454,6 +454,12 @@ export default function PageContent({
 
       </div>
 
+      <ShareNotesDialog
+        isOpen={shareDialogState.isOpen}
+        meetingId={shareDialogState.meetingId || meeting.id}
+        onClose={() => setShareDialogState({ isOpen: false, meetingId: "" })}
+      />
+
       {/* Chat Interface */}
       {isChatOpen && (
         <ChatInterface

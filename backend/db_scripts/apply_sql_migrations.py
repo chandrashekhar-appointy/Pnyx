@@ -3,9 +3,34 @@ import asyncio
 import asyncpg
 import glob
 import re
+import ssl
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _strip_unsupported_params(db_url: str):
+    """Remove sslmode/channel_binding from URL; return (clean_url, ssl_ctx)."""
+    parsed = urlparse(db_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+
+    sslmode = params.pop("sslmode", ["prefer"])[0]
+    params.pop("channel_binding", None)
+
+    clean_query = urlencode({k: v[0] for k, v in params.items()})
+    clean_url = urlunparse(parsed._replace(query=clean_query))
+
+    ssl_ctx: bool | ssl.SSLContext = False
+    if sslmode in ("require", "verify-ca", "verify-full"):
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    elif sslmode in ("allow", "prefer"):
+        ssl_ctx = False
+
+    return clean_url, ssl_ctx
+
 
 async def apply_migrations():
     db_url = os.getenv("DATABASE_URL")
@@ -13,9 +38,11 @@ async def apply_migrations():
         print("❌ DATABASE_URL not set")
         return
 
+    clean_url, ssl_ctx = _strip_unsupported_params(db_url)
+
     print(f"🚀 Connecting to database to apply migrations...")
     try:
-        conn = await asyncpg.connect(db_url)
+        conn = await asyncpg.connect(clean_url, ssl=ssl_ctx)
         print("✅ Connected!")
     except Exception as e:
         print(f"❌ Connection failed: {e}")

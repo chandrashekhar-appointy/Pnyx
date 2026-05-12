@@ -26,6 +26,7 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
   const [shareSummary, setShareSummary] = useState(true);
   const [shareTranscript, setShareTranscript] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
 
   const handleShare = async () => {
     try {
@@ -41,6 +42,7 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
       });
       
       if (res.ok) {
+        const data = await res.json();
         await Analytics.trackNotesShared('email', {
           meeting_id: meetingId,
           share_summary: shareSummary,
@@ -48,7 +50,12 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
         });
         toast.success('Notes shared successfully');
         if (onShared) onShared();
-        onClose();
+        
+        if (data?.share_url) {
+          setShareUrl(data.share_url);
+        } else {
+          onClose();
+        }
       } else {
         throw new Error('Failed to share notes');
       }
@@ -62,61 +69,91 @@ export function ShareNotesDialog({ isOpen, meetingId, onClose, onShared }: Share
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
-      if (open) Analytics.trackShareNotesDialogOpened(meetingId);
-      if (!open) onClose();
+      if (open) {
+        setShareUrl(null);
+        Analytics.trackShareNotesDialogOpened(meetingId);
+      }
+      if (!open) {
+        setShareUrl(null);
+        onClose();
+      }
     }}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Share Updated Notes?</DialogTitle>
+          <DialogTitle>{shareUrl ? "Notes Shared" : "Share Updated Notes?"}</DialogTitle>
           <DialogDescription>
-            You just generated new notes for this meeting. Would you like to share them with the attendees?
+            {shareUrl 
+              ? "Anyone with this link can view the shared meeting notes."
+              : "You just generated new notes for this meeting. Would you like to share them with the attendees?"}
           </DialogDescription>
         </DialogHeader>
         
-        <div className="grid gap-4 py-4">
-          <div className="flex items-center justify-between space-x-2 border p-3 rounded-lg">
-            <div className="flex flex-col space-y-1">
-              <Label htmlFor="share-summary">Share Summary</Label>
-              <span className="text-sm text-gray-500">Includes TL;DR and Action Items</span>
+        {shareUrl ? (
+          <div className="py-4">
+            <div className="p-3 bg-gray-50 border rounded-lg break-all font-mono text-xs text-gray-800 select-all">
+              {shareUrl}
             </div>
-            <Switch
-              id="share-summary"
-              checked={shareSummary}
-              onCheckedChange={setShareSummary}
-            />
           </div>
-          
-          <div className="flex items-center justify-between space-x-2 border p-3 rounded-lg">
-            <div className="flex flex-col space-y-1">
-              <Label htmlFor="share-transcript">Share Transcript</Label>
-              <span className="text-sm text-gray-500">Full conversation text</span>
+        ) : (
+          <div className="grid gap-4 py-4">
+            <div className="flex items-center justify-between space-x-2 border p-3 rounded-lg">
+              <div className="flex flex-col space-y-1">
+                <Label htmlFor="share-summary">Share Summary</Label>
+                <span className="text-sm text-gray-500">Includes TL;DR and Action Items</span>
+              </div>
+              <Switch
+                id="share-summary"
+                checked={shareSummary}
+                onCheckedChange={setShareSummary}
+              />
             </div>
-            <Switch
-              id="share-transcript"
-              checked={shareTranscript}
-              onCheckedChange={setShareTranscript}
-            />
+            
+            <div className="flex items-center justify-between space-x-2 border p-3 rounded-lg">
+              <div className="flex flex-col space-y-1">
+                <Label htmlFor="share-transcript">Share Transcript</Label>
+                <span className="text-sm text-gray-500">Full conversation text</span>
+              </div>
+              <Switch
+                id="share-transcript"
+                checked={shareTranscript}
+                onCheckedChange={setShareTranscript}
+              />
+            </div>
           </div>
-        </div>
+        )}
         
         <DialogFooter className="flex space-x-2 sm:space-x-0">
-          <button 
-            onClick={() => {
-              Analytics.trackShareNotesSkipped(meetingId);
-              onClose();
-            }}
-            className="px-4 py-2 border rounded-md text-gray-700 hover:bg-gray-50 flex-1"
-            disabled={isSharing}
-          >
-            Skip Sharing
-          </button>
-          <button 
-            onClick={handleShare}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex-1"
-            disabled={isSharing}
-          >
-            {isSharing ? 'Sharing...' : 'Share Notes'}
-          </button>
+          {shareUrl ? (
+            <button 
+              onClick={() => {
+                setShareUrl(null);
+                onClose();
+              }}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 w-full"
+            >
+              Done
+            </button>
+          ) : (
+            <>
+              <button 
+                onClick={() => {
+                  Analytics.trackShareNotesSkipped(meetingId);
+                  onClose();
+                }}
+                className="px-4 py-2 border rounded-md text-gray-700 hover:bg-gray-50 flex-1"
+                disabled={isSharing}
+              >
+                Skip Sharing
+              </button>
+              <button 
+                onClick={handleShare}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex-1"
+                disabled={isSharing}
+              >
+                {isSharing ? 'Sharing...' : 'Share Notes'}
+              </button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

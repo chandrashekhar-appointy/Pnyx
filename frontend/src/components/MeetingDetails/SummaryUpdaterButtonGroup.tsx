@@ -2,7 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, Save, Loader2, Search, FolderOpen, Sparkles } from 'lucide-react';
+import { Copy, Save, Loader2, Search, FolderOpen, Sparkles, Share2 } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 
 interface SummaryUpdaterButtonGroupProps {
@@ -13,6 +13,7 @@ interface SummaryUpdaterButtonGroupProps {
   onFind?: () => void;
   onOpenFolder?: () => Promise<void>;
   onRefine?: () => void;
+  onShare?: () => void;
   hasSummary: boolean;
 }
 
@@ -24,6 +25,7 @@ export function SummaryUpdaterButtonGroup({
   onFind,
   onOpenFolder,
   onRefine,
+  onShare,
   hasSummary
 }: SummaryUpdaterButtonGroupProps) {
   return (
@@ -85,6 +87,24 @@ export function SummaryUpdaterButtonGroup({
         <Copy />
         <span className="hidden lg:inline">Copy</span>
       </Button>
+
+      {/* Share button */}
+      {onShare && (
+        <Button
+          variant="outline"
+          size="sm"
+          title="Share Notes"
+          onClick={() => {
+            Analytics.trackButtonClick('share_summary', 'meeting_details');
+            onShare();
+          }}
+          disabled={!hasSummary}
+          className="cursor-pointer"
+        >
+          <Share2 />
+          <span className="hidden lg:inline">Share</span>
+        </Button>
+      )}
 
       {/* Recording folder button */}
       {onOpenFolder && (

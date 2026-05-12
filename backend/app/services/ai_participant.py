@@ -1634,18 +1634,28 @@ Recent transcript window:
         transcript_window: str,
         reason: str,
     ) -> List[Dict[str, Any]]:
-        summary_text = self._fallback_meeting_summary(transcript_window)
-        if summary_text:
-            self._host_state.meeting_summary = summary_text
+        # NEVER overwrite a real LLM-generated summary with the raw-transcript
+        # fallback. The fallback dumps the last 4 transcript lines as
+        # "Discussion Snapshot" bullets — if the LLM has already produced a
+        # proper summary, replacing it with raw transcript is a regression.
+        # Only seed the fallback when there is no existing summary yet.
+        existing_summary = (self._host_state.meeting_summary or "").strip()
+        summary_applied = False
+        if not existing_summary:
+            summary_text = self._fallback_meeting_summary(transcript_window)
+            if summary_text:
+                self._host_state.meeting_summary = summary_text
+                summary_applied = True
 
         events = self._fallback_core_events(transcript_window)
         self._refresh_host_state_from_events(events)
         self._host_state.updated_at = datetime.utcnow().isoformat()
         self._stats["last_fallback_reason"] = reason
         logger.info(
-            "[AIParticipant] Heuristic fallback applied reason=%s summary=%s events=%s",
+            "[AIParticipant] Heuristic fallback applied reason=%s summary_applied=%s existing_summary=%s events=%s",
             reason,
-            bool(summary_text),
+            summary_applied,
+            bool(existing_summary),
             len(events),
         )
         return events

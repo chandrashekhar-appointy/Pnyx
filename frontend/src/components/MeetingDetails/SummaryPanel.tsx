@@ -198,6 +198,7 @@ export function SummaryPanel({
               }}
               onOpenFolder={onOpenFolder}
               onRefine={handleOpenRefine}
+              onShare={() => window.dispatchEvent(new CustomEvent('show-share-dialog', { detail: { meetingId: meeting.id }}))}
               hasSummary={!!aiSummary}
             />
           </div>
