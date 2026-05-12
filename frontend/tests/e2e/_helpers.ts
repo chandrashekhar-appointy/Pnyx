@@ -82,12 +82,24 @@ export async function stubBackend(page: Page): Promise<void> {
             status: 200,
             contentType: "application/json",
             body: JSON.stringify({
+                id: meetingId,
                 meeting_id: meetingId,
                 title: "E2E Meeting",
                 transcripts: [
                     { id: "t1", text: "Hello team", timestamp: "00:01" },
                 ],
-                summary: { key_decisions: [], action_items: [] },
+                summary: { markdown: "# Summary\nThis is the meeting summary." },
+            }),
+        }),
+    );
+
+    await page.route(new RegExp(`${escapeRegex(backend)}/get-summary/.*`), (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+                status: "completed",
+                data: { markdown: "# Summary\nThis is the meeting summary." },
             }),
         }),
     );
@@ -97,6 +109,38 @@ export async function stubBackend(page: Page): Promise<void> {
             status: 200,
             contentType: "application/json",
             body: JSON.stringify({ url: `${backend}/recordings/${meetingId}/recording.wav` }),
+        }),
+    );
+
+    await page.route(`${backend}/api/user/ai-host-styles`, (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ styles: [], default_style_id: "system:facilitator" }),
+        }),
+    );
+
+    await page.route(`${backend}/api/sharing/shared-with-me`, (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify([]),
+        }),
+    );
+
+    await page.route(`${backend}/api/meetings/active-bot-sessions`, (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify([]),
+        }),
+    );
+
+    await page.route(`${backend}/save-transcript`, (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ meeting_id: meetingId }),
         }),
     );
 }
