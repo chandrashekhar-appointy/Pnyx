@@ -495,6 +495,28 @@ USER QUESTION: {question}
 
     # ── Refine Notes ──────────────────────────────────────────────────────
 
+    # Phrases that mean "rebuild the entire document" rather than a targeted edit.
+    _FULL_REWRITE_PATTERNS = [
+        r"\b(re-?generate|re-?write|re-?do|start over|from scratch|new (notes|version)|fresh notes?)\b",
+        r"\bfocus(ing)? on\b",
+        r"\bre-?focus\b",
+        r"\bcompletely (rewrite|redo|change|replace)\b",
+        r"\breplace (all|everything|the whole)\b",
+        r"\bturn (this|these notes) into\b",
+        r"\bmake (this|these|the whole) (into|a)\b",
+    ]
+
+    @classmethod
+    def _detect_full_rewrite_intent(cls, instruction: str) -> bool:
+        """Return True if the user is asking for a full-document rewrite."""
+        if not instruction:
+            return False
+        text = instruction.lower().strip()
+        for pat in cls._FULL_REWRITE_PATTERNS:
+            if re.search(pat, text):
+                return True
+        return False
+
     async def refine_notes(
         self,
         notes: str,
@@ -505,16 +527,22 @@ USER QUESTION: {question}
         user_email: Optional[str] = None,
     ) -> Dict[str, object]:
         """
-        Refine meeting notes using a PATCH-BASED contract:
-          1. Backend parses the notes into addressable sections by markdown heading.
-          2. Model receives the sections by ID + heading + content.
-          3. Model returns ONLY the edits/inserts it wants to make — never the full doc.
-          4. Backend deterministically rebuilds the document, leaving every section
-             the model did not name byte-for-byte identical to the input.
+        Refine meeting notes. Two modes:
 
-        This makes the "rewrite-the-whole-doc" failure mode structurally impossible
-        even on small/fast models, because the LLM physically cannot drop sections —
-        if it doesn't reference a section_id, that section is copied verbatim.
+        1. **Patch mode (default)** — surgical edits to specific sections. Backend
+           splits the notes into addressable sections (by heading or bold-line
+           pseudo-heading), asks the LLM to return only `edits`/`appends`/
+           `insertions`/`deletions`, and reassembles the document so unreferenced
+           sections are preserved byte-for-byte.
+
+        2. **Full rewrite mode** — triggered by explicit user intent ("regenerate",
+           "rewrite all", "focus on X", "from scratch"). Asks the LLM to produce
+           a complete new document. Skipped patching entirely.
+
+        Plus a backstop shrink-guard: if patch mode produces a result < 50% of the
+        input length and the user did NOT ask for a rewrite, the change is
+        rejected with an explanatory error so the UI doesn't silently destroy
+        the user's notes.
 
         Returns: {"changes": [str, ...], "updated_document": str}
         """
@@ -522,8 +550,62 @@ USER QUESTION: {question}
             model = "gemini"
             model_name = "gemini-2.5-flash"
 
+        rewrite_intent = self._detect_full_rewrite_intent(instruction)
+
+        if rewrite_intent:
+            return await self._refine_full_rewrite(
+                notes=notes,
+                instruction=instruction,
+                transcript_context=transcript_context,
+                model=model,
+                model_name=model_name,
+                user_email=user_email,
+            )
+
+        return await self._refine_patch_mode(
+            notes=notes,
+            instruction=instruction,
+            transcript_context=transcript_context,
+            model=model,
+            model_name=model_name,
+            user_email=user_email,
+        )
+
+    async def _refine_patch_mode(
+        self,
+        notes: str,
+        instruction: str,
+        transcript_context: str,
+        model: str,
+        model_name: str,
+        user_email: Optional[str],
+    ) -> Dict[str, object]:
         sections = self._split_notes_into_sections(notes)
         sections_block = self._format_sections_for_prompt(sections)
+
+        # Detect the "one giant preamble" case: notes have no recognizable headings
+        # at all. In that case, the LLM has only one section to operate on, and an
+        # `edits[section_id=0]` would obliterate the whole document. Tighten the
+        # rules so it prefers append/insert over edits.
+        single_preamble = (
+            len(sections) == 1
+            and not sections[0].get("heading")
+            and int(sections[0].get("level") or 0) == 0
+        )
+
+        single_section_warning = ""
+        if single_preamble:
+            single_section_warning = (
+                "\n# CRITICAL CONSTRAINT FOR THIS DOCUMENT\n"
+                "This document has NO headings — it is a single preamble section.\n"
+                "An `edits` on section_id=0 would REPLACE THE ENTIRE DOCUMENT.\n"
+                "DO NOT use `edits` on section_id=0 unless the user explicitly\n"
+                "asked you to rewrite/replace the whole document.\n"
+                "Instead, use `append_to_section` to add content, or `insertions`\n"
+                "to add new headed sections. If the user wants a specific bullet\n"
+                "fixed, return only that fix via `append_to_section` with a\n"
+                "correction note, or politely refuse via the `changes` array.\n"
+            )
 
         system_prompt = f"""You are a precise meeting notes editor. The user's notes are pre-split into addressable sections. Your job is to return ONLY the targeted edits — the system will reassemble the document.
 
@@ -532,20 +614,21 @@ USER QUESTION: {question}
 - Sections you do not reference are kept BYTE-FOR-BYTE identical. This is enforced by the system, not you.
 - Section headings cannot be changed (they are document anchors). To rename, you must delete + create.
 - `new_content` for an edit is the BODY ONLY of that section. Do NOT include the heading line — the heading is preserved automatically.
+- When you do edit a section, your `new_content` MUST preserve everything in that section that the user did not ask you to change. NEVER shorten a section unless the user explicitly asked to shorten or rewrite it.
 
 # Operations available
-1. **edits** — replace the body of an existing section. Use for "make X in points", "rewrite Y", "shorten Z".
+1. **edits** — replace the body of an existing section. Use for "make X in points", "rewrite Y section", "shorten Z section".
 2. **insertions** — add a brand-new section. Use for "add a section about X". Specify `after_section_id` (or null to insert at top).
 3. **append_to_section** — append new content to the end of an existing section's body, leaving the original content intact. **Use this for "add more bullets to X", "add another item to Y"** — it is the safest way to extend a section.
 4. **deletions** — remove an entire section. Only when user EXPLICITLY asks to delete.
 
 # Decision guide
 - "add more X to <section>" → `append_to_section` (not edits — append preserves existing content)
-- "make <section> in points / rewrite <section> / fix typos in <section>" → `edits`
+- "make <section> in points / rewrite <section> / fix typos in <section>" → `edits` (but include ALL existing content of that section in the new_content, just modified)
 - "add a section about Y" → `insertions`
 - "remove the <section>" → `deletions`
 - If the user's instruction is vague, prefer `append_to_section` (safer than `edits`).
-
+{single_section_warning}
 # Reference material (don't add new info unless asked)
 Meeting Transcript (reference only):
 ---
@@ -576,7 +659,7 @@ Empty arrays for unused operations. `changes` should describe ONLY what you actu
 
         user_query = f"""User instruction: {instruction}
 
-Current notes broken into sections:
+Current notes broken into sections ({len(sections)} section{'s' if len(sections) != 1 else ''}):
 
 {sections_block}
 
@@ -592,11 +675,129 @@ Reminder: return ONLY a JSON object with the targeted edits. Sections you don't 
 
         patch = self._parse_refine_patch_json(raw_text, num_sections=len(sections))
 
+        # Single-section guard: strip out destructive edits on section 0 in
+        # preamble-only docs. The LLM was warned; this is the backstop.
+        if single_preamble:
+            kept_edits = []
+            dropped = 0
+            for e in patch.get("edits") or []:
+                if e.get("section_id") == 0:
+                    dropped += 1
+                    continue
+                kept_edits.append(e)
+            if dropped:
+                logger.warning(
+                    "[RefineNotes] Dropped %d destructive edit(s) on preamble section",
+                    dropped,
+                )
+                patch["edits"] = kept_edits
+
         updated_document = self._apply_patch_to_sections(sections, patch)
+
+        # Backstop shrink-guard: refuse to silently produce a much shorter doc
+        # when the user did not ask for a rewrite. The front-end has its own
+        # guard, but server-side protection means even silent applies are safe.
+        orig_len = len(notes or "")
+        new_len = len(updated_document or "")
+        if orig_len > 200 and new_len < orig_len * 0.5:
+            logger.warning(
+                "[RefineNotes] Output shrank from %d to %d chars without rewrite intent — refusing",
+                orig_len, new_len,
+            )
+            raise ValueError(
+                "The model returned a much shorter document than the original, "
+                "which usually means it tried to rewrite everything instead of "
+                "editing the part you asked about. Try rephrasing your request "
+                "to mention a specific section (e.g. 'In the Action Items "
+                "section, ...'), or say 'rewrite from scratch focusing on ...' "
+                "if you want a full regeneration."
+            )
 
         changes = patch.get("changes") or []
         if not changes:
             changes = ["Updated your notes."]
+
+        return {"changes": changes, "updated_document": updated_document}
+
+    async def _refine_full_rewrite(
+        self,
+        notes: str,
+        instruction: str,
+        transcript_context: str,
+        model: str,
+        model_name: str,
+        user_email: Optional[str],
+    ) -> Dict[str, object]:
+        """Full-document rewrite path. Used when the user explicitly asks for
+        regeneration / refocus / rewrite-from-scratch. The LLM returns a complete
+        new markdown document plus a short changelog."""
+
+        system_prompt = f"""You are a meeting notes writer. The user wants to regenerate or refocus their entire notes document based on a new instruction.
+
+# Rules
+- Output STRUCTURED markdown with clear `##` section headings (e.g. `## Key Points`, `## Decisions`, `## Action Items`, `## Next Steps`).
+- Use the existing notes AND the transcript as your source of truth — do not invent facts.
+- Respect the user's focus instruction: emphasize what they asked you to focus on, deprioritize what they didn't.
+- Keep things concise but information-dense. Bullet lists for items, short paragraphs for context.
+
+# Reference material
+Existing notes (to incorporate / replace based on user instruction):
+---
+{notes[:20000]}
+---
+
+Meeting Transcript:
+---
+{transcript_context[:30000]}
+---
+
+# Output format — STRICT JSON, NO PROSE, NO CODE FENCES
+Respond with EXACTLY one JSON object:
+
+{{
+  "changes": [
+    "<one or two short bullets describing what changed, e.g. 'Regenerated notes focused on technical decisions.'>"
+  ],
+  "updated_document": "<full new markdown document with ## headings>"
+}}
+"""
+
+        user_query = f"""User instruction: {instruction}
+
+Produce a complete new notes document that fulfils the instruction. Include `## headings` so the document is well-structured and future edits can target sections."""
+
+        raw_text = await self._refine_call_llm(
+            system_prompt=system_prompt,
+            user_query=user_query,
+            model=model,
+            model_name=model_name,
+            user_email=user_email,
+        )
+
+        text = (raw_text or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end <= start:
+                raise ValueError("Rewrite response was not valid JSON")
+            data = json.loads(text[start : end + 1])
+
+        updated_document = str(data.get("updated_document") or "").strip()
+        if not updated_document:
+            raise ValueError("Rewrite returned an empty document")
+
+        changes_raw = data.get("changes")
+        if isinstance(changes_raw, list):
+            changes = [str(c).strip() for c in changes_raw if str(c).strip()]
+        else:
+            changes = []
+        if not changes:
+            changes = ["Regenerated your notes."]
 
         return {"changes": changes, "updated_document": updated_document}
 
@@ -605,13 +806,19 @@ Reminder: return ONLY a JSON object with the targeted edits. Sections you don't 
     @staticmethod
     def _split_notes_into_sections(notes: str) -> List[Dict[str, object]]:
         """
-        Split markdown notes by # / ## / ### headings into addressable sections.
+        Split markdown notes into addressable sections. Recognizes two kinds of
+        heading lines:
+          1. Standard markdown headings: `# Title`, `## Title`, etc.
+          2. Bold-line pseudo-headings: a line containing ONLY `**Title**` or
+             `__Title__` with nothing else. BlockNote and many summary LLMs emit
+             this style instead of `##`, and treating them as opaque preamble
+             body makes targeted edits collapse the whole document.
+
         Each section: {id, heading, level, prefix, body}.
         - id: integer index (0-based)
-        - heading: text of heading (without # marks). Empty string for preamble.
+        - heading: text of heading (without markup). Empty for preamble.
         - level: 0 (preamble / no heading) or 1..6 (heading depth).
-        - prefix: the exact heading line as it appeared (so we can rebuild verbatim),
-                  empty for level 0.
+        - prefix: the exact heading line as it appeared, so we can rebuild verbatim.
         - body: everything after the heading line up to the next heading (or end),
                 with trailing newlines trimmed.
         """
@@ -632,20 +839,45 @@ Reminder: return ONLY a JSON object with the targeted edits. Sections you don't 
             )
 
         heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+        # Bold-line pseudo heading: line that is ONLY a bold span, nothing else.
+        # Accept **text** or __text__. Optional trailing colon (e.g. "**Decisions:**").
+        bold_heading_re = re.compile(r"^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*:?\s*$")
+
         for line in lines:
             m = heading_re.match(line)
+            heading_text: Optional[str] = None
+            heading_level = 0
+
             if m:
-                # Close current section before starting new one
+                heading_text = m.group(2).strip()
+                heading_level = len(m.group(1))
+            else:
+                bm = bold_heading_re.match(line)
+                if bm:
+                    # Heuristic: short text (< 60 chars, no sentence-ending punctuation
+                    # other than colon) makes a plausible heading. Long bold spans
+                    # are probably emphasis on a sentence, not a heading.
+                    candidate = bm.group(1).strip()
+                    if (
+                        0 < len(candidate) <= 60
+                        and not re.search(r"[.!?](\s|$)", candidate)
+                    ):
+                        heading_text = candidate
+                        heading_level = 2  # treat as h2 equivalent
+
+            if heading_text is not None:
+                # Close current section before starting a new one
                 if current["heading"] or any(s.strip() for s in current["body_lines"]):
                     commit_current()
                 current = {
-                    "heading": m.group(2).strip(),
-                    "level": len(m.group(1)),
+                    "heading": heading_text,
+                    "level": heading_level,
                     "prefix": line,
                     "body_lines": [],
                 }
             else:
                 current["body_lines"].append(line)
+
         if current["heading"] or any(s.strip() for s in current["body_lines"]):
             commit_current()
 

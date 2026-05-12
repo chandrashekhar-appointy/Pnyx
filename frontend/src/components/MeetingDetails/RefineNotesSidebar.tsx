@@ -131,7 +131,18 @@ function MarkdownContent({ content }: { content: string }) {
 
 export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRefinement }: RefineNotesSidebarProps) {
     const [messages, setMessages] = useState<Message[]>([
-        { role: 'assistant', content: 'Hi! I can help you refine these notes. You can say things like "Fix typos", "Make the tone more formal", or "Add a section about Next Steps".' }
+        {
+            role: 'assistant',
+            content:
+                'Hi! I can refine these notes two ways:\n\n' +
+                '**Targeted edits** — say what to change and which section:\n' +
+                '- "Add a bullet about timeline to Next Steps"\n' +
+                '- "Fix typos in Decisions"\n' +
+                '- "Make the Action Items section more concise"\n\n' +
+                '**Full regenerate** — start the instruction with **rewrite**, **regenerate**, or **focus on**:\n' +
+                '- "Regenerate focusing on technical decisions"\n' +
+                '- "Rewrite the whole notes from scratch as bullet points"',
+        },
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);

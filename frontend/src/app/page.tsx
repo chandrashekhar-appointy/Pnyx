@@ -288,6 +288,9 @@ function HomeContent() {
   // Recovery State
   const [showReauthModal, setShowReauthModal] = useState(false);
   const [isRestoredSession, setIsRestoredSession] = useState(false);
+  const [allPendingTranscripts, setAllPendingTranscripts] = useState<PendingMeetingData[]>([]);
+  const [showUnsavedPanel, setShowUnsavedPanel] = useState(false);
+  const recoveryCheckDoneRef = useRef(false);
   const [streamingHealth, setStreamingHealth] = useState<StreamingHealthPayload | null>(null);
   const [activeGuardrailAlert, setActiveGuardrailAlert] = useState<AIGuardrailAlert | null>(null);
   const [guardrailAlertHistory, setGuardrailAlertHistory] = useState<AIGuardrailAlert[]>([]);
@@ -328,75 +331,64 @@ function HomeContent() {
   const insightsResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
+    // Guard: only run the recovery check once per mount, not on every dep change
+    if (recoveryCheckDoneRef.current) return;
+
     const checkRecoveries = async () => {
       const hasLivePersistentSession =
         isRecording ||
         Boolean(currentSessionId) ||
         Boolean(getPersistentRecordingClient()?.getSessionId());
 
-      if (hasLivePersistentSession) {
-        return;
-      }
+      if (hasLivePersistentSession) return;
 
       if (typeof window !== 'undefined') {
         const launchParams = new URLSearchParams(window.location.search);
-        if (launchParams.get('autoStart') === 'true') {
-          return;
-        }
+        if (launchParams.get('autoStart') === 'true') return;
       }
 
       const pending = await recoveryService.getAllPendingTranscripts();
-      if (pending.length > 0) {
-        const latest = pending[0];
-        const recoveredId = latest.sessionId || latest.meetingId;
+      if (pending.length === 0) return;
 
-        if (currentSessionId && recoveredId === currentSessionId) {
-          return;
-        }
+      recoveryCheckDoneRef.current = true;
 
-        const ageMinutes = (Date.now() - latest.timestamp) / 1000 / 60;
-        Analytics.trackRecordingRecoveryDetected({
-          recovery_id: recoveredId,
-          pending_count: pending.length,
-          age_minutes: Math.round(ageMinutes),
-          auto_restore_candidate: ageMinutes < 5,
+      const latest = pending[0];
+      const recoveredId = latest.sessionId || latest.meetingId;
+      const ageMinutes = (Date.now() - latest.timestamp) / 1000 / 60;
+
+      Analytics.trackRecordingRecoveryDetected({
+        recovery_id: recoveredId,
+        pending_count: pending.length,
+        age_minutes: Math.round(ageMinutes),
+        auto_restore_candidate: ageMinutes < 5,
+      });
+
+      if (ageMinutes < 5) {
+        // Fresh backup: auto-restore seamlessly
+        setMeetingTitle(latest.title);
+        setTranscripts(latest.transcripts);
+        setPendingRecoveryId(recoveredId);
+        setIsRestoredSession(true);
+        setCurrentSessionId(recoveredId);
+        toast.success('Session Restored', {
+          description: 'Your meeting context has been automatically restored.',
+          id: 'session-restored',
         });
-
-        // If backup is fresh (< 5 mins), auto-restore seamlessly
-        if (ageMinutes < 5) {
-          console.log('[Recovery] Found fresh backup (< 5 mins), auto-restoring...');
-          setMeetingTitle(latest.title);
-          setTranscripts(latest.transcripts);
-          setPendingRecoveryId(recoveredId);
-          setIsRestoredSession(true);
-
-          // Don't set 'recovery' ID to avoid blocking recording controls
-          // Just treat it as loaded state ready to append
-          setCurrentSessionId(recoveredId);
-
-          toast.success('Session Restored', {
-            description: 'Your meeting context has been automatically restored.'
-          });
-          Analytics.trackRecordingRecoveryRestored({
-            recovery_id: recoveredId,
-            source: 'auto',
-            transcript_count: latest.transcripts.length,
-          });
-        } else {
-          // Old backup: Prompt user
-          toast('Unsaved Transcripts Found', {
-            description: `Found ${pending.length} unsaved meetings. Click to recover.`,
-            action: {
-              label: 'Recover',
-              onClick: () => handleRecoverTranscripts(latest)
-            },
-            duration: 10000,
-          });
-        }
+        Analytics.trackRecordingRecoveryRestored({
+          recovery_id: recoveredId,
+          source: 'auto',
+          transcript_count: latest.transcripts.length,
+        });
+      } else {
+        // Older backups: surface the panel (not a toast that can repeat)
+        setAllPendingTranscripts(pending);
+        setShowUnsavedPanel(true);
       }
     };
+
     checkRecoveries();
-  }, [currentSessionId, isRecording, setCurrentSessionId, setMeetingTitle, setPendingRecoveryId, setTranscripts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — run once on mount only
 
   useEffect(() => {
     const loadHostStyles = async () => {
@@ -456,12 +448,30 @@ function HomeContent() {
     const recoveredId = data.sessionId || data.meetingId;
     setPendingRecoveryId(recoveredId);
     setCurrentSessionId(recoveredId);
+    setShowUnsavedPanel(false);
     Analytics.trackRecordingRecoveryRestored({
       recovery_id: recoveredId,
       source: 'manual',
       transcript_count: data.transcripts.length,
     });
     toast.success('Restored unsaved meeting', { description: 'Please try saving again.' });
+  };
+
+  const handleDiscardPending = async (meetingId: string) => {
+    await recoveryService.deletePendingTranscript(meetingId);
+    setAllPendingTranscripts((prev) => {
+      const next = prev.filter((p) => p.meetingId !== meetingId);
+      if (next.length === 0) setShowUnsavedPanel(false);
+      return next;
+    });
+  };
+
+  const handleDiscardAllPending = async () => {
+    for (const p of allPendingTranscripts) {
+      await recoveryService.deletePendingTranscript(p.meetingId);
+    }
+    setAllPendingTranscripts([]);
+    setShowUnsavedPanel(false);
   };
 
   // Catch Me Up feature state
@@ -1619,6 +1629,14 @@ function HomeContent() {
       setHostSuggestionQueue([]);
       setHostStateDelta(null);
       setPinnedHostSuggestions([]);
+      // Past insights are per-meeting — clear them so items from a previous
+      // meeting (decisions, discussions, actions that auto-expired) don't
+      // bleed into the new session's "Past Discussions / Decisions" panels.
+      // Only clear if this is a brand-new session, not a resume/recovery.
+      if (!currentSessionId && !pendingRecoveryId) {
+        setPastInsights([]);
+        insightTimestampsRef.current.clear();
+      }
       lastGuardrailSignatureRef.current = '';
       lastGuardrailAtRef.current = 0;
       setIsRecording(true);
@@ -3477,6 +3495,76 @@ function HomeContent() {
             </div>
           </div>
         )}
+
+        {/* Unsaved Recordings Panel */}
+        <Dialog open={showUnsavedPanel} onOpenChange={setShowUnsavedPanel}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-700 text-xs font-bold">
+                  {allPendingTranscripts.length}
+                </span>
+                Unsaved Recordings
+              </DialogTitle>
+              <DialogDescription>
+                These recordings were interrupted before saving. Recover to resume saving, or discard to delete them.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex flex-col gap-3 max-h-80 overflow-y-auto py-1">
+              {allPendingTranscripts.map((item) => {
+                const ageMinutes = Math.round((Date.now() - item.timestamp) / 1000 / 60);
+                const ageLabel = ageMinutes < 60
+                  ? `${ageMinutes}m ago`
+                  : `${Math.round(ageMinutes / 60)}h ago`;
+                return (
+                  <div
+                    key={item.meetingId}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 truncate">{item.title || 'Untitled Meeting'}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {item.transcripts.length} segment{item.transcripts.length !== 1 ? 's' : ''} · {ageLabel}
+                      </p>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        onClick={() => handleRecoverTranscripts(item)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white h-7 px-3 text-xs"
+                      >
+                        Recover
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDiscardPending(item.meetingId)}
+                        className="border-red-200 text-red-600 hover:bg-red-50 h-7 px-3 text-xs"
+                      >
+                        Discard
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <DialogFooter className="flex justify-between items-center pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleDiscardAllPending}
+                className="text-red-500 hover:text-red-700 hover:bg-red-50 text-xs"
+              >
+                Discard All
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowUnsavedPanel(false)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Processing status overlay */}
         {/* {summaryStatus === 'processing' && !isRecording && (
