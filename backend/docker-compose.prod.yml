@@ -24,6 +24,8 @@ services:
     image: meeting-copilot-backend:latest
     container_name: meeting-copilot-backend
     restart: always
+    env_file:
+      - .env.prod
     ports:
       - "${APP_PORT:-5167}:5167"
     environment:
@@ -77,6 +79,8 @@ services:
     image: meeting-copilot-backend:latest
     container_name: meeting-copilot-celery-worker
     restart: always
+    env_file:
+      - .env.prod
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
@@ -111,6 +115,8 @@ services:
     image: meeting-copilot-backend:latest
     container_name: meeting-copilot-celery-beat
     restart: always
+    env_file:
+      - .env.prod
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
