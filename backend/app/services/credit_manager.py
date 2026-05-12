@@ -96,10 +96,15 @@ def _current_iso_week() -> str:
     return f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
 
 
-def _redis_keys(user_email: str) -> Tuple[str, str, str]:
-    """Return the three Redis keys for a user's credit pools."""
+def _redis_keys(user_email: str) -> Tuple[str, str, str, str]:
+    """Return the four Redis keys for a user's credit pools + week marker."""
     prefix = f"user:{user_email}:credits"
-    return f"{prefix}:weekly", f"{prefix}:admin", f"{prefix}:purchased"
+    return (
+        f"{prefix}:weekly",
+        f"{prefix}:admin",
+        f"{prefix}:purchased",
+        f"{prefix}:reset_week",
+    )
 
 
 class CreditManager:
@@ -175,19 +180,53 @@ class CreditManager:
 
     async def _ensure_redis_synced(self, user_email: str) -> None:
         """
-        If Redis keys don't exist for this user, populate them from
-        Postgres. This handles Redis restarts gracefully.
-        """
-        wk, ak, pk = _redis_keys(user_email)
+        Ensure Redis credit keys are populated and that the weekly
+        credit quota has been reset if a new ISO week has started.
 
-        # Quick check — if the weekly key exists, assume all are synced
-        if await self.redis.exists(wk):
+        The reset_week key in Redis tracks which week the current
+        credit values belong to.  This makes the week-boundary check
+        a fast Redis-only operation on the hot path.
+        """
+        wk, ak, pk, rwk = _redis_keys(user_email)
+        current_week = _current_iso_week()
+
+        # Fast path: keys exist AND we're still in the same week
+        cached_week = await self.redis.get(rwk)
+        if cached_week == current_week and await self.redis.exists(wk):
             return
 
+        # Either keys are missing (Redis restart / first call) or the
+        # week has changed — fetch Postgres state and reconcile.
         user = await self._ensure_user_row(user_email)
 
-        # Check if weekly credits need a reset for the current week
-        current_week = _current_iso_week()
+        if cached_week and cached_week != current_week and await self.redis.exists(wk):
+            # ── Week boundary crossed while Redis keys still exist ──
+            # Reset weekly credits; leave admin & purchased untouched.
+            logger.info(
+                f"[CreditManager] Week boundary crossed for {user_email}: "
+                f"{cached_week} → {current_week}  — resetting weekly to {WEEKLY_FREE_CREDITS}"
+            )
+            pipe = self.redis.pipeline()
+            pipe.set(wk, WEEKLY_FREE_CREDITS)
+            pipe.set(rwk, current_week)
+            await pipe.execute()
+
+            # Persist to Postgres
+            async with self.db._get_connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE user_credits
+                    SET weekly_quota = $1, last_reset_week = $2,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_email = $3
+                    """,
+                    WEEKLY_FREE_CREDITS,
+                    current_week,
+                    user_email,
+                )
+            return
+
+        # ── Full resync from Postgres (keys missing) ────────────────
         weekly = user["weekly_quota"]
         if user["last_reset_week"] != current_week:
             weekly = WEEKLY_FREE_CREDITS
@@ -209,12 +248,13 @@ class CreditManager:
         pipe.set(wk, weekly)
         pipe.set(ak, user["admin_bonus_credits"])
         pipe.set(pk, user["purchased_credits"])
+        pipe.set(rwk, current_week)
         await pipe.execute()
 
         logger.info(
             f"[CreditManager] Synced Redis for {user_email}: "
             f"weekly={weekly}, admin={user['admin_bonus_credits']}, "
-            f"purchased={user['purchased_credits']}"
+            f"purchased={user['purchased_credits']}, week={current_week}"
         )
 
     # ── Write-back: Redis → Postgres ────────────────────────────────
@@ -270,7 +310,7 @@ class CreditManager:
             }
 
         await self._ensure_redis_synced(user_email)
-        wk, ak, pk = _redis_keys(user_email)
+        wk, ak, pk, _rwk = _redis_keys(user_email)
 
         pipe = self.redis.pipeline()
         pipe.get(wk)
@@ -322,7 +362,7 @@ class CreditManager:
             }
 
         await self._ensure_redis_synced(user_email)
-        wk, ak, pk = _redis_keys(user_email)
+        wk, ak, pk, _rwk = _redis_keys(user_email)
 
         # Execute the Lua script atomically
         result = await self._deduct_script(
@@ -400,7 +440,7 @@ class CreditManager:
         await self._ensure_user_row(user_email)
         await self._ensure_redis_synced(user_email)
 
-        _, _, pk = _redis_keys(user_email)
+        _, _, pk, _ = _redis_keys(user_email)
 
         # Atomically increment in Redis
         await self.redis.incrby(pk, amount)
@@ -453,7 +493,7 @@ class CreditManager:
         await self._ensure_user_row(user_email)
         await self._ensure_redis_synced(user_email)
 
-        _, ak, _ = _redis_keys(user_email)
+        _, ak, _, _ = _redis_keys(user_email)
 
         # Update Redis
         await self.redis.incrby(ak, amount)
@@ -525,13 +565,16 @@ class CreditManager:
     async def reset_weekly_credits(self, user_email: str) -> None:
         """
         Reset weekly credits to the default allocation.
-        Called by the weekly cron job.
+        Called by the weekly cron job and lazily on week-boundary crossing.
         """
         current_week = _current_iso_week()
-        wk, _, _ = _redis_keys(user_email)
+        wk, _, _, rwk = _redis_keys(user_email)
 
-        # Update Redis
-        await self.redis.set(wk, WEEKLY_FREE_CREDITS)
+        # Update Redis (credits + week marker)
+        pipe = self.redis.pipeline()
+        pipe.set(wk, WEEKLY_FREE_CREDITS)
+        pipe.set(rwk, current_week)
+        await pipe.execute()
 
         # Update Postgres
         async with self.db._get_connection() as conn:
