@@ -1878,10 +1878,10 @@ async def save_transcript(
                 async with db._get_connection() as conn:
                     await conn.execute(
                         """
-                        UPDATE transcript_segments
+                        UPDATE transcript_versions
                         SET meeting_id = $1
                         WHERE meeting_id = $2
-                    """,
+                        """,
                         meeting_id,
                         source_session_id,
                     )
@@ -1889,7 +1889,7 @@ async def save_transcript(
                         """
                         DELETE FROM meetings
                         WHERE id = $1
-                    """,
+                        """,
                         source_session_id,
                     )
                 logger.info(

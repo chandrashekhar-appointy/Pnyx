@@ -578,37 +578,36 @@ class DatabaseManager:
         speaker: str = None,
         speaker_confidence: float = None,
     ):
-        """Save a transcript for a meeting"""
+        """Save a single transcript segment to bucket via transcript_versions."""
+        segment = {
+            "text": transcript,
+            "timestamp": timestamp,
+            "start": audio_start_time,
+            "end": audio_end_time,
+            "speaker": speaker,
+            "speaker_confidence": speaker_confidence,
+            "source": source,
+        }
         try:
-            async with self._get_connection() as conn:
-                # No ON CONFLICT logic needed as transcripts table has SERIAL ID, duplicates allowed unless unique constraint
-                await conn.execute(
-                    """
-                    INSERT INTO transcript_segments (
-                        meeting_id, transcript, timestamp,
-                        audio_start_time, audio_end_time, source, speaker, speaker_confidence
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                    meeting_id,
-                    transcript,
-                    timestamp,
-                    audio_start_time,
-                    audio_end_time,
-                    source,
-                    speaker,
-                    speaker_confidence,
-                )
-                return True
+            await self.save_transcript_version(
+                meeting_id=meeting_id,
+                source=source,
+                content=[segment],
+                is_authoritative=True,
+                alignment_config={"total_duration_seconds": audio_end_time or 0},
+                created_by="system",
+            )
+            return True
         except Exception as e:
             logger.error(f"Error saving transcript: {str(e)}")
             raise
 
     async def has_transcript_segments(self, meeting_id: str) -> bool:
-        """Check if a meeting has any transcript segments"""
+        """Check if a meeting has any transcript versions saved."""
         try:
             async with self._get_connection() as conn:
                 row = await conn.fetchrow(
-                    "SELECT 1 FROM transcript_segments WHERE meeting_id = $1 LIMIT 1",
+                    "SELECT 1 FROM transcript_versions WHERE meeting_id = $1 LIMIT 1",
                     meeting_id
                 )
                 return bool(row)
@@ -618,55 +617,83 @@ class DatabaseManager:
 
     async def get_meeting_audio_duration_seconds(self, meeting_id: str) -> int:
         """
-        Get the exact duration of recorded audio in seconds by checking the MAX
-        audio_end_time from transcript segments.
+        Get the duration of recorded audio in seconds from transcript version metadata.
+        Falls back to loading segment content from bucket if metadata is missing.
         Returns 0 if no transcripts are found.
         """
         try:
             async with self._get_connection() as conn:
-                max_end = await conn.fetchval(
-                    "SELECT MAX(audio_end_time) FROM transcript_segments WHERE meeting_id = $1",
-                    meeting_id
+                row = await conn.fetchrow(
+                    """
+                    SELECT alignment_config, content_object_path
+                    FROM transcript_versions
+                    WHERE meeting_id = $1
+                    ORDER BY version_num DESC
+                    LIMIT 1
+                    """,
+                    meeting_id,
                 )
-                if max_end:
-                    return int(max_end)
-                return 0
+                if not row:
+                    return 0
+
+                # Fast path: duration stored in alignment_config during save
+                config = row["alignment_config"]
+                if isinstance(config, str):
+                    try:
+                        config = json.loads(config)
+                    except Exception:
+                        config = {}
+                if config and config.get("total_duration_seconds"):
+                    return int(config["total_duration_seconds"])
+
+                # Slow path: load segments from bucket and compute MAX end time
+                content = await DocumentStorageService.load_transcript_version_content(
+                    row["content_object_path"]
+                )
+                if not content:
+                    return 0
+                max_end = max(
+                    (float(s.get("end") or s.get("audio_end_time") or 0) for s in content),
+                    default=0,
+                )
+                return int(max_end)
         except Exception as e:
             logger.error(f"Error calculating meeting audio duration: {str(e)}")
             return 0
 
     async def save_meeting_transcripts_batch(self, meeting_id: str, transcripts: list):
-        """Batch save transcripts for a meeting"""
+        """Batch save transcripts for a meeting — stored as a version snapshot in bucket."""
         if not transcripts:
             return True
 
-        try:
-            async with self._get_connection() as conn:
-                # Prepare data for executemany
-                data = [
-                    (
-                        meeting_id,
-                        t.text,
-                        t.timestamp,
-                        t.audio_start_time,
-                        t.audio_end_time,
-                        "web_client",  # source
-                        None,  # speaker
-                        None,  # speaker_confidence
-                    )
-                    for t in transcripts
-                ]
+        segments = [
+            {
+                "text": t.text,
+                "timestamp": t.timestamp,
+                "start": t.audio_start_time,
+                "end": t.audio_end_time,
+                "speaker": None,
+                "speaker_confidence": None,
+                "source": "live",
+            }
+            for t in transcripts
+        ]
 
-                await conn.executemany(
-                    """
-                    INSERT INTO transcript_segments (
-                        meeting_id, transcript, timestamp,
-                        audio_start_time, audio_end_time, source, speaker, speaker_confidence
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    """,
-                    data,
-                )
-                return True
+        max_end = max(
+            (float(s["end"] or 0) for s in segments if s["end"] is not None),
+            default=0,
+        )
+
+        try:
+            await self.save_transcript_version(
+                meeting_id=meeting_id,
+                source="live",
+                content=segments,
+                is_authoritative=True,
+                alignment_config={"total_duration_seconds": max_end},
+                created_by="system",
+            )
+            return True
         except Exception as e:
             logger.error(f"Error batch saving transcripts: {str(e)}")
             raise
@@ -884,11 +911,11 @@ class DatabaseManager:
             raise
 
     async def clear_meeting_transcripts(self, meeting_id: str):
-        """Delete all transcript segments for a meeting"""
+        """Delete all transcript versions for a meeting (bucket objects are cleaned separately)."""
         try:
             async with self._get_connection() as conn:
                 await conn.execute(
-                    "DELETE FROM transcript_segments WHERE meeting_id = $1", meeting_id
+                    "DELETE FROM transcript_versions WHERE meeting_id = $1", meeting_id
                 )
                 logger.info(f"Cleared transcripts for meeting {meeting_id}")
                 return True
@@ -897,33 +924,60 @@ class DatabaseManager:
             raise
 
     async def get_meeting(self, meeting_id: str):
-        """Get a meeting by ID with all its transcripts"""
+        """Get a meeting by ID. Transcripts are loaded from the authoritative bucket version."""
         try:
             async with self._get_connection() as conn:
-                # Get meeting details
                 meeting = await conn.fetchrow(
                     """
                     SELECT id, title, created_at, updated_at, owner_id, workspace_id
                     FROM meetings
                     WHERE id = $1
-                """,
+                    """,
                     meeting_id,
                 )
 
                 if not meeting:
                     return None
 
-                # Get transcripts
-                transcripts = await conn.fetch(
+                # Load segments from the most recent authoritative version in bucket
+                version_row = await conn.fetchrow(
                     """
-                    SELECT id, transcript, timestamp, audio_start_time, audio_end_time, speaker, speaker_confidence, source, alignment_state
-                    FROM transcript_segments
+                    SELECT content_object_path
+                    FROM transcript_versions
                     WHERE meeting_id = $1
-                      AND (source IS NULL OR source != 'diarized')
-                    ORDER BY id ASC
-                """,
+                    ORDER BY is_authoritative DESC, version_num DESC
+                    LIMIT 1
+                    """,
                     meeting_id,
                 )
+
+                # Build speaker display-name overrides from meeting_speakers table
+                speaker_rows = await conn.fetch(
+                    "SELECT diarization_label, display_name FROM meeting_speakers WHERE meeting_id = $1",
+                    meeting_id,
+                )
+                speaker_map = {r["diarization_label"]: r["display_name"] for r in speaker_rows}
+
+                transcripts = []
+                if version_row and version_row["content_object_path"]:
+                    segments = await DocumentStorageService.load_transcript_version_content(
+                        version_row["content_object_path"]
+                    )
+                    if segments:
+                        for i, s in enumerate(segments):
+                            raw_speaker = s.get("speaker")
+                            display_speaker = speaker_map.get(raw_speaker, raw_speaker) if raw_speaker else raw_speaker
+                            transcripts.append({
+                                "id": str(i),
+                                "text": s.get("text") or s.get("transcript", ""),
+                                "timestamp": s.get("timestamp", ""),
+                                "audio_start_time": s.get("start") if s.get("start") is not None else s.get("audio_start_time"),
+                                "audio_end_time": s.get("end") if s.get("end") is not None else s.get("audio_end_time"),
+                                "speaker": display_speaker,
+                                "speaker_confidence": s.get("speaker_confidence"),
+                                "source": s.get("source", "live"),
+                                "alignment_state": s.get("alignment_state"),
+                            })
 
                 return {
                     "id": meeting["id"],
@@ -936,20 +990,7 @@ class DatabaseManager:
                     else None,
                     "owner_id": meeting["owner_id"],
                     "workspace_id": meeting["workspace_id"],
-                    "transcripts": [
-                        {
-                            "id": str(t["id"]),
-                            "text": t["transcript"],
-                            "timestamp": t["timestamp"],
-                            "audio_start_time": t["audio_start_time"],
-                            "audio_end_time": t["audio_end_time"],
-                            "speaker": t["speaker"],
-                            "speaker_confidence": t["speaker_confidence"],
-                            "source": t["source"],
-                            "alignment_state": t["alignment_state"],
-                        }
-                        for t in transcripts
-                    ],
+                    "transcripts": transcripts,
                 }
         except Exception as e:
             logger.error(f"Error getting meeting: {str(e)}")
@@ -1003,13 +1044,13 @@ class DatabaseManager:
             rows = await conn.fetch("""
                 SELECT m.id, m.title, m.created_at, m.owner_id, m.workspace_id
                 FROM meetings m
-                LEFT JOIN transcript_segments ts ON m.id = ts.meeting_id
+                LEFT JOIN transcript_versions tv ON m.id = tv.meeting_id
                 LEFT JOIN full_transcripts ft ON m.id = ft.meeting_id
                 LEFT JOIN summary_processes sp ON m.id = sp.meeting_id
                 LEFT JOIN recording_sessions rs ON m.id = rs.meeting_id
                 LEFT JOIN meeting_bots b ON m.id = b.meeting_id
                 WHERE (
-                    ts.meeting_id IS NOT NULL
+                    tv.meeting_id IS NOT NULL
                     OR ft.meeting_id IS NOT NULL
                     OR sp.meeting_id IS NOT NULL
                     OR rs.meeting_id IS NOT NULL
@@ -2848,37 +2889,22 @@ class DatabaseManager:
 
         try:
             async with self._get_connection() as conn:
-                # 1. Search transcript_segments table
+                # Search full_transcripts preview (segments now live in bucket)
                 rows = await conn.fetch(
-                    """
-                    SELECT m.id, m.title, ts.transcript, ts.timestamp
-                    FROM meetings m
-                    JOIN transcript_segments ts ON m.id = ts.meeting_id
-                    WHERE LOWER(ts.transcript) LIKE $1
-                    ORDER BY m.created_at DESC
-                """,
-                    search_query,
-                )
-
-                # 2. Search full_transcripts table
-                chunk_rows = await conn.fetch(
                     """
                     SELECT m.id, m.title, ft.transcript_preview
                     FROM meetings m
                     JOIN full_transcripts ft ON m.id = ft.meeting_id
                     WHERE LOWER(COALESCE(ft.transcript_preview, '')) LIKE $1
-                    AND m.id NOT IN (SELECT DISTINCT meeting_id FROM transcript_segments WHERE LOWER(transcript) LIKE $2)
                     ORDER BY m.created_at DESC
-                """,
-                    search_query,
+                    """,
                     search_query,
                 )
 
                 results = []
 
-                # Helper to format results
                 def format_match(row, text_col):
-                    text = row[text_col]
+                    text = row[text_col] or ""
                     lower_text = text.lower()
                     match_idx = lower_text.find(query.lower())
                     start = max(0, match_idx - 100)
@@ -2893,14 +2919,10 @@ class DatabaseManager:
                         "id": row["id"],
                         "title": row["title"],
                         "matchContext": context,
-                        "timestamp": row.get("timestamp")
-                        or datetime.utcnow().isoformat(),
+                        "timestamp": datetime.utcnow().isoformat(),
                     }
 
                 for row in rows:
-                    results.append(format_match(row, "transcript"))
-
-                for row in chunk_rows:
                     results.append(format_match(row, "transcript_preview"))
 
                 return results

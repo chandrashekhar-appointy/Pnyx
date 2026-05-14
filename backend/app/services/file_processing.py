@@ -137,20 +137,15 @@ class FileProcessor:
 
             logger.info(f"✅ Transcription complete: {len(segments)} segments")
 
-            # 3. Save Initial Transcript
+            # 3. Save Initial Transcript as a version snapshot in bucket
             db_segments = []
-            for i, seg in enumerate(segments):
+            for seg in segments:
                 db_segments.append(
                     {
-                        "id": str(uuid.uuid4()),
-                        "meeting_id": meeting_id,
-                        "transcript": seg[
-                            "text"
-                        ],  # Changed from 'text' to match DB schema usually
-                        "timestamp": datetime.now().isoformat(),  # Placeholder
-                        "audio_start_time": seg["start"],
-                        "audio_end_time": seg["end"],
-                        "duration": seg["end"] - seg["start"],
+                        "text": seg["text"],
+                        "timestamp": datetime.now().isoformat(),
+                        "start": seg["start"],
+                        "end": seg["end"],
                         "speaker": str(seg.get("speaker") or "Speaker 0"),
                         "speaker_confidence": 1.0,
                         "source": "upload",
@@ -158,20 +153,15 @@ class FileProcessor:
                     }
                 )
 
-            # Save segments to main transcript table first?
-            # Usually we save to transcript_segments table.
-            # We can iterate and save.
-            for seg in db_segments:
-                await self.db.save_meeting_transcript(
-                    meeting_id=meeting_id,
-                    transcript=seg["transcript"],
-                    timestamp=seg["timestamp"],
-                    audio_start_time=seg["audio_start_time"],
-                    audio_end_time=seg["audio_end_time"],
-                    source="upload",
-                    speaker=seg["speaker"],
-                    speaker_confidence=seg["speaker_confidence"],
-                )
+            max_end = max((s["end"] for s in db_segments if s["end"] is not None), default=0)
+            await self.db.save_transcript_version(
+                meeting_id=meeting_id,
+                source="upload",
+                content=db_segments,
+                is_authoritative=True,
+                alignment_config={"total_duration_seconds": max_end},
+                created_by="system",
+            )
 
             # Save full transcript text as well
             if full_text:

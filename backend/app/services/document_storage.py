@@ -138,9 +138,9 @@ class DocumentStorageService:
             "confidence_metrics": confidence_metrics or {},
             "segments": content or [],
         }
-        sha256, byte_size = await cls.save_json(path, payload)
+        sha256, byte_size, final_path, _ = await cls.save_json(path, payload)
         return {
-            "path": path,
+            "path": final_path,
             "sha256": sha256,
             "byte_size": byte_size,
         }
