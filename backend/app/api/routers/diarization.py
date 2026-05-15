@@ -322,47 +322,7 @@ async def run_diarization_job(meeting_id: str, provider: str, user_email: str):
         async def _persist_and_complete():
             async with db._get_connection() as conn:
                 async with conn.transaction():
-                    # 1. Clear old diarized transcripts only (Preserve live)
-                    await conn.execute(
-                        "DELETE FROM transcript_segments WHERE meeting_id = $1 AND source = 'diarized'",
-                        meeting_id,
-                    )
-
-                    # 2. Insert new aligned segments in batch
-                    insert_rows = []
-                    for t in final_segments:
-                        start_val = t.get("start", 0)
-                        timestamp_str = (
-                            f"({int(start_val // 60):02d}:{int(start_val % 60):02d})"
-                        )
-                        insert_rows.append(
-                            (
-                                meeting_id,
-                                t.get("text", ""),
-                                timestamp_str,
-                                t.get("start"),
-                                t.get("end"),
-                                (t.get("end", 0) - (t.get("start") or 0)),
-                                "diarized",
-                                t.get("speaker", "Speaker 0"),
-                                t.get("speaker_confidence", 1.0),
-                                t.get("alignment_state"),
-                            )
-                        )
-
-                    if insert_rows:
-                        await conn.executemany(
-                            """
-                            INSERT INTO transcript_segments (
-                                meeting_id, transcript, timestamp,
-                                audio_start_time, audio_end_time, duration,
-                                source, speaker, speaker_confidence, alignment_state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                            """,
-                            insert_rows,
-                        )
-
-                    # 3. Save version snapshot using the same connection
+                    # Save authoritative diarized version to bucket (segments no longer stored in transcript_segments)
                     version_num = await conn.fetchval(
                         """
                         SELECT COALESCE(MAX(version_num), 0) + 1
@@ -710,14 +670,6 @@ async def rename_speaker(
                 meeting_id,
                 speaker_label,
                 request.display_name,
-            )
-
-            # Also update transcripts
-            await conn.execute(
-                "UPDATE transcript_segments SET speaker = $1 WHERE meeting_id = $2 AND speaker = $3",
-                request.display_name,
-                meeting_id,
-                speaker_label,
             )
 
         return {"status": "success", "message": "Speaker renamed"}
