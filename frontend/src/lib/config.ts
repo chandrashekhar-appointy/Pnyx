@@ -12,14 +12,14 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 
 export const config = {
   // HTTP API base URL
-  apiUrl: isDevelopment 
-    ? 'http://localhost:5167'
-    : (process.env.NEXT_PUBLIC_BACKEND_URL || 'https://pnyx-dev-206432.bifrost.saastack.site'),
+  apiUrl: process.env.NEXT_PUBLIC_BACKEND_URL || 
+    (isDevelopment ? 'http://localhost:5167' : 'https://pnyx-dev-206432.bifrost.saastack.site'),
   
   // WebSocket URL for real-time streaming
-  wsUrl: isDevelopment
-    ? 'ws://localhost:5167/ws/streaming-audio'
-    : (process.env.NEXT_PUBLIC_WS_URL || 'wss://pnyx-dev-206432.bifrost.saastack.site/ws/streaming-audio'),
+  wsUrl: process.env.NEXT_PUBLIC_WS_URL || 
+    (isDevelopment 
+      ? 'ws://localhost:5167/ws/streaming-audio' 
+      : 'wss://pnyx-dev-206432.bifrost.saastack.site/ws/streaming-audio'),
   
   // Debug mode - enables extra logging
   debug: isDevelopment,

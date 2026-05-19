@@ -431,8 +431,20 @@ def _mark_runtime_resume(session_id: str) -> bool:
 
 def _cancel_pending_cleanup(session_id: str):
     task = session_cleanup_tasks.pop(session_id, None)
-    if task and not task.done():
-        task.cancel()
+    if not task or task.done():
+        return
+    # Avoid self-cancellation when called from inside the deferred cleanup
+    # task itself (e.g. via _finalize_session → here). Cancelling the current
+    # task here turns the next await into CancelledError, which the cleanup's
+    # outer except silently swallows — leaving the session stuck in 'recording'
+    # because the celery enqueue that runs after _finalize_session never fires.
+    try:
+        current = asyncio.current_task()
+    except RuntimeError:
+        current = None
+    if current is task:
+        return
+    task.cancel()
 
 
 async def _build_ai_meeting_context(

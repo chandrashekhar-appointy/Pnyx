@@ -1137,68 +1137,90 @@ async def generate_notes_with_gemini_background(
         }
 
         all_json_data = []
-        model_name = "gpt-5.4"
+        model_name = "gemini-2.5-flash"
 
-        # 2. Try multimodal generation first (behind feature flag + request flags)
+        # 2. Try multimodal generation first when audio context is allowed.
+        # Defaults to ON so the model can ground notes in the actual audio
+        # (better quality for Hindi/code-mixed meetings). Set NOTES_AUDIO_ENABLED=false
+        # to force transcript-only.
         notes_audio_enabled = (
-            os.getenv("NOTES_AUDIO_ENABLED", "false").lower() == "true"
+            os.getenv("NOTES_AUDIO_ENABLED", "true").lower() == "true"
         )
-        bool(use_audio_context) and notes_audio_enabled
-        # effective_audio_mode = audio_mode or os.getenv(
-        #     "NOTES_AUDIO_DEFAULT_MODE", "auto"
-        # )
+        allow_audio = bool(use_audio_context) and notes_audio_enabled
+        effective_audio_mode = audio_mode or os.getenv(
+            "NOTES_AUDIO_DEFAULT_MODE", "compressed"
+        )
+        # Hard timeout so the audio path can never block notes for too long.
+        audio_path_timeout_sec = float(os.getenv("NOTES_AUDIO_TIMEOUT_SEC", "60"))
 
-        # ---------------------------------------------------------------------
-        # USER OVERRIDE: COMMENTED OUT AUDIO USAGE FOR NOTES GENERATION
-        # Use transcription strictly as main source for speed and determinism
-        # ---------------------------------------------------------------------
-        # if allow_audio:
-        #     try:
-        #         (
-        #             audio_source,
-        #             audio_bytes,
-        #             audio_mime,
-        #             audio_duration_sec,
-        #             selected_mode,
-        #         ) = await _resolve_audio_asset(
-        #             meeting_id,
-        #             effective_audio_mode,
-        #             allow_audio=True,
-        #         )
-        #         metadata["audio_mode_selected"] = selected_mode
-        #         metadata["audio_source"] = audio_source
-        #         metadata["audio_duration_sec"] = audio_duration_sec
-        #
-        #         if audio_source and audio_mime == "audio/url":
-        #             metadata["fallback_reason"] = (
-        #                 "audio_url_override_not_supported_server_side"
-        #             )
-        #         elif audio_bytes and audio_mime:
-        #             max_minutes = max(1, int(max_audio_minutes or 120))
-        #             if audio_duration_sec and (audio_duration_sec / 60) > max_minutes:
-        #                 metadata["fallback_reason"] = (
-        #                     f"audio_exceeds_max_minutes_{max_minutes}"
-        #                 )
-        #             else:
-        #                 multimodal_json = await _generate_multimodal_json(
-        #                     transcript_text=full_transcript_text,
-        #                     prompt_text=template_prompt,
-        #                     model_name=model_name,
-        #                     user_email_local=user_email,
-        #                     mime_type=audio_mime,
-        #                     audio_bytes=audio_bytes,
-        #                 )
-        #                 if multimodal_json:
-        #                     all_json_data = [_extract_json_object(multimodal_json)]
-        #                     metadata["audio_used"] = True
-        #                 else:
-        #                     metadata["fallback_reason"] = "multimodal_generation_failed"
-        #         else:
-        #             metadata["fallback_reason"] = "audio_asset_unavailable"
-        #     except Exception as e:
-        #         logger.warning("Multimodal notes path failed for %s: %s", meeting_id, e)
-        #         metadata["fallback_reason"] = "multimodal_exception"
-        # ---------------------------------------------------------------------
+        if allow_audio:
+            try:
+                async def _audio_pipeline() -> Optional[str]:
+                    (
+                        audio_source,
+                        audio_bytes,
+                        audio_mime,
+                        audio_duration_sec,
+                        selected_mode,
+                    ) = await _resolve_audio_asset(
+                        meeting_id,
+                        effective_audio_mode,
+                        allow_audio=True,
+                    )
+                    metadata["audio_mode_selected"] = selected_mode
+                    metadata["audio_source"] = audio_source
+                    metadata["audio_duration_sec"] = audio_duration_sec
+
+                    if audio_source and audio_mime == "audio/url":
+                        metadata["fallback_reason"] = (
+                            "audio_url_override_not_supported_server_side"
+                        )
+                        return None
+                    if not (audio_bytes and audio_mime):
+                        metadata["fallback_reason"] = "audio_asset_unavailable"
+                        return None
+
+                    max_minutes = max(1, int(max_audio_minutes or 120))
+                    if audio_duration_sec and (audio_duration_sec / 60) > max_minutes:
+                        metadata["fallback_reason"] = (
+                            f"audio_exceeds_max_minutes_{max_minutes}"
+                        )
+                        return None
+
+                    return await _generate_multimodal_json(
+                        transcript_text=full_transcript_text,
+                        prompt_text=template_prompt,
+                        model_name=model_name,
+                        user_email_local=user_email,
+                        mime_type=audio_mime,
+                        audio_bytes=audio_bytes,
+                    )
+
+                try:
+                    multimodal_json = await asyncio.wait_for(
+                        _audio_pipeline(), timeout=audio_path_timeout_sec
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Multimodal notes path timed out after %.1fs for %s; falling back to transcript-only.",
+                        audio_path_timeout_sec,
+                        meeting_id,
+                    )
+                    metadata["fallback_reason"] = "multimodal_timeout"
+                    multimodal_json = None
+
+                if multimodal_json:
+                    extracted = _extract_json_object(multimodal_json)
+                    if extracted:
+                        all_json_data = [extracted]
+                        metadata["audio_used"] = True
+                    else:
+                        metadata["fallback_reason"] = "multimodal_empty_response"
+                elif not metadata.get("fallback_reason"):
+                    metadata["fallback_reason"] = "multimodal_generation_failed"
+            except Exception as e:
+                logger.warning("Multimodal notes path failed for %s: %s", meeting_id, e)
+                metadata["fallback_reason"] = "multimodal_exception"
 
         # 3. Transcript-only fallback
         if not all_json_data:
