@@ -2159,7 +2159,7 @@ class DatabaseManager:
     ) -> Optional[Dict]:
         async with self._get_connection() as conn:
             meeting = await conn.fetchrow(
-                "SELECT created_at FROM meetings WHERE meeting_id = $1", meeting_id
+                "SELECT created_at FROM meetings WHERE id = $1", meeting_id
             )
             if not meeting:
                 return None

@@ -145,8 +145,8 @@ Search Query:"""
         Returns a streaming response generator.
         """
         if not model or not model_name:
-            model = "openai"
-            model_name = "gpt-5.4"
+            model = "gemini"
+            model_name = "gemini-2.5-flash"
 
         logger.info(f"Chat request: '{question}' using model {model}:{model_name}")
 
@@ -397,8 +397,8 @@ USER QUESTION: {question}
         Used by refine_notes and other non-chat features.
         """
         if not model or not model_name:
-            model = "openai"
-            model_name = "gpt-5.4"
+            model = "gemini"
+            model_name = "gemini-2.5-flash"
         try:
             if model == "groq":
                 api_key = await self.db.get_api_key("groq", user_email=user_email)

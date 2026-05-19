@@ -154,13 +154,16 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     if (format === 'markdown' && data?.markdown && editor) {
       const loadMarkdown = async () => {
         try {
+          const markdownText = typeof data.markdown === 'string' ? data.markdown : String(data.markdown ?? '');
           console.log('📝 BLOCKNOTE VIEW: Parsing markdown to BlockNote blocks...', {
-            length: data.markdown.length,
-            preview: data.markdown.substring(0, 100) + '...'
+            length: markdownText.length,
+            preview: markdownText.substring(0, 100) + '...'
           });
-          const blocks = await editor.tryParseMarkdownToBlocks(data.markdown);
+          const blocks = await editor.tryParseMarkdownToBlocks(markdownText);
           console.log('📝 BLOCKNOTE VIEW: Generated blocks count:', blocks.length);
-          editor.replaceBlocks(editor.document, blocks);
+          if (Array.isArray(blocks) && blocks.length > 0) {
+            editor.replaceBlocks(editor.document, blocks);
+          }
           console.log('✅ BLOCKNOTE VIEW: Markdown parsed and applied successfully');
 
           // Delay to ensure editor has finished rendering before allowing onChange

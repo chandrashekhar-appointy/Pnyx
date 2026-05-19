@@ -33,10 +33,16 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
       if (section && Array.isArray(section.blocks)) {
         updatedSummary[sectionKey] = {
           ...section,
-          blocks: section.blocks.map(block => ({
-            ...block,
-            id: block.id.includes(sectionKey) ? block.id : generateUniqueId(sectionKey)
-          }))
+          blocks: section.blocks.map(block => {
+            const existingId = typeof block?.id === 'string' ? block.id : '';
+            return {
+              ...block,
+              id: existingId && existingId.includes(sectionKey) ? existingId : generateUniqueId(sectionKey),
+              type: block?.type || 'text',
+              content: typeof block?.content === 'string' ? block.content : '',
+              color: block?.color || 'default',
+            };
+          })
         };
       } else {
         // Initialize empty blocks array if missing or invalid

@@ -431,8 +431,20 @@ def _mark_runtime_resume(session_id: str) -> bool:
 
 def _cancel_pending_cleanup(session_id: str):
     task = session_cleanup_tasks.pop(session_id, None)
-    if task and not task.done():
-        task.cancel()
+    if not task or task.done():
+        return
+    # Avoid self-cancellation when called from inside the deferred cleanup
+    # task itself (e.g. via _finalize_session → here). Cancelling the current
+    # task here turns the next await into CancelledError, which the cleanup's
+    # outer except silently swallows — leaving the session stuck in 'recording'
+    # because the celery enqueue that runs after _finalize_session never fires.
+    try:
+        current = asyncio.current_task()
+    except RuntimeError:
+        current = None
+    if current is task:
+        return
+    task.cancel()
 
 
 async def _build_ai_meeting_context(
@@ -2720,26 +2732,83 @@ async def get_meeting_recording_url(
             }
 
         download_filename = f"recording-{meeting_id}.{selected_format}"
-        url = await StorageService.generate_signed_url(
-            selected_path,
-            3600,
-            download_filename=download_filename,
-        )
-        if not url:
-            raise HTTPException(status_code=404, detail="Failed to generate URL")
 
+        # Try signed URL first; fall back to proxy streaming if signing fails
+        # (e.g. on Cloud Run with compute engine credentials).
+        try:
+            url = await StorageService.generate_signed_url(
+                selected_path,
+                3600,
+                download_filename=download_filename,
+            )
+        except Exception as sign_err:
+            logger.warning(
+                "Signed URL generation failed for %s, falling back to proxy: %s",
+                selected_path,
+                sign_err,
+            )
+            url = None
+
+        if url:
+            return {
+                "url": url,
+                "expiration": 3600,
+                "format": selected_format,
+                "mime_type": selected_mime,
+                "filename": download_filename,
+            }
+
+        # Fallback: return a proxy URL served by this backend
         return {
-            "url": url,
+            "url": f"/meetings/{meeting_id}/recording-stream",
             "expiration": 3600,
             "format": selected_format,
             "mime_type": selected_mime,
             "filename": download_filename,
+            "proxy": True,
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to get recording URL: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate recording URL")
+
+
+@router.get("/meetings/{meeting_id}/recording-stream")
+async def stream_meeting_recording(
+    meeting_id: str, current_user: User = Depends(get_current_user)
+):
+    """
+    Proxy-stream the meeting recording directly from cloud storage.
+    Used as a fallback when signed URL generation is unavailable
+    (e.g. Cloud Run compute engine credentials).
+    """
+    if not await rbac.can(current_user, "view", meeting_id):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    from fastapi.responses import Response
+
+    preferred_paths = [
+        (f"{meeting_id}/recording.wav", "audio/wav"),
+        (f"{meeting_id}/recording.opus", "audio/ogg"),
+        (f"{meeting_id}/recording.m4a", "audio/mp4"),
+    ]
+
+    for path, mime_type in preferred_paths:
+        if await StorageService.check_file_exists(path):
+            audio_bytes = await StorageService.download_bytes(path)
+            if audio_bytes:
+                fmt = path.split(".")[-1]
+                return Response(
+                    content=audio_bytes,
+                    media_type=mime_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="recording-{meeting_id}.{fmt}"',
+                        "Cache-Control": "private, max-age=3600",
+                    },
+                )
+
+    raise HTTPException(status_code=404, detail="Recording not found")
 
 
 @router.get("/sessions/{session_id}/pipeline-status")

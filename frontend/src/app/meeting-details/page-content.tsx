@@ -14,6 +14,7 @@ import { authFetch } from '@/lib/api';
 import { Key, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 // Custom hooks
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -399,58 +400,82 @@ export default function PageContent({
         )}
 
 
-        <TranscriptPanel
-          transcripts={meetingData.transcripts}
-          onCopyTranscript={copyOperations.handleCopyTranscript}
-          onDownloadRecording={meetingOperations.handleDownloadRecording}
-          isRecording={isRecording}
-          currentVersion={currentTranscriptVersion}
-          onCurrentVersionChange={setCurrentTranscriptVersion}
-          onDiarize={diarization.triggerDiarization}
-          onStopDiarize={diarization.stopDiarization}
-          diarizationStatus={diarization.status?.status}
-          isDiarizing={diarization.isDiarizing}
-          diarizationProgress={diarization.progress}
-          diarizationWaitEstimate={diarization.waitEstimateText}
-          speakerMap={speakerMap}
-          meetingId={meeting.id}
-          onTranscriptsUpdate={meetingData.setTranscripts}
-        />
+        <ErrorBoundary
+          fallback={
+            <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-6 bg-white border-r border-gray-200 text-center gap-3">
+              <AlertTriangle className="w-8 h-8 text-amber-500" />
+              <p className="text-sm font-medium text-gray-800">Couldn't render the transcript view.</p>
+              <Button onClick={() => window.location.reload()} variant="outline" className="mt-2">Reload</Button>
+            </div>
+          }
+        >
+          <TranscriptPanel
+            transcripts={meetingData.transcripts}
+            onCopyTranscript={copyOperations.handleCopyTranscript}
+            onDownloadRecording={meetingOperations.handleDownloadRecording}
+            isRecording={isRecording}
+            currentVersion={currentTranscriptVersion}
+            onCurrentVersionChange={setCurrentTranscriptVersion}
+            onDiarize={diarization.triggerDiarization}
+            onStopDiarize={diarization.stopDiarization}
+            diarizationStatus={diarization.status?.status}
+            isDiarizing={diarization.isDiarizing}
+            diarizationProgress={diarization.progress}
+            diarizationWaitEstimate={diarization.waitEstimateText}
+            speakerMap={speakerMap}
+            meetingId={meeting.id}
+            onTranscriptsUpdate={meetingData.setTranscripts}
+          />
+        </ErrorBoundary>
 
-        <SummaryPanel
-          meeting={meeting}
-          meetingTitle={meetingData.meetingTitle}
-          onTitleChange={meetingData.handleTitleChange}
-          isEditingTitle={meetingData.isEditingTitle}
-          onStartEditTitle={() => meetingData.setIsEditingTitle(true)}
-          onFinishEditTitle={() => meetingData.setIsEditingTitle(false)}
-          isTitleDirty={meetingData.isTitleDirty}
-          summaryRef={meetingData.blockNoteSummaryRef}
-          isSaving={meetingData.isSaving}
-          onSaveAll={meetingData.saveAllChanges}
-          onCopySummary={copyOperations.handleCopySummary}
-          aiSummary={meetingData.aiSummary}
-          summaryStatus={summaryGeneration.summaryStatus}
-          transcripts={meetingData.transcripts}
-          modelConfig={modelConfig.modelConfig}
-          setModelConfig={modelConfig.setModelConfig}
-          onSaveModelConfig={modelConfig.handleSaveModelConfig}
-          onGenerateSummary={summaryGeneration.handleGenerateSummary}
-          summaryResponse={summaryResponse}
-          onSaveSummary={meetingData.handleSaveSummary}
-          onSummaryChange={meetingData.handleSummaryChange}
-          onDirtyChange={meetingData.setIsSummaryDirty}
-          summaryError={summaryGeneration.summaryError}
-          onRegenerateSummary={summaryGeneration.handleRegenerateSummary}
-          onRegenerateWithDiarized={summaryGeneration.handleRegenerateWithDiarized}
-          notesGenerationInfo={summaryGeneration.notesGenerationInfo}
-          getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
-          availableTemplates={templates.availableTemplates}
-          selectedTemplate={templates.selectedTemplate}
-          onTemplateSelect={templates.handleTemplateSelection}
-          isModelConfigLoading={modelConfig.isLoading}
-          onDeleteMeeting={() => meetingOperations.handleDeleteMeeting(router)}
-        />
+        <ErrorBoundary
+          fallback={
+            <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-6 bg-white text-center gap-3">
+              <AlertTriangle className="w-8 h-8 text-amber-500" />
+              <p className="text-sm font-medium text-gray-800">Couldn't render the meeting notes editor.</p>
+              <p className="text-xs text-gray-500 max-w-md">The saved notes may be in an unexpected format. Try regenerating the notes.</p>
+              <div className="flex gap-2 mt-2">
+                <Button onClick={() => window.location.reload()} variant="outline">Reload</Button>
+                <Button onClick={() => summaryGeneration.handleRegenerateSummary()} className="bg-blue-600 hover:bg-blue-700">Regenerate notes</Button>
+              </div>
+            </div>
+          }
+        >
+          <SummaryPanel
+            meeting={meeting}
+            meetingTitle={meetingData.meetingTitle}
+            onTitleChange={meetingData.handleTitleChange}
+            isEditingTitle={meetingData.isEditingTitle}
+            onStartEditTitle={() => meetingData.setIsEditingTitle(true)}
+            onFinishEditTitle={() => meetingData.setIsEditingTitle(false)}
+            isTitleDirty={meetingData.isTitleDirty}
+            summaryRef={meetingData.blockNoteSummaryRef}
+            isSaving={meetingData.isSaving}
+            onSaveAll={meetingData.saveAllChanges}
+            onCopySummary={copyOperations.handleCopySummary}
+            aiSummary={meetingData.aiSummary}
+            summaryStatus={summaryGeneration.summaryStatus}
+            transcripts={meetingData.transcripts}
+            modelConfig={modelConfig.modelConfig}
+            setModelConfig={modelConfig.setModelConfig}
+            onSaveModelConfig={modelConfig.handleSaveModelConfig}
+            onGenerateSummary={summaryGeneration.handleGenerateSummary}
+            summaryResponse={summaryResponse}
+            onSaveSummary={meetingData.handleSaveSummary}
+            onSummaryChange={meetingData.handleSummaryChange}
+            onDirtyChange={meetingData.setIsSummaryDirty}
+            summaryError={summaryGeneration.summaryError}
+            onRegenerateSummary={summaryGeneration.handleRegenerateSummary}
+            onRegenerateWithDiarized={summaryGeneration.handleRegenerateWithDiarized}
+            notesGenerationInfo={summaryGeneration.notesGenerationInfo}
+            getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
+            availableTemplates={templates.availableTemplates}
+            selectedTemplate={templates.selectedTemplate}
+            onTemplateSelect={templates.handleTemplateSelection}
+            isModelConfigLoading={modelConfig.isLoading}
+            onDeleteMeeting={() => meetingOperations.handleDeleteMeeting(router)}
+          />
+        </ErrorBoundary>
 
       </div>
 
