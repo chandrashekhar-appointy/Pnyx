@@ -254,7 +254,7 @@ export function ChatInterface({ meetingId, onClose, currentTranscripts }: ChatIn
 
             // Use configured model or factory default
             const provider = modelConfig?.provider || 'gemini';
-            const modelName = modelConfig?.model || 'gemini-2.5-flash';
+            const modelName = modelConfig?.model || 'gemini-3.5-flash';
 
             const contextEntries = getStableContextEntries();
             const contextText = getContextFromTranscripts();

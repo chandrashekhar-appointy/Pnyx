@@ -244,7 +244,7 @@ function HomeContent() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'gemini',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash',
     whisperModel: 'large-v3'
   });
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
@@ -865,9 +865,9 @@ function HomeContent() {
     openrouter: [
       'anthropic/claude-opus-4.1',
       'openai/gpt-5.4',
-      'google/gemini-2.5-flash',
+      'google/gemini-3.5-flash',
     ],
-    gemini: ['gemini-2.5-flash'],
+    gemini: ['gemini-3.5-flash'],
     openai: ['gpt-5.4', 'gpt-5', 'gpt-5-mini'],
   };
 
@@ -2423,12 +2423,12 @@ function HomeContent() {
       // The catch-up endpoint currently only supports gemini and groq
       const supportedProviders = ['gemini', 'groq'];
       let provider = modelConfig?.provider || 'gemini';
-      let modelName = modelConfig?.model || 'gemini-2.5-flash';
+      let modelName = modelConfig?.model || 'gemini-3.5-flash';
 
       if (!supportedProviders.includes(provider)) {
         console.warn(`[CatchUp] Unsupported provider "${provider}" selected. Falling back to Gemini.`);
         provider = 'gemini';
-        modelName = 'gemini-2.5-flash';
+        modelName = 'gemini-3.5-flash';
       }
 
       const response = await authFetch('/catch-up', {
