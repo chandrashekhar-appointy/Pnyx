@@ -1,6 +1,12 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    import os
+    GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
 
 class Transcript(BaseModel):
     id: str
@@ -45,7 +51,7 @@ class GenerateNotesRequest(BaseModel):
     meeting_id: str
     template_id: str = "standard_meeting"
     model: str = "gemini"
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = GEMINI_DEFAULT_MODEL
     custom_context: str = ""  # User-provided context for better note generation
     transcript: str = ""  # Optional explicit transcript text (to override DB)
     use_audio_context: bool = True
@@ -62,7 +68,7 @@ class RefineNotesRequest(BaseModel):
     current_notes: str
     user_instruction: str
     model: str = "gemini"
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = GEMINI_DEFAULT_MODEL
 
 
 class ShareNotesRequest(BaseModel):

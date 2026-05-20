@@ -17,6 +17,15 @@ import asyncio
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 
+try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    try:
+        from ..model_config import GEMINI_DEFAULT_MODEL
+    except (ImportError, ValueError):
+        GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
+
 from .intent_classifier import QueryScope
 
 logger = logging.getLogger(__name__)
@@ -546,7 +555,7 @@ Format: Provide a direct answer followed by supporting details without inline ci
 
             response_text = await generate_content_text_async(
                 api_key=api_key,
-                model="gemini-2.5-flash",
+                model=GEMINI_DEFAULT_MODEL,
                 contents=prompt,
                 config={"temperature": 0.3, "max_output_tokens": 2048},
             )

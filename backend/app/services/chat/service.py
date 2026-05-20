@@ -19,6 +19,15 @@ import os
 import re
 from typing import List, Dict, Optional
 
+try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    try:
+        from ..model_config import GEMINI_DEFAULT_MODEL
+    except (ImportError, ValueError):
+        GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
+
 from dotenv import load_dotenv
 
 # LLM Providers
@@ -113,7 +122,7 @@ Search Query:"""
             reformulated = (
                 await generate_content_text_async(
                     api_key=api_key,
-                    model="gemini-2.5-flash",
+                    model=GEMINI_DEFAULT_MODEL,
                     contents=prompt,
                 )
             ).strip()
@@ -146,7 +155,7 @@ Search Query:"""
         """
         if not model or not model_name:
             model = "gemini"
-            model_name = "gemini-2.5-flash"
+            model_name = GEMINI_DEFAULT_MODEL
 
         logger.info(f"Chat request: '{question}' using model {model}:{model_name}")
 
@@ -398,7 +407,7 @@ USER QUESTION: {question}
         """
         if not model or not model_name:
             model = "gemini"
-            model_name = "gemini-2.5-flash"
+            model_name = GEMINI_DEFAULT_MODEL
         try:
             if model == "groq":
                 api_key = await self.db.get_api_key("groq", user_email=user_email)
@@ -548,7 +557,7 @@ USER QUESTION: {question}
         """
         if not model or not model_name:
             model = "gemini"
-            model_name = "gemini-2.5-flash"
+            model_name = GEMINI_DEFAULT_MODEL
 
         rewrite_intent = self._detect_full_rewrite_intent(instruction)
 

@@ -7,6 +7,11 @@ except (ImportError, ValueError):
     from db import DatabaseManager
     from services.transcript import TranscriptService
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    from model_config import GEMINI_DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +34,7 @@ class SummarizationService:
         self,
         text: str,
         model: str = "gemini",
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = GEMINI_DEFAULT_MODEL,
         chunk_size: int = 5000,
         overlap: int = 1000,
         custom_prompt: str = "Generate a summary of the meeting transcript.",

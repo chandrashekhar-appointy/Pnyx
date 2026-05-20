@@ -24,6 +24,14 @@ except ImportError:
         from core.encryption import encrypt_key, decrypt_key
         from services.document_storage import DocumentStorageService
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    try:
+        from model_config import GEMINI_DEFAULT_MODEL
+    except ImportError:
+        GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -391,7 +399,7 @@ class DatabaseManager:
         meeting_id: str,
         transcript_text: str,
         model: str = "gemini",
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = GEMINI_DEFAULT_MODEL,
         chunk_size: int = 10000,
         overlap: int = 500,
     ):
@@ -1113,7 +1121,7 @@ class DatabaseManager:
             # Default to Gemini if no config found
             return {
                 "provider": "gemini",
-                "model": "gemini-2.5-flash",
+                "model": GEMINI_DEFAULT_MODEL,
                 "whisperModel": "large-v3",
             }
 

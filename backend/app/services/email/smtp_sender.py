@@ -61,6 +61,17 @@ class SmtpEmailSender:
         text_body: str,
         html_body: str,
     ):
+        # Kill switch: set EMAIL_ENABLED=false in local .env to prevent
+        # duplicate emails when production is also sending.
+        if os.getenv("EMAIL_ENABLED", "true").lower() != "true":
+            import logging
+            logging.getLogger(__name__).info(
+                "📧 Email suppressed (EMAIL_ENABLED=false): %s → %s",
+                subject,
+                recipients,
+            )
+            return
+
         await asyncio.to_thread(
             self._send_sync,
             recipients,

@@ -29,6 +29,11 @@ try:
 except (ImportError, ValueError):
     from schemas.behavior_spec import BehaviorSpec, OutputCategory, build_default_spec
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    from model_config import GEMINI_DEFAULT_MODEL
+
 
 # ── Section Parser ────────────────────────────────────────────────────────
 
@@ -479,13 +484,13 @@ class BehaviorCompiler:
     def _get_model(self) -> str:
         provider = self._get_provider()
         default_models = {
-            "gemini": "gemini-2.5-flash",
+            "gemini": GEMINI_DEFAULT_MODEL,
             "openai": "gpt-4.1-mini",
             "anthropic": "claude-sonnet-4-20250514",
         }
         return os.getenv(
             "AI_PARTICIPANT_MODEL",
-            default_models.get(provider, "gemini-2.5-flash"),
+            default_models.get(provider, GEMINI_DEFAULT_MODEL),
         ).strip()
 
     async def _get_api_key(self) -> Optional[str]:

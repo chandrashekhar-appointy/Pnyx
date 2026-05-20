@@ -49,6 +49,11 @@ except (ImportError, ValueError):
     from services.ai_participant_skills import parse_skill_markdown
     from services.gemini_client import generate_content_text_async
 
+try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    from model_config import GEMINI_DEFAULT_MODEL
+
 # Initialize services
 db = DatabaseManager()
 
@@ -95,15 +100,15 @@ async def get_model_config(current_user: User = Depends(get_current_user)):
     config = await db.get_model_config()
     if config:
         # HOTFIX: Migrate users away from retired models
-        retired_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-3-pro-preview", "gemini-3-flash", "gemini-3-flash-preview"]
+        retired_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-3-pro-preview", "gemini-3-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]
         if config.get("model", "") in retired_models:
             logger.info(
-                f"Migrating retired model {config['model']} to gemini-2.5-flash"
+                f"Migrating retired model {config['model']} to {GEMINI_DEFAULT_MODEL}"
             )
-            config["model"] = "gemini-2.5-flash"
+            config["model"] = GEMINI_DEFAULT_MODEL
             await db.save_model_config(
                 config["provider"],
-                "gemini-2.5-flash",
+                GEMINI_DEFAULT_MODEL,
                 config.get("whisperModel", "large-v3"),
             )
 
@@ -456,7 +461,7 @@ async def generate_user_ai_host_skill(
     user_block = _SKILL_GENERATOR_USER_PROMPT_TEMPLATE.format(
         user_prompt=user_prompt, suggested_name=suggested_name
     )
-    model = os.getenv("AI_HOST_SKILL_GENERATOR_MODEL", "gemini-2.5-flash")
+    model = os.getenv("AI_HOST_SKILL_GENERATOR_MODEL", GEMINI_DEFAULT_MODEL)
 
     try:
         raw = await generate_content_text_async(
