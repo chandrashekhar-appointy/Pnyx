@@ -15,6 +15,15 @@ from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
 
+try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    try:
+        from ..model_config import GEMINI_DEFAULT_MODEL
+    except (ImportError, ValueError):
+        GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,7 +173,7 @@ Current discussion topic:"""
                 result = (
                     await generate_content_text_async(
                         api_key=gemini_key,
-                        model="gemini-2.5-flash",
+                        model=GEMINI_DEFAULT_MODEL,
                         contents=prompt,
                         config={"temperature": 0.0, "max_output_tokens": 50},
                     )
@@ -326,7 +335,7 @@ Category:"""
                 result = (
                     await generate_content_text_async(
                         api_key=gemini_key,
-                        model="gemini-2.5-flash",
+                        model=GEMINI_DEFAULT_MODEL,
                         contents=classifier_prompt,
                         config={"temperature": 0.0, "max_output_tokens": 10},
                     )

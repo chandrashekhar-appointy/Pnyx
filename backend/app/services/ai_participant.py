@@ -61,6 +61,11 @@ except (ImportError, ValueError):
     from services.behavior_compiler import compile_behavior
     from services.behavior_auto_tuner import BehaviorAutoTuner
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_HOST_SKILLS: Dict[str, str] = load_system_skill_templates()
@@ -419,7 +424,7 @@ class AIParticipantEngine:
             == "true"
         )
         self.fast_probe_model = os.getenv(
-            "AI_PARTICIPANT_FAST_PROBE_MODEL", "gemini-2.5-flash"
+            "AI_PARTICIPANT_FAST_PROBE_MODEL", GEMINI_DEFAULT_MODEL
         )
         self.fast_probe_timeout_seconds = float(
             os.getenv("AI_PARTICIPANT_FAST_PROBE_TIMEOUT_SECONDS", "4")

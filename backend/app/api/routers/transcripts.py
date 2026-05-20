@@ -57,6 +57,11 @@ except (ImportError, ValueError):
     from services.calendar.google_oauth import GoogleCalendarOAuthService
     from services.calendar.reminder_email import CalendarReminderEmailService
 
+try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    from model_config import GEMINI_DEFAULT_MODEL
+
 # Initialize services
 db = DatabaseManager()
 rbac = RBAC(db)
@@ -362,7 +367,7 @@ async def _get_gemini_notes_api_key(user_email: str) -> str:
 async def _translate_summary_to_english(
     summary: dict,
     user_email: str,
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = GEMINI_DEFAULT_MODEL,
 ) -> dict:
     if not _summary_contains_devanagari(summary):
         return summary
@@ -373,7 +378,7 @@ async def _translate_summary_to_english(
     translate_model = (
         model_name
         if str(model_name or "").strip().lower().startswith("gemini")
-        else "gemini-2.5-flash"
+        else GEMINI_DEFAULT_MODEL
     )
 
     prompt = (
@@ -519,7 +524,7 @@ async def process_transcript_background(
 
         # Default to Gemini if no model specified
         transcript.model = transcript.model or "gemini"
-        transcript.model_name = transcript.model_name or "gemini-2.5-flash"
+        transcript.model_name = transcript.model_name or GEMINI_DEFAULT_MODEL
 
         if transcript.model in ["claude", "groq", "openai", "gemini"]:
             # Prioritize Environment Variables over Database
@@ -660,7 +665,7 @@ async def process_transcript_background(
         final_summary = await _translate_summary_to_english(
             final_summary,
             user_email=user_email or "",
-            model_name=transcript.model_name or "gemini-2.5-flash",
+            model_name=transcript.model_name or GEMINI_DEFAULT_MODEL,
         )
         final_summary = _dedupe_summary_content(final_summary)
 
@@ -902,7 +907,7 @@ async def generate_notes_with_gemini_background(
         try:
             response_text = await generate_content_text_async(
                 api_key=api_key,
-                model="gemini-2.5-flash",
+                model=GEMINI_DEFAULT_MODEL,
                 contents=direct_prompt,
                 config={"response_mime_type": "application/json"},
             )
@@ -1105,7 +1110,7 @@ async def generate_notes_with_gemini_background(
         def _sync_generate() -> Optional[str]:
             return generate_content_with_file_sync(
                 api_key=api_key,
-                model=model_name or "gemini-2.5-flash",
+                model=model_name or GEMINI_DEFAULT_MODEL,
                 prompt=multimodal_prompt,
                 file_path=temp_audio_path,
                 mime_type=mime_type,
@@ -1137,7 +1142,7 @@ async def generate_notes_with_gemini_background(
         }
 
         all_json_data = []
-        model_name = "gemini-2.5-flash"
+        model_name = GEMINI_DEFAULT_MODEL
 
         # 2. Try multimodal generation first when audio context is allowed.
         # Defaults to ON so the model can ground notes in the actual audio
@@ -1348,7 +1353,7 @@ async def generate_notes_with_gemini_background(
         final_result = await _translate_summary_to_english(
             final_result,
             user_email=user_email,
-            model_name=model_name or "gemini-2.5-flash",
+            model_name=model_name or GEMINI_DEFAULT_MODEL,
         )
         final_result = _dedupe_summary_content(final_result)
 

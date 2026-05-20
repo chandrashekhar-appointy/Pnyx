@@ -190,7 +190,7 @@ export function RefineNotesSidebar({ meetingId, onClose, currentNotes, onApplyRe
                     current_notes: currentNotes,
                     user_instruction: userMessage,
                     model: 'gemini',
-                    model_name: 'gemini-2.5-flash',
+                    model_name: 'gemini-3.5-flash',
                 }),
             });
             console.log('[RefineNotes] /refine-notes responded', response.status);

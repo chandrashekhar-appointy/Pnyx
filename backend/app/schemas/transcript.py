@@ -2,6 +2,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 from .meeting import Transcript
 
+try:
+    from ..model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    import os
+    GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
 
 class SaveTranscriptRequest(BaseModel):
     meeting_title: str
@@ -30,7 +36,7 @@ class TranscriptRequest(BaseModel):
 
     text: str
     model: str = "gemini"
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = GEMINI_DEFAULT_MODEL
     meeting_id: str
     chunk_size: Optional[int] = 5000
     overlap: Optional[int] = 1000

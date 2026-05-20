@@ -28,6 +28,15 @@ from datetime import datetime
 from dataclasses import dataclass
 
 try:
+    from ...model_config import GEMINI_DEFAULT_MODEL
+except (ImportError, ValueError):
+    try:
+        from ..model_config import GEMINI_DEFAULT_MODEL
+    except (ImportError, ValueError):
+        GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
+
+try:
     from .recorder import AudioRecorder
     from .groq_client import GroqTranscriptionClient
     from .alignment import AlignmentEngine
@@ -1184,7 +1193,7 @@ class DiarizationService:
             # Using Gemini as the default fast/cheap translation engine
             response_text = await generate_content_text_async(
                 api_key=api_key,
-                model="gemini-2.5-flash",  # Reliable json output
+                model=GEMINI_DEFAULT_MODEL,  # Reliable json output
                 contents=prompt,
                 config={"temperature": 0.1},
             )

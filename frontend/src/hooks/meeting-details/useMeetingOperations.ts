@@ -99,15 +99,32 @@ export function useMeetingOperations({
           meeting_id: meeting.id,
           filename: data.filename,
         });
-        // Trigger download
-        const link = document.createElement('a');
-        link.href = resolveBackendUrl(data.url);
         const ext = data.format || 'wav';
-        link.download = data.filename || `recording-${meeting.id}.${ext}`;
-        link.rel = 'noopener noreferrer';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        const filename = data.filename || `recording-${meeting.id}.${ext}`;
+
+        if (data.proxy) {
+          // Proxy URLs require auth headers — fetch as blob first
+          const audioResp = await authFetch(data.url);
+          if (!audioResp.ok) throw new Error('Failed to download recording');
+          const blob = await audioResp.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(blobUrl);
+        } else {
+          // Signed URLs have auth embedded — direct link works
+          const link = document.createElement('a');
+          link.href = resolveBackendUrl(data.url);
+          link.download = filename;
+          link.rel = 'noopener noreferrer';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
       }
     } catch (error) {
       console.error('Failed to download recording:', error);

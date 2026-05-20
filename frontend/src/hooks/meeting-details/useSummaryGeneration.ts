@@ -136,8 +136,8 @@ export function useSummaryGeneration({
           body: JSON.stringify({
             meeting_id: meeting.id,
             template_id: selectedTemplate,
-            model: 'gemini',
-            model_name: 'gemini-2.5-flash',
+            model: modelConfig.provider === 'gemini' ? 'gemini' : modelConfig.provider,
+            model_name: modelConfig.model || 'gemini-3.5-flash',
             custom_context: customPrompt || '',  // Add context from user input
             prefer_diarized_transcript: preferDiarizedTranscript,
             transcript: explicitTranscript,
@@ -444,7 +444,7 @@ export function useSummaryGeneration({
 
     // Always use Gemini for notes generation (best quality)
     const notesProvider = 'gemini';
-    const notesModel = 'gemini-2.5-flash';
+    const notesModel = 'gemini-3.5-flash';
     
     console.log('🚀 Starting notes generation with Gemini:', {
       provider: notesProvider,
