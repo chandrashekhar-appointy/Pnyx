@@ -10,7 +10,7 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "20"
-  PNPM_VERSION: "10"
+  PNPM_VERSION: "9"
 
 jobs:
   # ── 1. Backend: lint + unit + integration tests ─────────────────────────
