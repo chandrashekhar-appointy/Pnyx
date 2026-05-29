@@ -10,12 +10,10 @@ Usage (inside the backend Docker container or with DATABASE_URL set):
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
 from collections import defaultdict
-from datetime import datetime
 
 import asyncpg
 

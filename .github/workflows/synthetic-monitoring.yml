@@ -11,14 +11,18 @@ jobs:
     name: Prod Smoke Tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
-
+    env:
+      NPM_CONFIG_STORE_DIR: ${{ github.workspace }}/.pnpm-store
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 9
           run_install: false
+
+      - name: Pre-create pnpm store directory
+        run: mkdir -p .pnpm-store
 
       - uses: actions/setup-node@v4
         with:
