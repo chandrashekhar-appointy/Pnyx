@@ -21,6 +21,9 @@ jobs:
           version: 9
           run_install: false
 
+      - name: Pre-create pnpm store directory
+        run: mkdir -p .pnpm-store
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
