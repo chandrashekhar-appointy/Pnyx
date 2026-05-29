@@ -112,3 +112,9 @@ backend/aligned_output_debug.json
 backend/benchmark_results.json
 backend/groq_output_debug.json
 backend/file_info.json
+
+# Agent / Assistant dotfiles
+.claude/
+.codex/
+.entire/
+.gemini/
