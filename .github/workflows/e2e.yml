@@ -97,6 +97,8 @@ jobs:
     name: Frontend E2E
     runs-on: ubuntu-latest
     needs: [backend-tests]
+    env:
+      NPM_CONFIG_STORE_DIR: ${{ github.workspace }}/.pnpm-store
 
     services:
       postgres:

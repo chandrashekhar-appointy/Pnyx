@@ -11,7 +11,8 @@ jobs:
     name: Prod Smoke Tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
-
+    env:
+      NPM_CONFIG_STORE_DIR: ${{ github.workspace }}/.pnpm-store
     steps:
       - uses: actions/checkout@v4
 
