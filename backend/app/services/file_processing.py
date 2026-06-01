@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
