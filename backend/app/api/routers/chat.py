@@ -223,8 +223,14 @@ async def catch_up(
     Streams the response back for fast display.
     """
     try:
+        notes_provider = os.getenv("NOTES_SUMMARY_PROVIDER", "gemini").lower().strip()
+        if (not request.model or request.model == "gemini") and notes_provider == "openai":
+            request.model = "openai"
+            request.model_name = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+            logger.info("Overriding Gemini catch-up model to OpenAI due to NOTES_SUMMARY_PROVIDER setting")
+
         logger.info(
-            f"Catch-up request received with {len(request.transcripts)} transcripts"
+            f"Catch-up request received with {len(request.transcripts)} transcripts. Model: {request.model}"
         )
 
         normalized_lines = []
@@ -337,6 +343,32 @@ Quick Catch-Up Summary:"""
                         if content:
                             yield content
 
+                elif request.model == "openai":
+                    # Prioritize Environment Variables over Database
+                    api_key = os.getenv("OPENAI_API_KEY")
+                    if not api_key:
+                        api_key = await db.get_api_key(
+                            "openai", user_email=current_user.email
+                        )
+                    if not api_key:
+                        yield "Error: OpenAI API key not configured"
+                        return
+
+                    from openai import AsyncOpenAI
+
+                    client = AsyncOpenAI(api_key=api_key)
+                    stream = await client.chat.completions.create(
+                        messages=[{"role": "user", "content": catch_up_prompt}],
+                        model=request.model_name,
+                        stream=True,
+                        max_tokens=500,
+                        temperature=0.3,
+                    )
+                    async for chunk in stream:
+                        content = chunk.choices[0].delta.content or ""
+                        if content:
+                            yield content
+
                 elif request.model == "gemini":
                     # Prioritize Environment Variables over Database
                     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -356,12 +388,40 @@ Quick Catch-Up Summary:"""
                             else model_name
                         )
 
-                    async for chunk_text in stream_content_text_async(
-                        api_key=api_key,
-                        model=model_name,
-                        contents=catch_up_prompt,
-                    ):
-                        yield chunk_text
+                    try:
+                        async for chunk_text in stream_content_text_async(
+                            api_key=api_key,
+                            model=model_name,
+                            contents=catch_up_prompt,
+                        ):
+                            yield chunk_text
+                    except Exception as gemini_err:
+                        logger.error(f"Gemini catch-up streaming error: {gemini_err}. Falling back to OpenAI...", exc_info=True)
+                        yield f"\n*(Gemini error, falling back to OpenAI...)*\n\n"
+                        try:
+                            openai_key = os.getenv("OPENAI_API_KEY")
+                            if not openai_key:
+                                openai_key = await db.get_api_key("openai", user_email=current_user.email)
+                            if not openai_key:
+                                raise ValueError("OpenAI API key not configured for fallback")
+                            
+                            from openai import AsyncOpenAI
+                            client = AsyncOpenAI(api_key=openai_key)
+                            openai_model = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+                            stream = await client.chat.completions.create(
+                                messages=[{"role": "user", "content": catch_up_prompt}],
+                                model=openai_model,
+                                stream=True,
+                                max_tokens=500,
+                                temperature=0.3,
+                            )
+                            async for chunk in stream:
+                                content = chunk.choices[0].delta.content or ""
+                                if content:
+                                    yield content
+                        except Exception as fallback_err:
+                            logger.error(f"Fallback to OpenAI failed in catch-up fallback: {fallback_err}", exc_info=True)
+                            yield f"\n\nFallback to OpenAI failed: {str(fallback_err)}"
             except Exception as e:
                 logger.error(f"Error generating catch-up: {e}")
                 yield f"Error: {str(e)}"
