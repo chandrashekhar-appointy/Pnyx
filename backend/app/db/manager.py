@@ -2429,20 +2429,20 @@ class DatabaseManager:
             result = await conn.execute(
                 """
                 UPDATE recording_sessions
-                SET status = $3,
+                SET status = $3::varchar,
                     error_code = COALESCE($4, error_code),
                     error_message = COALESCE($5, error_message),
                     stop_requested_at = CASE
-                        WHEN $3 = 'stopping_requested' THEN COALESCE(stop_requested_at, $6)
+                        WHEN $3::text = 'stopping_requested' THEN COALESCE(stop_requested_at, $6)
                         ELSE stop_requested_at
                     END,
                     stopped_at = CASE
-                        WHEN $3 IN ('uploading_chunks', 'finalizing', 'postprocessing', 'completed', 'failed')
+                        WHEN $3::text IN ('uploading_chunks', 'finalizing', 'postprocessing', 'completed', 'failed')
                         THEN COALESCE(stopped_at, $6)
                         ELSE stopped_at
                     END,
                     finalized_at = CASE
-                        WHEN $3 = 'completed' THEN COALESCE(finalized_at, $6)
+                        WHEN $3::text = 'completed' THEN COALESCE(finalized_at, $6)
                         ELSE finalized_at
                     END,
                     updated_at = $6
