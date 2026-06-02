@@ -52,21 +52,11 @@ export default function LoginPage() {
             <div className="w-full max-w-md">
                 {/* Logo/Title Section */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4 shadow-lg">
-                        <svg
-                            className="w-8 h-8 text-white"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                        >
-                            <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                            />
-                        </svg>
-                    </div>
+                    <img
+                        src="/image.png"
+                        alt="Pnyx Logo"
+                        className="w-48 h-48 object-contain mx-auto mb-2"
+                    />
                     <h1 className="text-3xl font-bold text-gray-900">Pnyx</h1>
                     <p className="text-gray-600 mt-2">AI-powered meeting transcription & notes</p>
                 </div>

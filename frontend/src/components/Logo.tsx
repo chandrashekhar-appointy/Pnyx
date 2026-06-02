@@ -8,12 +8,20 @@ interface LogoProps {
 
 const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(({ isCollapsed }, ref) => {
   return (
-    <Link href="/" className="cursor-pointer hover:opacity-80 transition-opacity flex items-center justify-center">
+    <Link href="/" className="cursor-pointer hover:opacity-80 transition-opacity flex items-center justify-center w-full">
       {isCollapsed ? (
-        <img src="/image.svg" alt="Application Logo" style={{ width: 60, height: 60 }} className="object-contain" />
+        <img 
+          src="/image.png" 
+          alt="Pnyx Logo" 
+          className="w-12 h-12 object-contain" 
+        />
       ) : (
-        <div className="flex items-center justify-center w-full mb-2 px-2">
-          <img src="/image.svg" alt="Application Logo" style={{ width: 220, height: 120 }} className="object-contain" />
+        <div className="flex items-center justify-center w-full py-2">
+          <img 
+            src="/image.png" 
+            alt="Pnyx Logo" 
+            className="w-40 h-40 object-contain" 
+          />
         </div>
       )}
     </Link>
