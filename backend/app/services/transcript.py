@@ -103,7 +103,11 @@ class TranscriptService:
         try:
             # Select and initialize the AI model and agent
             if model == "claude":
-                api_key = await self.db.get_api_key("claude", user_email=user_email)
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                if api_key:
+                    logger.info("Using Claude API key from environment variable")
+                else:
+                    api_key = await self.db.get_api_key("claude", user_email=user_email)
                 if not api_key:
                     raise ValueError("ANTHROPIC_API_KEY environment variable not set")
                 llm = AnthropicModel(
@@ -129,13 +133,21 @@ class TranscriptService:
             #         overlap = 1000
             #     logger.info(f"Using Ollama model: {model_name}")
             elif model == "groq":
-                api_key = await self.db.get_api_key("groq", user_email=user_email)
+                api_key = os.getenv("GROQ_API_KEY")
+                if api_key:
+                    logger.info("Using Groq API key from environment variable")
+                else:
+                    api_key = await self.db.get_api_key("groq", user_email=user_email)
                 if not api_key:
                     raise ValueError("GROQ_API_KEY environment variable not set")
                 llm = GroqModel(model_name, provider=GroqProvider(api_key=api_key))
                 logger.info(f"Using Groq model: {model_name}")
             elif model == "openai":
-                api_key = await self.db.get_api_key("openai", user_email=user_email)
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key:
+                    logger.info("Using OpenAI API key from environment variable")
+                else:
+                    api_key = await self.db.get_api_key("openai", user_email=user_email)
                 if not api_key:
                     raise ValueError("OPENAI_API_KEY environment variable not set")
                 llm = OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))

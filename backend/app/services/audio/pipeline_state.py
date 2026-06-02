@@ -16,7 +16,7 @@ class AudioPipelineStateService:
     """
 
     ALLOWED_TRANSITIONS: Dict[str, Set[str]] = {
-        "recording": {"stopping_requested", "uploading_chunks", "completed", "failed"},
+        "recording": {"stopping_requested", "uploading_chunks", "finalizing", "completed", "failed"},
         "stopping_requested": {"uploading_chunks", "finalizing", "completed", "failed"},
         "uploading_chunks": {"finalizing", "completed", "failed"},
         "finalizing": {"postprocessing", "completed", "failed"},

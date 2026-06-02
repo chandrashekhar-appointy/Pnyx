@@ -365,10 +365,48 @@ class CreditManager:
         wk, ak, pk, _rwk = _redis_keys(user_email)
 
         # Execute the Lua script atomically
-        result = await self._deduct_script(
-            keys=[wk, ak, pk],
-            args=[cost, soft_limit],
-        )
+        try:
+            result = await self._deduct_script(
+                keys=[wk, ak, pk],
+                args=[cost, soft_limit],
+            )
+        except Exception as e:
+            logger.warning(f"[CreditManager] Lua script deduction failed (likely fakeredis without lupa): {e}. Falling back to Python-based deduction.")
+            w_val = await self.redis.get(wk)
+            a_val = await self.redis.get(ak)
+            p_val = await self.redis.get(pk)
+            
+            w = int(w_val) if w_val else 0
+            a = int(a_val) if a_val else 0
+            p = int(p_val) if p_val else 0
+            
+            if (w + a + p - cost) < soft_limit:
+                result = [0, w, a, p]
+            else:
+                rem = cost
+                if w > 0:
+                    dec = min(w, rem)
+                    w -= dec
+                    rem -= dec
+                    await self.redis.set(wk, w)
+                
+                if rem > 0 and a > 0:
+                    dec = min(a, rem)
+                    a -= dec
+                    rem -= dec
+                    await self.redis.set(ak, a)
+                    
+                if rem > 0 and p > 0:
+                    dec = min(p, rem)
+                    p -= dec
+                    rem -= dec
+                    await self.redis.set(pk, p)
+                    
+                if rem > 0:
+                    w -= rem
+                    await self.redis.set(wk, w)
+                    
+                result = [1, w, a, p]
 
         allowed = bool(result[0])
         weekly = int(result[1])

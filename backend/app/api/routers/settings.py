@@ -97,7 +97,17 @@ async def save_model_config(
 @router.get("/get-model-config")
 async def get_model_config(current_user: User = Depends(get_current_user)):
     """Get the model configuration"""
-    config = await db.get_model_config()
+    import os
+    notes_provider = os.getenv("NOTES_SUMMARY_PROVIDER", "").lower().strip()
+    if notes_provider == "openai":
+        config = {
+            "provider": "openai",
+            "model": os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip(),
+            "whisperModel": "large-v3",
+        }
+    else:
+        config = await db.get_model_config()
+
     if config:
         # HOTFIX: Migrate users away from retired models
         retired_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-3-pro-preview", "gemini-3-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]
@@ -123,8 +133,6 @@ async def get_model_config(current_user: User = Depends(get_current_user)):
                 config["apiKey"] = mask_key(system_key)
             else:
                 # Fallback to Env Var check to satisfy frontend validation
-                import os
-
                 provider = config["provider"]
                 env_key = None
                 if provider == "gemini":

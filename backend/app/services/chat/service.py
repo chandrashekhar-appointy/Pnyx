@@ -66,6 +66,24 @@ class ChatService:
 
     # ── Query Reformulation ───────────────────────────────────────────────
 
+    async def _reformulate_openai(self, prompt: str, user_email: Optional[str]) -> str:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            api_key = await self.db.get_api_key("openai", user_email=user_email)
+        if not api_key:
+            raise ValueError("OpenAI API key not configured")
+            
+        client = AsyncOpenAI(api_key=api_key)
+        response = await client.chat.completions.create(
+            model=os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip(),
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=100,
+            temperature=0.0,
+        )
+        return (response.choices[0].message.content or "").strip()
+
     async def _reformulate_query(
         self,
         question: str,
@@ -79,21 +97,14 @@ class ChatService:
         if not history or len(history) == 0:
             return question
 
-        try:
-            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                api_key = await self.db.get_api_key("gemini", user_email=user_email)
-            if not api_key:
-                return question
+        recent_history = history[-6:] if len(history) > 6 else history
+        history_text = ""
+        for msg in recent_history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")[:300]
+            history_text += f"{role.upper()}: {content}\n"
 
-            recent_history = history[-6:] if len(history) > 6 else history
-            history_text = ""
-            for msg in recent_history:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")[:300]
-                history_text += f"{role.upper()}: {content}\n"
-
-            prompt = f"""Given the conversation history, rewrite the last user question to be a concise, keyword-focused search query suitable for a search engine (like Google).
+        prompt = f"""Given the conversation history, rewrite the last user question to be a concise, keyword-focused search query suitable for a search engine (like Google).
 Resolve pronouns (it, that, they) and vague references.
 If the user refers to "the previous question", replace it with the ACTUAL topic of the previous question.
 Remove conversational filler like "can you tell me", "please search for", "how to do", etc., unless "how to" is part of the technical query.
@@ -119,19 +130,47 @@ Last User Question: "{question}"
 
 Search Query:"""
 
-            reformulated = (
-                await generate_content_text_async(
-                    api_key=api_key,
-                    model=GEMINI_DEFAULT_MODEL,
-                    contents=prompt,
-                )
-            ).strip()
+        try:
+            notes_provider = os.getenv("NOTES_SUMMARY_PROVIDER", "gemini").lower().strip()
+            if notes_provider == "openai":
+                try:
+                    reformulated = await self._reformulate_openai(prompt, user_email)
+                    logger.info(f"Query Reformulation (OpenAI): '{question}' -> '{reformulated}'")
+                    return reformulated
+                except Exception as openai_err:
+                    logger.warning(f"OpenAI query reformulation failed: {openai_err}")
+                    return question
 
-            if not reformulated or len(reformulated) > len(question) * 4:
-                return question
+            # Fallback/Default: Try Gemini
+            try:
+                api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+                if not api_key:
+                    api_key = await self.db.get_api_key("gemini", user_email=user_email)
+                if not api_key:
+                    raise ValueError("Gemini key not configured")
 
-            logger.info(f"Query Reformulation: '{question}' -> '{reformulated}'")
-            return reformulated
+                reformulated = (
+                    await generate_content_text_async(
+                        api_key=api_key,
+                        model=GEMINI_DEFAULT_MODEL,
+                        contents=prompt,
+                    )
+                ).strip()
+
+                if not reformulated or len(reformulated) > len(question) * 4:
+                    return question
+
+                logger.info(f"Query Reformulation (Gemini): '{question}' -> '{reformulated}'")
+                return reformulated
+            except Exception as gemini_err:
+                logger.warning(f"Gemini query reformulation failed: {gemini_err}. Trying OpenAI fallback.")
+                try:
+                    reformulated = await self._reformulate_openai(prompt, user_email)
+                    logger.info(f"Query Reformulation (OpenAI Fallback): '{question}' -> '{reformulated}'")
+                    return reformulated
+                except Exception as fallback_err:
+                    logger.warning(f"OpenAI fallback query reformulation failed: {fallback_err}")
+                    return question
 
         except Exception as e:
             logger.warning(f"Query reformulation failed: {e}")
@@ -153,9 +192,19 @@ Search Query:"""
         Ask a question about the meeting context with cross-meeting and web search.
         Returns a streaming response generator.
         """
+        # Force/override to OpenAI if NOTES_SUMMARY_PROVIDER is set to openai
+        notes_provider = os.getenv("NOTES_SUMMARY_PROVIDER", "gemini").lower().strip()
         if not model or not model_name:
-            model = "gemini"
-            model_name = GEMINI_DEFAULT_MODEL
+            if notes_provider == "openai":
+                model = "openai"
+                model_name = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+            else:
+                model = "gemini"
+                model_name = GEMINI_DEFAULT_MODEL
+        elif model == "gemini" and notes_provider == "openai":
+            logger.info("Overriding Gemini chat provider to OpenAI due to NOTES_SUMMARY_PROVIDER setting")
+            model = "openai"
+            model_name = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
 
         logger.info(f"Chat request: '{question}' using model {model}:{model_name}")
 
@@ -298,7 +347,9 @@ USER QUESTION: {question}
                 return response_wrapper(stream_groq(initial_stream))
 
             elif model == "openai":
-                api_key = await self.db.get_api_key("openai", user_email=user_email)
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    api_key = await self.db.get_api_key("openai", user_email=user_email)
                 if not api_key:
                     raise ValueError("OpenAI API key not found")
 
@@ -321,7 +372,9 @@ USER QUESTION: {question}
                 return response_wrapper(stream_openai(initial_stream))
 
             elif model == "claude":
-                api_key = await self.db.get_api_key("claude", user_email=user_email)
+                api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+                if not api_key:
+                    api_key = await self.db.get_api_key("claude", user_email=user_email)
                 if not api_key:
                     raise ValueError("Anthropic API key not found")
 
@@ -368,8 +421,33 @@ USER QUESTION: {question}
                         ):
                             yield chunk_text
                     except Exception as e:
-                        logger.error(f"Gemini streaming error: {e}", exc_info=True)
-                        yield f"\n\nError during Gemini response: {str(e)}"
+                        logger.error(f"Gemini streaming error: {e}. Falling back to OpenAI...", exc_info=True)
+                        yield f"\n*(Gemini error, falling back to OpenAI...)*\n\n"
+                        try:
+                            openai_key = os.getenv("OPENAI_API_KEY")
+                            if not openai_key:
+                                openai_key = await self.db.get_api_key("openai", user_email=user_email)
+                            if not openai_key:
+                                raise ValueError("OpenAI API key not configured for fallback")
+                            
+                            from openai import AsyncOpenAI
+                            client = AsyncOpenAI(api_key=openai_key)
+                            openai_model = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+                            stream = await client.chat.completions.create(
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": question},
+                                ],
+                                model=openai_model,
+                                stream=True,
+                            )
+                            async for chunk in stream:
+                                content = chunk.choices[0].delta.content or ""
+                                if content:
+                                    yield content
+                        except Exception as fallback_err:
+                            logger.error(f"Fallback to OpenAI failed in stream_gemini: {fallback_err}", exc_info=True)
+                            yield f"\n\nFallback to OpenAI failed: {str(fallback_err)}"
 
                 return response_wrapper(stream_gemini())
 
@@ -435,7 +513,9 @@ USER QUESTION: {question}
                 return stream_groq(initial_stream)
 
             elif model == "openai":
-                api_key = await self.db.get_api_key("openai", user_email=user_email)
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    api_key = await self.db.get_api_key("openai", user_email=user_email)
                 if not api_key:
                     raise ValueError("OpenAI API key not found")
 
@@ -458,7 +538,9 @@ USER QUESTION: {question}
                 return stream_openai(initial_stream)
 
             elif model == "claude":
-                api_key = await self.db.get_api_key("claude", user_email=user_email)
+                api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+                if not api_key:
+                    api_key = await self.db.get_api_key("claude", user_email=user_email)
                 if not api_key:
                     raise ValueError("Anthropic API key not found")
 
@@ -485,13 +567,42 @@ USER QUESTION: {question}
                     raise ValueError("Gemini API key not found")
 
                 async def stream_gemini():
-                    async for chunk_text in stream_content_text_async(
-                        api_key=api_key,
-                        model=model_name,
-                        contents=user_query,
-                        config={"system_instruction": system_prompt},
-                    ):
-                        yield chunk_text
+                    try:
+                        async for chunk_text in stream_content_text_async(
+                            api_key=api_key,
+                            model=model_name,
+                            contents=user_query,
+                            config={"system_instruction": system_prompt},
+                        ):
+                            yield chunk_text
+                    except Exception as e:
+                        logger.error(f"Gemini streaming error in stream_response: {e}. Falling back to OpenAI...", exc_info=True)
+                        yield f"\n*(Gemini error, falling back to OpenAI...)*\n\n"
+                        try:
+                            openai_key = os.getenv("OPENAI_API_KEY")
+                            if not openai_key:
+                                openai_key = await self.db.get_api_key("openai", user_email=user_email)
+                            if not openai_key:
+                                raise ValueError("OpenAI API key not configured for fallback")
+                            
+                            from openai import AsyncOpenAI
+                            client = AsyncOpenAI(api_key=openai_key)
+                            openai_model = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+                            stream = await client.chat.completions.create(
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_query},
+                                ],
+                                model=openai_model,
+                                stream=True,
+                            )
+                            async for chunk in stream:
+                                content = chunk.choices[0].delta.content or ""
+                                if content:
+                                    yield content
+                        except Exception as fallback_err:
+                            logger.error(f"Fallback to OpenAI failed in stream_response gemini fallback: {fallback_err}", exc_info=True)
+                            yield f"\n\nFallback to OpenAI failed: {str(fallback_err)}"
 
                 return stream_gemini()
 
@@ -1103,20 +1214,47 @@ Produce a complete new notes document that fulfils the instruction. Include `## 
             if not api_key:
                 raise ValueError("Gemini API key not found")
 
-            text = await generate_content_text_async(
-                api_key=api_key,
-                model=model_name,
-                contents=user_query,
-                config={
-                    "system_instruction": system_prompt,
-                    "temperature": 0.2,
-                    "response_mime_type": "application/json",
-                },
-            )
-            return text or ""
+            try:
+                text = await generate_content_text_async(
+                    api_key=api_key,
+                    model=model_name,
+                    contents=user_query,
+                    config={
+                        "system_instruction": system_prompt,
+                        "temperature": 0.2,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                return text or ""
+            except Exception as e:
+                logger.warning(f"Gemini json call failed: {e}. Falling back to OpenAI...")
+                try:
+                    openai_key = os.getenv("OPENAI_API_KEY")
+                    if not openai_key:
+                        openai_key = await self.db.get_api_key("openai", user_email=user_email)
+                    if not openai_key:
+                        raise ValueError("OpenAI API key not configured for fallback")
+                    
+                    client = AsyncOpenAI(api_key=openai_key)
+                    openai_model = os.getenv("NOTES_SUMMARY_MODEL", "gpt-5.4").strip()
+                    response = await client.chat.completions.create(
+                        model=openai_model,
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_query},
+                        ],
+                    )
+                    return response.choices[0].message.content or ""
+                except Exception as fallback_err:
+                    logger.error(f"Fallback to OpenAI failed in json call: {fallback_err}")
+                    raise e
 
         if model == "openai":
-            api_key = await self.db.get_api_key("openai", user_email=user_email)
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                api_key = await self.db.get_api_key("openai", user_email=user_email)
             if not api_key:
                 raise ValueError("OpenAI API key not found")
             client = AsyncOpenAI(api_key=api_key)
@@ -1132,7 +1270,9 @@ Produce a complete new notes document that fulfils the instruction. Include `## 
             return response.choices[0].message.content or ""
 
         if model == "anthropic" or model == "claude":
-            api_key = await self.db.get_api_key("claude", user_email=user_email)
+            api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+            if not api_key:
+                api_key = await self.db.get_api_key("claude", user_email=user_email)
             if not api_key:
                 raise ValueError("Anthropic API key not found")
             client = AsyncAnthropic(api_key=api_key)

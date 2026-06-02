@@ -1142,7 +1142,8 @@ async def generate_notes_with_gemini_background(
         }
 
         all_json_data = []
-        model_name = GEMINI_DEFAULT_MODEL
+        notes_provider = os.getenv("NOTES_SUMMARY_PROVIDER", "gemini").lower().strip()
+        model_name = os.getenv("NOTES_SUMMARY_MODEL", GEMINI_DEFAULT_MODEL).strip()
 
         # 2. Try multimodal generation first when audio context is allowed.
         # Defaults to ON so the model can ground notes in the actual audio
@@ -1151,7 +1152,7 @@ async def generate_notes_with_gemini_background(
         notes_audio_enabled = (
             os.getenv("NOTES_AUDIO_ENABLED", "true").lower() == "true"
         )
-        allow_audio = bool(use_audio_context) and notes_audio_enabled
+        allow_audio = bool(use_audio_context) and notes_audio_enabled and notes_provider == "gemini"
         effective_audio_mode = audio_mode or os.getenv(
             "NOTES_AUDIO_DEFAULT_MODE", "compressed"
         )
@@ -1228,7 +1229,7 @@ async def generate_notes_with_gemini_background(
                 metadata["fallback_reason"] = "multimodal_exception"
 
         # 3. Transcript-only fallback
-        if not all_json_data:
+        if not all_json_data and notes_provider == "gemini":
             fast_path_json = await _generate_short_transcript_notes_json()
             if fast_path_json:
                 all_json_data = [fast_path_json]
@@ -1236,7 +1237,7 @@ async def generate_notes_with_gemini_background(
         if not all_json_data:
             _, all_json_data = await processor.process_transcript(
                 text=full_transcript_text,
-                model="gemini",
+                model=notes_provider,
                 model_name=model_name,
                 chunk_size=500000,  # 1 massive chunk for ~4-5 sec generation
                 overlap=0,
