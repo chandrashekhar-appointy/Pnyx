@@ -525,10 +525,13 @@ class LLMGateway:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
             kwargs: Dict[str, Any] = {"model": model, "messages": messages}
-            if temperature is not None:
+            if temperature is not None and not _model_omit_temperature(model):
                 kwargs["temperature"] = temperature
             if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
+                if provider == "openai" and _model_uses_completion_tokens(model):
+                    kwargs["max_completion_tokens"] = max_tokens
+                else:
+                    kwargs["max_tokens"] = max_tokens
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             resp = await client.chat.completions.create(**kwargs)
@@ -585,10 +588,13 @@ class LLMGateway:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
             kwargs: Dict[str, Any] = {"model": model, "messages": messages, "stream": True}
-            if temperature is not None:
+            if temperature is not None and not _model_omit_temperature(model):
                 kwargs["temperature"] = temperature
             if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
+                if provider == "openai" and _model_uses_completion_tokens(model):
+                    kwargs["max_completion_tokens"] = max_tokens
+                else:
+                    kwargs["max_tokens"] = max_tokens
             stream = await client.chat.completions.create(**kwargs)
             async for chunk in stream:
                 content = chunk.choices[0].delta.content or ""
@@ -642,6 +648,25 @@ _FALLBACK_COUNTER: Dict[str, int] = {}
 
 def get_fallback_counts() -> Dict[str, int]:
     return dict(_FALLBACK_COUNTER)
+
+
+# ── OpenAI model capability helpers ──────────────────────────────────────────
+# Newer OpenAI reasoning/frontier models (o-series, gpt-5.x) require
+# max_completion_tokens and reject max_tokens with a 400 error.
+
+_COMPLETION_TOKENS_PREFIXES = ("o1", "o2", "o3", "o4", "gpt-5")
+
+
+def _model_uses_completion_tokens(model: str) -> bool:
+    """Return True if this OpenAI model requires max_completion_tokens."""
+    m = (model or "").lower()
+    return any(m.startswith(p) for p in _COMPLETION_TOKENS_PREFIXES)
+
+
+def _model_omit_temperature(model: str) -> bool:
+    """Return True if this model rejects the temperature parameter (o-series)."""
+    m = (model or "").lower()
+    return m.startswith("o1") or m.startswith("o2") or m.startswith("o3") or m.startswith("o4")
 
 
 # ── lazy SDK client factories (import inside so missing SDKs fail per-provider,
