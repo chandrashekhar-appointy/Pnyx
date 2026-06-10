@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2, MoreHorizontal, Bot } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2, MoreHorizontal, Bot, Coins, Infinity as InfinityIcon } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { authFetch } from '@/lib/api';
 import { useRouter, usePathname } from 'next/navigation';
@@ -46,6 +46,39 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
+// Compact credit indicator shown in the collapsed icon rail
+const CollapsedCreditBadge: React.FC = () => {
+  const { status } = useSession();
+  const [total, setTotal] = React.useState<number | null>(null);
+  const [isUnlimited, setIsUnlimited] = React.useState(false);
+
+  React.useEffect(() => {
+    if (status !== 'authenticated') return;
+    authFetch('/api/credits')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { setTotal(d.total); setIsUnlimited(d.is_unlimited); } })
+      .catch(() => {});
+  }, [status]);
+
+  if (status !== 'authenticated') return null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex flex-col items-center p-1.5 rounded-lg hover:bg-gray-100 cursor-default">
+          <Coins size={18} className="text-amber-500" />
+          <span className="text-[9px] font-bold text-gray-700 leading-none mt-0.5">
+            {isUnlimited ? <InfinityIcon size={10} className="text-blue-600" /> : (total !== null ? total : '—')}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        <p>Credits: {isUnlimited ? 'Unlimited' : (total !== null ? total.toLocaleString() : 'Loading...')}</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
@@ -79,6 +112,9 @@ const Sidebar: React.FC = () => {
     mobileOpen,
     setMobileOpen,
   } = useSidebar();
+  // On desktop: respect isCollapsed. On mobile drawer: always show full content.
+  const showFull = !isCollapsed || mobileOpen;
+
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showModelSettings, setShowModelSettings] = useState(false);
@@ -440,7 +476,8 @@ const Sidebar: React.FC = () => {
   }, []);
 
   const renderCollapsedIcons = () => {
-    if (!isCollapsed) return null;
+    // Never show the icon-rail on mobile — the drawer is the mobile nav.
+    if (showFull) return null;
 
     const isHomePage = pathname === '/';
     const isMeetingPage = pathname?.includes('/meeting-details');
@@ -450,7 +487,7 @@ const Sidebar: React.FC = () => {
     return (
       <TooltipProvider>
         <div className="flex flex-col items-center space-y-4 mt-4">
-          <Logo isCollapsed={isCollapsed} />
+          <Logo isCollapsed={!showFull} />
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -564,6 +601,8 @@ const Sidebar: React.FC = () => {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          <CollapsedCreditBadge />
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -579,7 +618,7 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Info isCollapsed={isCollapsed} />
+          <Info isCollapsed={!showFull} />
         </div>
       </TooltipProvider>
     );
@@ -601,7 +640,7 @@ const Sidebar: React.FC = () => {
     const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
     const hasTranscriptMatch = !!matchingResult;
 
-    if (isCollapsed) return null;
+    if (!showFull) return null;
 
     return (
       <div key={item.id}>
@@ -745,8 +784,8 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${
-          isCollapsed ? 'md:w-16 w-64' : 'w-64'
+        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 overflow-hidden ${
+          showFull ? 'w-64' : 'w-16'
         }`}
       >
         {/* Header with traffic light spacing */}
@@ -757,12 +796,12 @@ const Sidebar: React.FC = () => {
 
 
           <div className="flex-1">
-            {!isCollapsed && (
+            {showFull && (
               <div className="p-3">
                 {/* <span className="text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center">
                   <span>Meetily</span>
                 </span> */}
-                <Logo isCollapsed={isCollapsed} />
+                <Logo isCollapsed={!showFull} />
 
                 <div className="relative mb-1">
                   <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
@@ -794,7 +833,7 @@ const Sidebar: React.FC = () => {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Fixed navigation items */}
           <div className="flex-shrink-0">
-            {!isCollapsed && (
+            {showFull && (
               <div
                 onClick={() => router.push('/')}
                 className="p-3  text-lg font-semibold items-center hover:bg-gray-100 h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
@@ -809,7 +848,7 @@ const Sidebar: React.FC = () => {
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
             {/* Meeting Notes folder header - fixed */}
-            {!isCollapsed && (
+            {showFull && (
               <div className="flex-shrink-0">
                 {filteredSidebarItems.filter(item => item.type === 'folder').map(item => (
                   <div key={item.id}>
@@ -828,7 +867,7 @@ const Sidebar: React.FC = () => {
             )}
 
             {/* Scrollable meeting items */}
-            {!isCollapsed && (
+            {showFull && (
               <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
                 {/* Active Bot Sessions */}
                 {activeBotSessions.length > 0 && (
@@ -877,7 +916,7 @@ const Sidebar: React.FC = () => {
         </div>
 
         {/* Footer */}
-        {!isCollapsed && (
+        {showFull && (
 
           <div className="flex-shrink-0 p-2 border-t border-gray-100">
             <button
@@ -955,7 +994,7 @@ const Sidebar: React.FC = () => {
               <LogOut className="w-4 h-4 mr-2" />
               <span>Log Out</span>
             </button>
-            <Info isCollapsed={isCollapsed} />
+            <Info isCollapsed={!showFull} />
             <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-gray-400">
               v0.1.1 - Pre Release
             </div>

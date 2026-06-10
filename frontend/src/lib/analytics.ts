@@ -1,4 +1,6 @@
 import posthog from 'posthog-js';
+import { getSession } from 'next-auth/react';
+import { apiUrl } from './config';
 
 export interface AnalyticsProperties {
   [key: string]: any;
@@ -172,14 +174,58 @@ export class Analytics {
     eventName: string,
     properties?: AnalyticsProperties
   ): Promise<void> {
-    if (!(await this.isEnabled()) || !this.posthogEnabled) {
+    // Respect opt-out and ensure init has run, but DON'T gate on PostHog —
+    // events must always reach our self-hosted backend so the in-app dashboard
+    // works in every environment, independent of PostHog/Vercel config.
+    if (!getAnalyticsOptIn() || !this.initialized) {
       return;
     }
 
+    const props = this.sanitizeProperties(properties);
+
+    // PostHog (prod + key only)
+    if (this.posthogEnabled) {
+      try {
+        posthog.capture(eventName, props);
+      } catch (error) {
+        console.warn('[Analytics] Failed to capture event:', eventName, error);
+      }
+    }
+
+    // Self-hosted backend (fire-and-forget, all environments)
+    void this.sendToBackend(eventName, props);
+  }
+
+  private static async sendToBackend(
+    eventName: string,
+    properties: AnalyticsProperties
+  ): Promise<void> {
     try {
-      posthog.capture(eventName, this.sanitizeProperties(properties));
-    } catch (error) {
-      console.warn('[Analytics] Failed to capture event:', eventName, error);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      // Attach the JWT when logged in so the event is attributed to the user.
+      // The backend only trusts the token for identity (ignores the body user_id).
+      try {
+        const session = await getSession();
+        const token = (session as any)?.idToken;
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+      } catch {
+        /* anonymous event is fine */
+      }
+
+      await fetch(`${apiUrl}/analytics/track`, {
+        method: 'POST',
+        headers,
+        keepalive: true, // survive page unload (session_ended, etc.)
+        body: JSON.stringify({
+          event_name: eventName,
+          properties,
+          session_id: this.currentSessionId,
+          user_id: this.currentUserId,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+    } catch {
+      // Best-effort: never let analytics break UX.
     }
   }
 

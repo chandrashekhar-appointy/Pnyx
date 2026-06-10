@@ -1051,14 +1051,61 @@ class PostRecordingService:
     async def _trigger_notes_generation(
         self, meeting_id: str, user_email: Optional[str] = None
     ):
-        """Trigger background notes generation job."""
+        """Trigger background notes generation job.
+
+        Guards against empty meetings: if a finalized meeting has no transcript,
+        there is nothing to summarize. We delete it only when there is also no
+        audio artifact (a truly empty session). If audio exists but the
+        transcript is missing, we keep the meeting — transcription failed and is
+        recoverable — but we skip notes generation.
+        """
         try:
+            try:
+                from ...db import DatabaseManager
+                from ...services.storage import StorageService
+            except (ImportError, ValueError):
+                from db import DatabaseManager
+                from services.storage import StorageService
+
+            db = DatabaseManager()
+            has_transcript = await db.has_transcript_segments(meeting_id)
+
+            if not has_transcript:
+                # Does any recording artifact exist for this meeting?
+                has_audio = False
+                for ext in ("recording.wav", "recording.opus", "recording.m4a", "recording.enc.wav"):
+                    try:
+                        if await StorageService.check_file_exists(f"{meeting_id}/{ext}"):
+                            has_audio = True
+                            break
+                    except Exception:
+                        continue
+
+                if not has_audio:
+                    logger.info(
+                        "🗑️ Meeting %s finalized with no transcript and no audio. "
+                        "Deleting empty meeting.",
+                        meeting_id,
+                    )
+                    try:
+                        await db.delete_meeting(meeting_id)
+                    except Exception as e:
+                        logger.error("Failed to delete empty meeting %s: %s", meeting_id, e)
+                    return
+
+                logger.warning(
+                    "⚠️ Meeting %s has audio but no transcript — keeping it for "
+                    "retry, skipping notes generation.",
+                    meeting_id,
+                )
+                return
+
             logger.info(f"📝 Auto-triggering notes generation for {meeting_id}")
             try:
                 from ...tasks.generate_notes import generate_meeting_notes_task
             except (ImportError, ValueError):
                 from tasks.generate_notes import generate_meeting_notes_task
-                
+
             generate_meeting_notes_task.delay(
                 meeting_id=meeting_id,
                 user_email=user_email or "default",

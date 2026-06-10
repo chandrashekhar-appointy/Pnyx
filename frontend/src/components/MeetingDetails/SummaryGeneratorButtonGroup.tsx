@@ -144,18 +144,7 @@ export function SummaryGeneratorButtonGroup({
             >
               Generate Note (Standard)
             </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={!isDiarizedAvailable}
-              onClick={() => {
-                if (isDiarizedAvailable) {
-                  Analytics.trackButtonClick('generate_summary_diarized', 'meeting_details');
-                  onRegenerateWithDiarized();
-                }
-              }}
-              title={!isDiarizedAvailable ? "Diarization must be completed first" : "Generate using speaker-aware transcript"}
-            >
-              Generate Note (Diarized)
-            </DropdownMenuItem>
+            {/* Generate Note (Diarized) disabled for v1 */}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (

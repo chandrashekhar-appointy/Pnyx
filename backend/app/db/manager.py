@@ -610,6 +610,114 @@ class DatabaseManager:
             logger.error(f"Error saving transcript: {str(e)}")
             raise
 
+    async def get_authoritative_transcript_content(self, meeting_id: str) -> list:
+        """Load the current authoritative transcript's full segment list."""
+        try:
+            async with self._get_connection() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT content_object_path FROM transcript_versions
+                    WHERE meeting_id = $1 AND is_authoritative = TRUE
+                    ORDER BY version_num DESC LIMIT 1
+                    """,
+                    meeting_id,
+                )
+            if not row:
+                return []
+            content = await DocumentStorageService.load_transcript_version_content(
+                row["content_object_path"]
+            )
+            return content or []
+        except Exception as e:
+            logger.error(f"Error loading authoritative transcript for {meeting_id}: {e}")
+            return []
+
+    async def upsert_live_transcript(
+        self,
+        meeting_id: str,
+        content: list,
+        source: str = "live",
+        created_by: str = "system",
+    ) -> int:
+        """
+        Create or REPLACE the single authoritative transcript with the full
+        accumulated segment list.
+
+        The Recall bot delivers one finalized segment per webhook. The naive
+        save_meeting_transcript() created a new authoritative version per
+        segment, so only the LAST segment survived as "current". This instead
+        keeps one authoritative version and overwrites it with the growing full
+        list, so the whole transcript is preserved.
+        """
+        try:
+            confidence_metrics = self._calculate_confidence_metrics(content)
+            max_end = max(
+                (float(s.get("end") or s.get("audio_end_time") or 0) for s in content),
+                default=0,
+            )
+            alignment_config = {"total_duration_seconds": max_end}
+            async with self._get_connection() as conn:
+                async with conn.transaction():
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT version_num FROM transcript_versions
+                        WHERE meeting_id = $1 AND is_authoritative = TRUE
+                        ORDER BY version_num DESC LIMIT 1
+                        """,
+                        meeting_id,
+                    )
+                    if existing:
+                        version_num = existing["version_num"]
+                    else:
+                        version_num = await conn.fetchval(
+                            "SELECT COALESCE(MAX(version_num), 0) + 1 "
+                            "FROM transcript_versions WHERE meeting_id = $1",
+                            meeting_id,
+                        )
+
+                    storage_meta = await DocumentStorageService.save_transcript_version(
+                        meeting_id=meeting_id,
+                        version_num=version_num,
+                        source=source,
+                        content=content,
+                        is_authoritative=True,
+                        created_by=created_by,
+                        alignment_config=alignment_config,
+                        confidence_metrics=confidence_metrics,
+                    )
+
+                    if existing:
+                        await conn.execute(
+                            """
+                            UPDATE transcript_versions
+                            SET content_object_path = $1, content_sha256 = $2,
+                                content_byte_size = $3, confidence_metrics = $4,
+                                alignment_config = $5, source = $6
+                            WHERE meeting_id = $7 AND version_num = $8
+                            """,
+                            storage_meta["path"], storage_meta["sha256"],
+                            storage_meta["byte_size"], json.dumps(confidence_metrics),
+                            json.dumps(alignment_config), source, meeting_id, version_num,
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            INSERT INTO transcript_versions (
+                                meeting_id, version_num, source, is_authoritative,
+                                created_by, alignment_config, confidence_metrics,
+                                content_object_path, content_sha256, content_byte_size
+                            ) VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8, $9)
+                            """,
+                            meeting_id, version_num, source, created_by,
+                            json.dumps(alignment_config), json.dumps(confidence_metrics),
+                            storage_meta["path"], storage_meta["sha256"],
+                            storage_meta["byte_size"],
+                        )
+            return version_num
+        except Exception as e:
+            logger.error(f"Error upserting live transcript for {meeting_id}: {e}")
+            raise
+
     async def has_transcript_segments(self, meeting_id: str) -> bool:
         """Check if a meeting has any transcript versions saved."""
         try:

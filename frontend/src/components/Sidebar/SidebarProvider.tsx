@@ -99,7 +99,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [isRecording, setIsRecording] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [serverAddress, setServerAddress] = useState('');
+  const [serverAddress, setServerAddress] = useState(apiUrl); // initialize immediately so consumers don't stall waiting for the effect
   const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
   const [activeSummaryPolls, setActiveSummaryPolls] = useState<Map<string, NodeJS.Timeout>>(new Map());
   const [sharedNotesCount, setSharedNotesCount] = useState(0);

@@ -40,7 +40,6 @@ import {
   Sparkles,
   X,
   Zap,
-  Menu,
 } from 'lucide-react';
 import { ChatInterface } from '@/components/MeetingDetails/ChatInterface';
 import { MicrophoneIcon } from '@heroicons/react/24/outline';
@@ -499,7 +498,6 @@ function HomeContent() {
     refetchMeetings,
     activeBotMeetingId,
     setActiveBotMeetingId,
-    setMobileOpen,
   } = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
@@ -2648,18 +2646,6 @@ function HomeContent() {
           </Alert>
         </div>
       )}
-      {/* Mobile top-bar: hamburger + app name — hidden on md+ where sidebar is always visible */}
-      <div className="md:hidden flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 shrink-0">
-        <button
-          onClick={() => setMobileOpen(true)}
-          aria-label="Open menu"
-          className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-        <span className="font-semibold text-gray-900 text-sm">Pnyx</span>
-      </div>
-
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="flex-1 border-r border-gray-200/60 bg-transparent flex flex-col overflow-y-auto">
@@ -3347,10 +3333,9 @@ function HomeContent() {
         {(!isProcessingStop && !isSavingTranscript && (!pendingRecoveryId || isRecording)) && (
           <div className="fixed bottom-12 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="w-2/3 max-w-[750px] flex flex-col items-center gap-2">
                 {/* {isRecording && streamingHealth && ( */}
@@ -3469,10 +3454,9 @@ function HomeContent() {
         {pendingRecoveryId && !isSavingTranscript && !isRecording && (
           <div className="fixed bottom-12 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="bg-amber-50 border border-amber-200 rounded-full shadow-lg px-6 py-3 flex items-center gap-4">
                 <div className="flex flex-col">
@@ -3601,10 +3585,9 @@ function HomeContent() {
         {isSavingTranscript && (
           <div className="fixed bottom-4 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="w-2/3 max-w-[750px] flex justify-center">
                 <div className="bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
