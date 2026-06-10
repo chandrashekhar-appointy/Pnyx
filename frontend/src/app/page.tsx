@@ -40,6 +40,7 @@ import {
   Sparkles,
   X,
   Zap,
+  Menu,
 } from 'lucide-react';
 import { ChatInterface } from '@/components/MeetingDetails/ChatInterface';
 import { MicrophoneIcon } from '@heroicons/react/24/outline';
@@ -493,11 +494,12 @@ function HomeContent() {
     isMeetingActive, 
     setIsMeetingActive, 
     setIsRecording: setSidebarIsRecording, 
-    serverAddress, 
-    isCollapsed: sidebarCollapsed, 
-    refetchMeetings, 
+    serverAddress,
+    isCollapsed: sidebarCollapsed,
+    refetchMeetings,
     activeBotMeetingId,
-    setActiveBotMeetingId
+    setActiveBotMeetingId,
+    setMobileOpen,
   } = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
@@ -2646,6 +2648,18 @@ function HomeContent() {
           </Alert>
         </div>
       )}
+      {/* Mobile top-bar: hamburger + app name — hidden on md+ where sidebar is always visible */}
+      <div className="md:hidden flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 shrink-0">
+        <button
+          onClick={() => setMobileOpen(true)}
+          aria-label="Open menu"
+          className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <span className="font-semibold text-gray-900 text-sm">Pnyx</span>
+      </div>
+
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="flex-1 border-r border-gray-200/60 bg-transparent flex flex-col overflow-y-auto">
@@ -2660,7 +2674,7 @@ function HomeContent() {
                   <div className="w-full flex flex-col gap-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[420px]" title={meetingTitle}>
+                        <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[180px] sm:max-w-[300px] md:max-w-[420px]" title={meetingTitle}>
                           {meetingTitle}
                         </h1>
                         {isRecording && (
@@ -2853,7 +2867,7 @@ function HomeContent() {
                       <Sparkles className="h-8 w-8" />
                     </div>
                     <h2 className="mt-8 text-3xl font-semibold tracking-tight text-slate-900">Pnyx is ready when you are</h2>
-                    <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-slate-600">
+                    <p className="mx-auto mt-4 max-w-full sm:max-w-xl text-sm leading-6 text-slate-600">
                       Start Pnyx to capture live transcript, decisions, action items, and meeting notes in real time.
                     </p>
                     <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs font-medium text-slate-500">
@@ -2879,7 +2893,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex-1">
@@ -2911,7 +2925,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
@@ -2954,7 +2968,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
@@ -2990,7 +3004,7 @@ function HomeContent() {
 
                     {/* ───── Always-Visible Pinned Decisions ───── */}
                     {activeDecisions.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-3">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           Decisions ({activeDecisions.length})
@@ -3013,7 +3027,7 @@ function HomeContent() {
 
                     {/* ───── Always-Visible Pinned Insights ───── */}
                     {activePinnedInsights.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-3">
                           <Sparkles className="h-3.5 w-3.5" />
                           AI Participant Insights ({activePinnedInsights.length})
@@ -3036,7 +3050,7 @@ function HomeContent() {
 
                     {/* ───── Open Discussions (visible when active) ───── */}
                     {activeDiscussions.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700 mb-3">
                           <MessageCircle className="h-3.5 w-3.5" />
                           Open Discussions ({activeDiscussions.length})

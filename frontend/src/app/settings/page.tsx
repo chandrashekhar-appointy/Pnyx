@@ -26,7 +26,7 @@ type TranscriptModelProps = {
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('personalKeys');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('encryption');
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
     provider: 'localWhisper',
     model: 'large-v3',
@@ -36,7 +36,7 @@ function SettingsContent() {
   useEffect(() => {
       const tabParam = searchParams.get('tab');
       if (tabParam) {
-      const validTabs: SettingsTab[] = [/* 'general', 'recording', 'Transcriptionmodels', 'summaryModels', */ 'personalKeys', 'encryption', 'calendar', 'aiHost'];
+      const validTabs: SettingsTab[] = [/* 'general', 'recording', 'Transcriptionmodels', 'summaryModels', 'personalKeys' */ 'encryption', 'calendar', 'aiHost'];
       if (validTabs.includes(tabParam as SettingsTab)) {
         setActiveTab(tabParam as SettingsTab);
       }
@@ -52,7 +52,7 @@ function SettingsContent() {
     // { id: 'recording' as const, label: 'Recordings', icon: <Mic className="w-4 h-4" /> },
     // { id: 'Transcriptionmodels' as const, label: 'Transcription', icon: <DatabaseIcon className="w-4 h-4" /> },
     // { id: 'summaryModels' as const, label: 'Summary', icon: <SparkleIcon className="w-4 h-4" /> },
-    { id: 'personalKeys' as const, label: 'Personal Keys', icon: <Key className="w-4 h-4" /> },
+    // { id: 'personalKeys' as const, label: 'Personal Keys', icon: <Key className="w-4 h-4" /> },  // v1: hidden — passphrase-based key UX planned for v2
     { id: 'encryption' as const, label: 'Security & Encryption', icon: <Shield className="w-4 h-4" /> },
     { id: 'calendar' as const, label: 'Calendar', icon: <Calendar className="w-4 h-4" /> },
     { id: 'aiHost' as const, label: 'AI Participant', icon: <Bot className="w-4 h-4" /> }
@@ -84,7 +84,7 @@ function SettingsContent() {
     <div className="h-screen bg-gray-50 flex flex-col">
       {/* Fixed Header */}
       <div className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-8 py-6">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
           <div className="flex items-center gap-4">
             <button
               onClick={() => router.back()}
@@ -100,7 +100,7 @@ function SettingsContent() {
 
       {/* Scrollable Content */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto p-8 pt-6">
+        <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8 pt-4 sm:pt-6">
           {/* Tabs */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
             <div className="flex border-b border-gray-200 overflow-x-auto">
@@ -108,7 +108,7 @@ function SettingsContent() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors whitespace-nowrap ${activeTab === tab.id
+                  className={`flex items-center gap-2 px-3 py-3 sm:px-6 sm:py-4 text-sm font-medium transition-colors whitespace-nowrap ${activeTab === tab.id
                     ? 'border-b-2 border-blue-600 text-blue-600 bg-blue-50'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                     }`}
@@ -120,7 +120,7 @@ function SettingsContent() {
             </div>
 
             {/* Tab Content */}
-            <div className="p-6">
+            <div className="p-4 sm:p-6">
               {/* {activeTab === 'general' && <PreferenceSettings />} */}
               {/* {activeTab === 'recording' && <RecordingSettings />} */}
               {/* {activeTab === 'Transcriptionmodels' && (
@@ -131,7 +131,7 @@ function SettingsContent() {
                 />
               )} */}
               {/* {activeTab === 'summaryModels' && <SummaryModelSettings />} */}
-              {activeTab === 'personalKeys' && <PersonalKeysSettings />}
+              {/* personalKeys tab hidden in v1 — passphrase-based key planned for v2 */}
               {activeTab === 'encryption' && <EncryptionSettings />}
               {activeTab === 'calendar' && <CalendarIntegrationSettings />}
               {activeTab === 'aiHost' && <AIHostSkillSettings />}

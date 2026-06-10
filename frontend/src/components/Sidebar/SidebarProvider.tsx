@@ -71,6 +71,9 @@ interface SidebarContextType {
   activeBotSessions: ActiveBotSession[];
   activeBotMeetingId: string | null;
   setActiveBotMeetingId: (id: string | null) => void;
+  // Mobile drawer
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean) => void;
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
@@ -102,6 +105,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [sharedNotesCount, setSharedNotesCount] = useState(0);
   const [activeBotSessions, setActiveBotSessions] = useState<ActiveBotSession[]>([]);
   const [activeBotMeetingId, setActiveBotMeetingId] = useState<string | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const { status } = useSession(); // Access Auth Session Check
   const { isRecording: persistentIsRecording } = usePersistentRecordingSession();
 
@@ -434,6 +438,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       activeBotSessions,
       activeBotMeetingId,
       setActiveBotMeetingId,
+      mobileOpen,
+      setMobileOpen,
     }}>
       {children}
     </SidebarContext.Provider>

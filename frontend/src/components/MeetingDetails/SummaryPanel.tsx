@@ -58,6 +58,7 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onDeleteMeeting: () => Promise<void>;
+  className?: string;
 }
 
 export function SummaryPanel({
@@ -93,7 +94,8 @@ export function SummaryPanel({
   selectedTemplate,
   onTemplateSelect,
   isModelConfigLoading = false,
-  onDeleteMeeting
+  onDeleteMeeting,
+  className,
 }: SummaryPanelProps) {
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const [isRefineSidebarOpen, setIsRefineSidebarOpen] = useState(false);
@@ -133,7 +135,7 @@ export function SummaryPanel({
 
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden">
+    <div className={`${className ?? 'flex'} flex-1 min-w-0 flex-col bg-white overflow-hidden`}>
       {/* Title area */}
       <div className="p-4 border-b border-gray-200 flex items-center justify-between">
         <div className="flex-1 mr-4">

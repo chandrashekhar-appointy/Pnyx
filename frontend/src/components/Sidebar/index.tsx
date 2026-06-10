@@ -76,6 +76,8 @@ const Sidebar: React.FC = () => {
     activeBotSessions,
     activeBotMeetingId,
     setActiveBotMeetingId,
+    mobileOpen,
+    setMobileOpen,
   } = useSidebar();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -505,29 +507,7 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar_collapsed'); router.push('/shared-notes'); }}
-                aria-label="Shared with Me"
-                className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/shared-notes' ? 'bg-gray-100' : 'hover:bg-gray-100'
-                  }`}
-              >
-                <div className="relative">
-                  <Share2 className="w-5 h-5 text-gray-600" />
-                  {sharedNotesCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-                    </span>
-                  )}
-                </div>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Shared with Me</p>
-            </TooltipContent>
-          </Tooltip>
+          {/* Shared with Me disabled for v1 */}
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -643,8 +623,13 @@ const Sidebar: React.FC = () => {
                 Analytics.trackNewCallClicked();
               }
               setCurrentMeeting({ id: item.id, title: item.title });
-              const basePath = item.id.startsWith('intro-call') ? '/' :
-                item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+              // Every real meeting opens in meeting-details. The old `/notes/[id]`
+              // route is leftover demo content with no backend, and auto-join
+              // calendar meetings (id = `cal_<event>_<ts>`) have no hyphen, so the
+              // previous `includes('-')` check wrongly sent them to that dead page.
+              const basePath = item.id.startsWith('intro-call')
+                ? '/'
+                : `/meeting-details?id=${item.id}`;
               router.push(basePath);
             }
           }}
@@ -726,12 +711,30 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-0 left-0 h-screen z-40">
-      {/* Floating collapse button */}
+    <>
+      {/* Mobile backdrop — tap to close drawer */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+    <div
+      className={[
+        'fixed top-0 left-0 h-screen z-50',
+        // Mobile: slide drawer in/out; always full w-64 when open
+        'transition-transform duration-300',
+        'md:translate-x-0',                              // desktop: always visible
+        mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0', // mobile: open/close
+      ].join(' ')}
+    >
+      {/* Desktop-only floating collapse button */}
       <button
         onClick={toggleCollapse}
         aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
+        className="absolute -right-6 top-20 z-50 p-2 bg-white hover:bg-gray-100 rounded-full shadow-lg border hidden md:flex items-center justify-center"
         style={{ transform: 'translateX(50%)' }}
       >
         {isCollapsed ? (
@@ -742,8 +745,9 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
-          }`}
+        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${
+          isCollapsed ? 'md:w-16 w-64' : 'w-64'
+        }`}
       >
         {/* Header with traffic light spacing */}
         <div className="flex-shrink-0 h-22 flex items-center">
@@ -902,19 +906,7 @@ const Sidebar: React.FC = () => {
               <span>Import</span>
             </button>
 
-            <button
-              onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar'); router.push('/shared-notes'); }}
-              className={`w-full flex items-center justify-center relative px-3 py-1.5 mt-1 mb-1 text-sm font-medium rounded-lg transition-colors shadow-sm ${pathname === '/shared-notes' ? 'text-gray-800 bg-gray-300' : 'text-gray-700 bg-gray-200 hover:bg-gray-300'}`}
-            >
-              <Share2 className="w-4 h-4 mr-2" />
-              <span>Shared with Me</span>
-              
-              {sharedNotesCount > 0 && (
-                <span className="absolute right-3 bg-blue-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">
-                  {sharedNotesCount}
-                </span>
-              )}
-            </button>
+            {/* Shared with Me disabled for v1 */}
 
             <button
               onClick={() => { Analytics.trackNavigation('settings', 'sidebar'); router.push('/settings'); }}
@@ -953,7 +945,7 @@ const Sidebar: React.FC = () => {
             </DropdownMenu>
 
             <div className="px-1 mt-2 mb-2">
-              <CreditBalance onTopUpClick={() => { Analytics.trackPurchaseModalOpened(); setIsPurchaseModalOpen(true); }} />
+              <CreditBalance />
             </div>
 
             <button
@@ -984,10 +976,7 @@ const Sidebar: React.FC = () => {
         onClose={() => setIsImportModalOpen(false)}
       />
 
-      <PurchaseCreditsModal
-        isOpen={isPurchaseModalOpen}
-        onClose={() => setIsPurchaseModalOpen(false)}
-      />
+      {/* PurchaseCreditsModal disabled for v1 */}
 
       {/* Edit Meeting Title Modal */}
       <Dialog open={editModalState.isOpen} onOpenChange={(open) => {
@@ -1040,6 +1029,7 @@ const Sidebar: React.FC = () => {
         </DialogContent>
       </Dialog>
     </div>
+    </>
   );
 };
 

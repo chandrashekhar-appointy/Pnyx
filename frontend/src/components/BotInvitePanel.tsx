@@ -131,7 +131,7 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
       let activeMeetingId = meetingId;
       
       if (!activeMeetingId) {
-        const createRes = await authFetch('/api/meetings/create', {
+        const createRes = await authFetch('/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: 'Live Bot Session' }),
@@ -287,8 +287,8 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
         {/* URL input + Send button (only when no active bot) */}
         {!hasActiveBot && (
           <div className="space-y-2">
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            <div className="flex flex-wrap sm:flex-nowrap gap-2">
+              <div className="relative flex-1 min-w-0">
                 <Link2 className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
                 <input
                   type="url"
@@ -311,9 +311,9 @@ export const BotInvitePanel: React.FC<BotInvitePanelProps> = ({
               <button
                 onClick={handleInviteBot}
                 disabled={!meetingUrl.trim() || isSpawning}
-                className="px-3 py-2 text-xs font-medium text-white bg-indigo-500
+                className="px-3 py-2 min-h-[36px] text-xs font-medium text-white bg-indigo-500
                            hover:bg-indigo-600 disabled:bg-gray-300 disabled:cursor-not-allowed
-                           rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                           rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap w-full sm:w-auto"
               >
                 {isSpawning ? (
                   <>

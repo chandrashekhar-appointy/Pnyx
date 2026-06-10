@@ -49,20 +49,20 @@ export default function LoginPage() {
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-            <div className="w-full max-w-md">
+            <div className="w-full max-w-sm md:max-w-md">
                 {/* Logo/Title Section */}
-                <div className="text-center mb-8">
+                <div className="text-center mb-6 md:mb-8">
                     <img
                         src="/image.png"
                         alt="Pnyx Logo"
-                        className="w-48 h-48 object-contain mx-auto mb-2"
+                        className="w-32 h-32 md:w-48 md:h-48 object-contain mx-auto mb-2"
                     />
                     <h1 className="text-3xl font-bold text-gray-900">Pnyx</h1>
                     <p className="text-gray-600 mt-2">AI-powered meeting transcription & notes</p>
                 </div>
 
                 {/* Login Card */}
-                <div className="bg-white rounded-2xl shadow-xl p-8">
+                <div className="bg-white rounded-2xl shadow-xl p-6 md:p-8">
                     <h2 className="text-xl font-semibold text-gray-800 text-center mb-6">
                         Sign in to continue
                     </h2>

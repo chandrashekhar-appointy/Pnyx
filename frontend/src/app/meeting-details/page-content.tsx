@@ -5,7 +5,7 @@ import { Summary, SummaryResponse } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
-import { ShareNotesDialog } from '@/components/ShareNotesDialog';
+// import { ShareNotesDialog } from '@/components/ShareNotesDialog';  // v1: disabled
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { ChatInterface } from '@/components/MeetingDetails/ChatInterface';
 import { Bot, MessageSquare } from 'lucide-react';
@@ -23,7 +23,7 @@ import { useModelConfiguration } from '@/hooks/meeting-details/useModelConfigura
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
-import { useDiarization } from '@/hooks/useDiarization';
+// useDiarization removed — diarization disabled in v1
 
 import { useRouter } from 'next/navigation';
 import { KeyManager } from '@/lib/crypto/key_manager';
@@ -85,7 +85,7 @@ export default function PageContent({
     return () => window.removeEventListener('show-share-dialog', handleShowShare);
   }, []);
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [currentTranscriptVersion, setCurrentTranscriptVersion] = useState<number | undefined>(undefined);
+  const [activeTab, setActiveTab] = useState<'transcript' | 'notes'>('notes');
 
   // Sidebar context
   const { serverAddress } = useSidebar();
@@ -121,27 +121,6 @@ export default function PageContent({
     notesGenerationInfo: effectiveNotesGenerationInfo,
   });
 
-  // Diarization
-  const diarization = useDiarization(meeting.id);
-
-  // Handle diarization errors
-  useEffect(() => {
-    if (diarization.error) {
-      console.error('Diarization error:', diarization.error);
-
-      // Check for specific "No audio" error
-      if (diarization.error.includes('No audio recording directory found') || diarization.error.includes('No audio recording found')) {
-        toast.error('Diarization Failed', {
-          description: 'No audio recording found for this meeting. Diarization requires the original audio file.',
-          duration: 5000
-        });
-      } else {
-        toast.error('Diarization Failed', {
-          description: diarization.error
-        });
-      }
-    }
-  }, [diarization.error]);
 
   // Track page view
   useEffect(() => {
@@ -315,29 +294,6 @@ export default function PageContent({
     }
   }, [effectiveNotesGenerationInfo, meeting.id, customPrivateKey]);
 
-  // AUTO-REFRESH TRANSCRIPT: When diarization completes, refresh meeting data to show speaker labels
-  const [hasRefreshedForDiarization, setHasRefreshedForDiarization] = useState(false);
-  useEffect(() => {
-    if (diarization.status?.status === 'completed' && !hasRefreshedForDiarization) {
-      // Only auto-refresh when viewing live transcript to avoid overriding a selected version.
-      if (currentTranscriptVersion === undefined) {
-        console.log('✅ Diarization completed, refreshing meeting data to show speaker labels...');
-        setHasRefreshedForDiarization(true);
-        if (onMeetingUpdated) {
-          onMeetingUpdated();
-        }
-      }
-    } else if (diarization.status?.status !== 'completed' && hasRefreshedForDiarization) {
-      // Reset if status changes back (e.g. re-running diarization)
-      setHasRefreshedForDiarization(false);
-    }
-  }, [diarization.status?.status, onMeetingUpdated, hasRefreshedForDiarization, currentTranscriptVersion]);
-
-  // Convert speakers array to map for easier lookup
-  const speakerMap = (diarization.speakers || []).reduce((acc, s) => {
-    acc[s.label] = s.display_name;
-    return acc;
-  }, {} as Record<string, string>);
 
   const handleManualUnlock = async () => {
     if (!manualKeyInput.trim()) {
@@ -364,15 +320,44 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen bg-gray-50"
     >
+      {/* Mobile tab bar — hidden on md+ where both panels show side-by-side */}
+      <div className="flex md:hidden border-b border-gray-200 bg-white shrink-0">
+        <button
+          onClick={() => setActiveTab('transcript')}
+          className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors ${
+            activeTab === 'transcript'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Transcript
+          {meetingData.transcripts.length > 0 && (
+            <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5 leading-none">
+              {meetingData.transcripts.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('notes')}
+          className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors ${
+            activeTab === 'notes'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Notes
+        </button>
+      </div>
+
       <div className="flex flex-1 overflow-hidden relative">
         {/* E2EE Decryption Overlay */}
         {decryptionError && (
-          <div className="absolute inset-0 z-50 bg-white/95 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm">
+          <div className="absolute inset-0 z-50 bg-white/95 flex flex-col items-center justify-center p-4 sm:p-8 text-center backdrop-blur-sm">
             <AlertTriangle className="w-12 h-12 text-red-500 mb-4" />
             <h3 className="text-xl font-bold text-red-700 mb-2">Decryption Error</h3>
-            <p className="text-gray-600 mb-6 max-w-md">{decryptionError}</p>
-            
-            <div className="w-full max-w-md bg-white p-6 rounded-lg shadow-sm border border-gray-200 mb-6 text-left">
+            <p className="text-gray-600 mb-6 max-w-sm md:max-w-md">{decryptionError}</p>
+
+            <div className="w-full max-w-sm md:max-w-md bg-white p-4 sm:p-6 rounded-lg shadow-sm border border-gray-200 mb-6 text-left">
               <h4 className="text-sm font-semibold text-gray-900 mb-2">Provide Private Key for this Meeting</h4>
               <p className="text-xs text-gray-500 mb-4">
                 If this meeting was encrypted with a different key than your current one, paste the correct private key below to unlock it.
@@ -400,6 +385,7 @@ export default function PageContent({
         )}
 
 
+        {/* Transcript panel: always shown on md+; on mobile only when tab is 'transcript' */}
         <ErrorBoundary
           fallback={
             <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-6 bg-white border-r border-gray-200 text-center gap-3">
@@ -410,30 +396,23 @@ export default function PageContent({
           }
         >
           <TranscriptPanel
+            className={activeTab !== 'transcript' ? 'hidden md:flex' : 'flex'}
             transcripts={meetingData.transcripts}
             onCopyTranscript={copyOperations.handleCopyTranscript}
             onDownloadRecording={meetingOperations.handleDownloadRecording}
             isRecording={isRecording}
-            currentVersion={currentTranscriptVersion}
-            onCurrentVersionChange={setCurrentTranscriptVersion}
-            onDiarize={diarization.triggerDiarization}
-            onStopDiarize={diarization.stopDiarization}
-            diarizationStatus={diarization.status?.status}
-            isDiarizing={diarization.isDiarizing}
-            diarizationProgress={diarization.progress}
-            diarizationWaitEstimate={diarization.waitEstimateText}
-            speakerMap={speakerMap}
             meetingId={meeting.id}
             onTranscriptsUpdate={meetingData.setTranscripts}
           />
         </ErrorBoundary>
 
+        {/* Notes panel: always shown on md+; on mobile only when tab is 'notes' */}
         <ErrorBoundary
           fallback={
             <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-6 bg-white text-center gap-3">
               <AlertTriangle className="w-8 h-8 text-amber-500" />
               <p className="text-sm font-medium text-gray-800">Couldn't render the meeting notes editor.</p>
-              <p className="text-xs text-gray-500 max-w-md">The saved notes may be in an unexpected format. Try regenerating the notes.</p>
+              <p className="text-xs text-gray-500 max-w-sm md:max-w-md">The saved notes may be in an unexpected format. Try regenerating the notes.</p>
               <div className="flex gap-2 mt-2">
                 <Button onClick={() => window.location.reload()} variant="outline">Reload</Button>
                 <Button onClick={() => summaryGeneration.handleRegenerateSummary()} className="bg-blue-600 hover:bg-blue-700">Regenerate notes</Button>
@@ -442,6 +421,7 @@ export default function PageContent({
           }
         >
           <SummaryPanel
+            className={activeTab !== 'notes' ? 'hidden md:flex' : 'flex'}
             meeting={meeting}
             meetingTitle={meetingData.meetingTitle}
             onTitleChange={meetingData.handleTitleChange}
@@ -479,11 +459,7 @@ export default function PageContent({
 
       </div>
 
-      <ShareNotesDialog
-        isOpen={shareDialogState.isOpen}
-        meetingId={shareDialogState.meetingId || meeting.id}
-        onClose={() => setShareDialogState({ isOpen: false, meetingId: "" })}
-      />
+      {/* ShareNotesDialog disabled for v1 */}
 
       {/* Chat Interface */}
       {isChatOpen && (

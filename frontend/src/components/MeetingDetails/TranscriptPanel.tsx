@@ -15,6 +15,7 @@ interface TranscriptPanelProps {
   isRecording: boolean;
   meetingId?: string;
   onTranscriptsUpdate?: (transcripts: Transcript[]) => void;
+  className?: string;
 }
 
 export function TranscriptPanel({
@@ -23,6 +24,7 @@ export function TranscriptPanel({
   onDownloadRecording,
   isRecording,
   meetingId,
+  className,
 }: TranscriptPanelProps) {
   // Online (Recall bot) meetings have a video recording instead of local audio.
   const [hasVideo, setHasVideo] = useState(false);
@@ -64,7 +66,7 @@ export function TranscriptPanel({
   };
 
   return (
-    <div className="hidden md:flex md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0">
+    <div className={`${className ?? 'hidden md:flex'} md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0`}>
       {/* AudioPlayer disabled — playback broken, re-enable once fixed */}
       {/* {meetingId && <AudioPlayer meetingId={meetingId} />} */}
       <div className="p-4 border-b border-gray-200">

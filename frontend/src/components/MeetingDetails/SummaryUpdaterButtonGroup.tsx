@@ -43,7 +43,7 @@ export function SummaryUpdaterButtonGroup({
           title="Refine with AI"
         >
           <Sparkles className="w-4 h-4 lg:mr-2" />
-          <span className="hidden lg:inline">Refine</span>
+          <span className="hidden sm:inline">Refine</span>
         </Button>
       )}
 
@@ -62,12 +62,12 @@ export function SummaryUpdaterButtonGroup({
         {isSaving ? (
           <>
             <Loader2 className="animate-spin" />
-            <span className="hidden lg:inline">Saving...</span>
+            <span className="hidden sm:inline">Saving...</span>
           </>
         ) : (
           <>
             <Save />
-            <span className="hidden lg:inline">Save</span>
+            <span className="hidden sm:inline">Save</span>
           </>
         )}
       </Button>
@@ -85,7 +85,7 @@ export function SummaryUpdaterButtonGroup({
         className="cursor-pointer"
       >
         <Copy />
-        <span className="hidden lg:inline">Copy</span>
+        <span className="hidden sm:inline">Copy</span>
       </Button>
 
       {/* Share button */}
@@ -102,7 +102,7 @@ export function SummaryUpdaterButtonGroup({
           className="cursor-pointer"
         >
           <Share2 />
-          <span className="hidden lg:inline">Share</span>
+          <span className="hidden sm:inline">Share</span>
         </Button>
       )}
 
@@ -137,7 +137,7 @@ export function SummaryUpdaterButtonGroup({
           className="cursor-pointer"
         >
           <Search />
-          <span className="hidden lg:inline">Find</span>
+          <span className="hidden sm:inline">Find</span>
         </Button>
       )} */}
     </ButtonGroup>
