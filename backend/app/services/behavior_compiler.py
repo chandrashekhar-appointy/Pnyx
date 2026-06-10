@@ -255,22 +255,37 @@ class BehaviorCompiler:
         markdown: str,
         sections: Dict[str, str],
     ) -> Optional[BehaviorSpec]:
-        """Use an LLM to compile the behavior card."""
-        api_key = await self._get_api_key()
-        if not api_key:
-            logger.info("[BehaviorCompiler] No API key available for compilation")
-            return None
+        """Use an LLM to compile the behavior card.
 
+        Routed through the central LLM gateway so a provider outage
+        (model rename / expired key / rate limit) transparently falls back
+        instead of dropping straight to the regex compiler.
+        """
         provider = self._get_provider()
         model = self._get_model()
         prompt = COMPILATION_PROMPT.format(behavior_markdown=markdown[:8000])
 
         try:
-            raw_json = await self._call_llm(
-                provider=provider,
-                model=model,
-                api_key=api_key,
+            from .llm_gateway import LLMGateway
+        except (ImportError, ValueError):
+            from services.llm_gateway import LLMGateway
+
+        gateway = LLMGateway(self.db)
+        # Honor the configured AI_PARTICIPANT provider/model first, then fall
+        # back through the standard tiers.
+        gw_provider = "claude" if provider == "anthropic" else provider
+        chain = [gw_provider] + [p for p in ["gemini", "openai"] if p != gw_provider]
+
+        try:
+            raw_json = await gateway.generate(
+                task="behavior",
                 prompt=prompt,
+                system="Return strict JSON only. No markdown.",
+                user_email=self.user_email or None,
+                temperature=0.1,
+                json_mode=True,
+                chain=chain,
+                model_overrides={gw_provider: model},
             )
             if not raw_json:
                 return None

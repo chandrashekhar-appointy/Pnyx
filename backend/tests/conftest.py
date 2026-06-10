@@ -96,6 +96,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "contract: contract / schema-drift test"
     )
+    config.addinivalue_line(
+        "markers",
+        "live: requires live external APIs (Groq, ElevenLabs, Recall, GCP) — skipped in standard CI",
+    )
 
 
 # ---------------------------------------------------------------------------

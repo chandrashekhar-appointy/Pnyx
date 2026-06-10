@@ -13,6 +13,7 @@
         "test:e2e:a11y": "playwright test --project=a11y",
         "test:e2e:update-snapshots": "playwright test --project=visual --update-snapshots",
         "test:e2e:synthetic": "playwright test --config playwright.synthetic.config.ts",
+        "test:e2e:live": "E2E_LIVE=1 playwright test --config playwright.live.config.ts",
         "gen:types": "openapi-typescript http://localhost:5167/openapi.json -o src/types/api.generated.ts"
     },
     "dependencies": {

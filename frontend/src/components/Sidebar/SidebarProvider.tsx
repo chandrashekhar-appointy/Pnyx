@@ -75,6 +75,10 @@ interface SidebarContextType {
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
 
+// v1: Share Notes is disabled (backend /api/sharing router not mounted).
+// Flip to true when the sharing feature is restored.
+const SHARE_NOTES_ENABLED = false;
+
 export const useSidebar = () => {
   const context = useContext(SidebarContext);
   if (!context) {
@@ -167,6 +171,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   }, [formatMeetingDisplayTitle, serverAddress, status]);
 
   const fetchSharedNotesCount = React.useCallback(async () => {
+    // v1: Share Notes is disabled (the /api/sharing router is not mounted), so
+    // skip the fetch entirely instead of polling a 404. Re-enable with sharing.
+    if (!SHARE_NOTES_ENABLED) {
+      setSharedNotesCount(0);
+      return;
+    }
     if (status === 'authenticated' && serverAddress) {
       try {
         const response = await authFetch('/api/sharing/shared-with-me');

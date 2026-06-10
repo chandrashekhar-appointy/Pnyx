@@ -185,9 +185,43 @@ def check_secrets_strength(env: Dict[str, str]) -> List[str]:
 # ----------------------------------------------------------------------------
 
 
+def check_schema(schema_path: Path) -> int:
+    """--schema mode: verify that an .env.prod.example file documents all
+    ALWAYS_REQUIRED + PROD_REQUIRED keys.  Exits 0 on pass, 1 on fail.
+
+    Rationale: the example file is checked into the repo and acts as a living
+    schema.  If a developer adds a new required key to this script but forgets
+    to add it to .env.prod.example (or vice-versa), CI catches it immediately
+    without needing the real secrets.
+    """
+    if not schema_path.is_file():
+        print(f"FAIL: schema file not found: {schema_path}")
+        return 1
+
+    defined = parse_env(schema_path)
+    all_required = list(dict.fromkeys(ALWAYS_REQUIRED + PROD_REQUIRED))
+    missing = [k for k in all_required if k not in defined]
+
+    print(f"Schema check: {schema_path}")
+    print(f"Keys documented: {len(defined)}")
+    print()
+    if missing:
+        print(f"FAIL: {len(missing)} required key(s) missing from schema file:")
+        for k in missing:
+            print(f"  - {k}")
+        return 1
+    print("PASS: schema file documents all required keys.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a .env file before deploy.")
-    parser.add_argument("--env", default="backend/.env.prod", help="Path to .env file")
+    parser.add_argument("--env", default="", help="Path to .env file for full validation")
+    parser.add_argument(
+        "--schema",
+        default="",
+        help="Path to .env.prod.example to check key presence only (no real values)",
+    )
     parser.add_argument(
         "--skip-prod-checks",
         action="store_true",
@@ -195,7 +229,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    env_path = Path(args.env).resolve()
+    if args.schema:
+        return check_schema(Path(args.schema).resolve())
+
+    env_file = args.env or "backend/.env.prod"
+    env_path = Path(env_file).resolve()
     if not env_path.is_file():
         print(f"FAIL: env file not found: {env_path}")
         return 1

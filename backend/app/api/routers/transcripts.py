@@ -27,9 +27,9 @@ try:
     from ...services.summarization import SummarizationService
     from ...services.chat import ChatService
     from ...services.gemini_client import (
-        generate_content_text_async,
         generate_content_with_file_sync,
     )
+    from ...services.llm_gateway import LLMGateway
     from ...services.storage import StorageService
     from ...services.calendar.google_oauth import GoogleCalendarOAuthService
     from ...services.calendar.reminder_email import CalendarReminderEmailService
@@ -50,9 +50,9 @@ except (ImportError, ValueError):
     from services.summarization import SummarizationService
     from services.chat import ChatService
     from services.gemini_client import (
-        generate_content_text_async,
         generate_content_with_file_sync,
     )
+    from services.llm_gateway import LLMGateway
     from services.storage import StorageService
     from services.calendar.google_oauth import GoogleCalendarOAuthService
     from services.calendar.reminder_email import CalendarReminderEmailService
@@ -66,6 +66,8 @@ except (ImportError, ValueError):
 db = DatabaseManager()
 rbac = RBAC(db)
 processor = SummarizationService()
+# Central LLM gateway for text generation with provider fallback (Gemini->OpenAI).
+_llm_gateway = LLMGateway(db)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -372,15 +374,6 @@ async def _translate_summary_to_english(
     if not _summary_contains_devanagari(summary):
         return summary
 
-    api_key = await _get_gemini_notes_api_key(user_email)
-    if not api_key:
-        return summary
-    translate_model = (
-        model_name
-        if str(model_name or "").strip().lower().startswith("gemini")
-        else GEMINI_DEFAULT_MODEL
-    )
-
     prompt = (
         "Translate the following meeting summary JSON into English.\n"
         "Rules:\n"
@@ -391,11 +384,12 @@ async def _translate_summary_to_english(
         f"JSON:\n{json.dumps(summary, ensure_ascii=False)}"
     )
     try:
-        response_text = await generate_content_text_async(
-            api_key=api_key,
-            model=translate_model,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
+        # Gateway falls back Gemini->OpenAI if the primary provider is down.
+        response_text = await _llm_gateway.generate(
+            task="notes",
+            prompt=prompt,
+            user_email=user_email,
+            json_mode=True,
         )
         translated = json.loads(_extract_json_object(response_text))
         return translated if isinstance(translated, dict) else summary
@@ -889,10 +883,6 @@ async def generate_notes_with_gemini_background(
         if transcript_chars == 0 or transcript_chars > short_transcript_threshold:
             return None
 
-        api_key = await _get_gemini_notes_api_key(user_email)
-        if not api_key:
-            return None
-
         direct_prompt = (
             f"{template_prompt}\n\n"
             "Additional rules for short or partial transcripts:\n"
@@ -905,11 +895,12 @@ async def generate_notes_with_gemini_background(
         )
 
         try:
-            response_text = await generate_content_text_async(
-                api_key=api_key,
-                model=GEMINI_DEFAULT_MODEL,
-                contents=direct_prompt,
-                config={"response_mime_type": "application/json"},
+            # Gateway falls back Gemini->OpenAI on provider failure.
+            response_text = await _llm_gateway.generate(
+                task="notes",
+                prompt=direct_prompt,
+                user_email=user_email,
+                json_mode=True,
             )
             candidate_json = _extract_json_object(response_text)
             parsed = json.loads(candidate_json)

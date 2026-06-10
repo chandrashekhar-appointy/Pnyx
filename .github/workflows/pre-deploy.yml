@@ -11,6 +11,34 @@ jobs:
   backend:
     name: Backend lint + tests
     runs-on: ubuntu-latest
+    # Real services so the test step is an actual gate, not a no-op.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: meeting_copilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/meeting_copilot_test
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      MASTER_KEY: ci-test-key-only-not-for-production-use
+      GOOGLE_CLIENT_ID: ci-test.apps.googleusercontent.com
+      ENVIRONMENT: test
+      STORAGE_TYPE: local
     steps:
       - uses: actions/checkout@v4
 
@@ -31,14 +59,47 @@ jobs:
         working-directory: backend
         run: ruff check app
 
-      - name: Tests
+      - name: Apply DB migrations
         working-directory: backend
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/test
-          MASTER_KEY: ci-test-key-only-not-for-production-use
-          GOOGLE_CLIENT_ID: ci-test
         run: |
-          pytest -x --maxfail=1 -q || echo "Tests skipped — no DB available"
+          python - <<'PY'
+          import asyncio, re, glob, os, asyncpg
+          dsn = os.environ["DATABASE_URL"]
+          files = sorted(
+              p for p in glob.glob("app/migrations/*.sql")
+              if re.match(r"^\d{3,4}_", os.path.basename(p))
+          )
+          async def run():
+              conn = await asyncpg.connect(dsn)
+              for f in files:
+                  try:
+                      await conn.execute(open(f).read())
+                  except Exception as e:
+                      print(f"skip {f}: {e}")
+              await conn.close()
+          asyncio.run(run())
+          print(f"Applied {len(files)} migrations")
+          PY
+
+      # Unit tests + hermetic integration tests: HARD gate — failures block merge.
+      # "Hermetic" = only needs Postgres + Redis (both running above as services).
+      # Tests that hit live external APIs (Groq, ElevenLabs, Recall, GCP) are
+      # marked @pytest.mark.live and remain best-effort.
+      - name: Unit tests (gate)
+        working-directory: backend
+        run: pytest tests/unit -q
+
+      - name: Hermetic integration tests (gate)
+        working-directory: backend
+        run: pytest tests/integration -q -m "not live" --ignore=tests/integration/test_security_regression.py
+
+      - name: Security regression (gate)
+        working-directory: backend
+        run: pytest tests/integration/test_security_regression.py -q
+
+      - name: Integration tests needing live APIs (best-effort)
+        working-directory: backend
+        run: pytest tests/integration -q -m "live" || echo "Live-API integration tests skipped (no external keys in CI)"
 
   frontend:
     name: Frontend lint + build
@@ -84,12 +145,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Run validator (skip prod-required since .env.prod isn't checked in)
+      # Schema gate: checks that .env.prod.example documents all required keys
+      # (key names only, no real values). This catches "I added a new required
+      # var but forgot to add it to the example/docs" before deploy.
+      - name: Env schema gate (required keys present in .env.prod.example)
+        working-directory: backend
         run: |
-          if [ -f backend/.env.prod ]; then
-            python scripts/validate_env.py --env backend/.env.prod
+          if [ -f .env.prod.example ]; then
+            python ../scripts/validate_env.py --schema .env.prod.example
           else
-            echo "backend/.env.prod not present in repo — skipping validation."
+            echo "WARNING: .env.prod.example not found — add it to catch env regressions."
+          fi
+
+      - name: Run full validator against prod env (skip if not checked in)
+        working-directory: backend
+        run: |
+          if [ -f .env.prod ]; then
+            python ../scripts/validate_env.py --env .env.prod
+          else
+            echo ".env.prod not in repo (gitignored) — skipping live validation."
           fi
 
   secret-scan:

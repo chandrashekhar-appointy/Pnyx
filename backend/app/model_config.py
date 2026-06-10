@@ -17,3 +17,12 @@ import os
 # Override via environment variable:
 #   GEMINI_DEFAULT_MODEL=gemini-3.5-flash
 GEMINI_DEFAULT_MODEL: str = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-3.5-flash")
+
+# Default OpenAI model used as the fallback tier in the LLM gateway
+# (services/llm_gateway.py). Override via:
+#   OPENAI_DEFAULT_MODEL=gpt-4o
+# Kept aligned with the historical NOTES_SUMMARY_MODEL default so the fallback
+# path behaves like the inline fallbacks it replaces.
+OPENAI_DEFAULT_MODEL: str = os.getenv(
+    "OPENAI_DEFAULT_MODEL", os.getenv("NOTES_SUMMARY_MODEL", "gpt-4o")
+).strip()

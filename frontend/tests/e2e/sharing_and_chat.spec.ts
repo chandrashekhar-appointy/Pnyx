@@ -73,7 +73,9 @@ test.describe("Sharing and chat sidebar", () => {
             .toBeTruthy();
     });
 
-    test("share dialog produces a sharable link", async ({ page }) => {
+    test.skip("share dialog produces a sharable link", async ({ page }) => {
+        // Share Notes was removed in v1 (Phase 1 surface reduction). Re-enable
+        // this test when Share Notes is restored.
         const url = `/meeting-details?id=${MEETING_ID}`;
         await page.goto(url, { waitUntil: "domcontentloaded" });
 

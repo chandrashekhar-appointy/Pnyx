@@ -131,6 +131,40 @@ async def bot_status(
     return status
 
 
+@router.get("/meetings/{meeting_id}/bot-recording-url")
+async def bot_recording_url(
+    meeting_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Return presigned video/audio download URLs for an online (bot) meeting.
+
+    Recall stores the recording, so we fetch fresh time-limited URLs on demand.
+    """
+    manager = _get_manager()
+    bot = await manager.db.get_bot_session_by_meeting(meeting_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="No bot recording for this meeting")
+    if bot.get("user_email") != current_user.email:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    try:
+        urls = await manager.client.get_bot_media_urls(bot["recall_bot_id"])
+    except Exception as e:
+        logger.error("[BotRecordingURL] Failed to fetch media for %s: %s", meeting_id, e)
+        raise HTTPException(status_code=502, detail="Could not fetch recording from Recall")
+
+    if not urls.get("video_url") and not urls.get("audio_url"):
+        raise HTTPException(status_code=404, detail="Recording not ready yet")
+
+    return {
+        "video_url": urls.get("video_url"),
+        "audio_url": urls.get("audio_url"),
+        "video_filename": f"meeting-{meeting_id}.mp4",
+        "audio_filename": f"meeting-{meeting_id}.mp3",
+        "expires_in": 3600,
+    }
+
+
 @router.get("/bot/quota")
 async def bot_quota(current_user: User = Depends(get_current_user)):
     """Get the current user's bot usage quota."""
@@ -171,9 +205,14 @@ async def bot_webhook(request: Request):
     """
     Receives real-time transcript and status webhooks from Recall.ai.
 
-    The request body is verified using HMAC-SHA256 with the
-    RECALL_WEBHOOK_SECRET before processing.
+    Two auth paths:
+      - Status-change webhooks (dashboard Svix) → HMAC signature verification.
+      - Realtime transcript webhooks → `?token=` query param matching
+        RECALL_WEBHOOK_TOKEN, since Recall's realtime endpoints don't use the
+        same Svix signing.
     """
+    import os
+
     raw_body = await request.body()
     signature = request.headers.get("X-Recall-Signature", "")
 
@@ -185,9 +224,15 @@ async def bot_webhook(request: Request):
         logger.error("[BotWebhook] Failed to parse webhook body")
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    # Realtime transcript path: authenticate via the shared token.
+    expected_token = os.getenv("RECALL_WEBHOOK_TOKEN", "").strip()
+    provided_token = request.query_params.get("token", "").strip()
+    pre_verified = bool(expected_token) and provided_token == expected_token
+
     logger.info(
-        "📥 Webhook received: event=%s from=%s",
+        "📥 Webhook received: event=%s auth=%s from=%s",
         payload.get("event", "unknown"),
+        "token" if pre_verified else "signature",
         request.client.host if request.client else "unknown",
     )
 
@@ -197,6 +242,7 @@ async def bot_webhook(request: Request):
         raw_body=raw_body,
         signature=signature,
         headers=dict(request.headers),
+        pre_verified=pre_verified,
     )
 
     if result.get("status") == "error":

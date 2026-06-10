@@ -106,20 +106,14 @@ class IntentClassifier:
 
     def __init__(self, db):
         self.db = db
-
-    async def _get_openai_key(self, user_email: Optional[str] = None) -> Optional[str]:
-        """Get OpenAI API key from env or DB."""
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            api_key = await self.db.get_api_key("openai", user_email=user_email)
-        return api_key
-
-    async def _get_gemini_key(self, user_email: Optional[str] = None) -> Optional[str]:
-        """Get Gemini API key from env or DB."""
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            api_key = await self.db.get_api_key("gemini", user_email=user_email)
-        return api_key
+        try:
+            from ..llm_gateway import LLMGateway
+        except (ImportError, ValueError):
+            from services.llm_gateway import LLMGateway
+        # Gateway handles provider fallback. The "classify"/"topic" task chains
+        # default to OpenAI-primary (gpt-4o-mini) -> Gemini, preserving this
+        # classifier's historical behavior and cost profile.
+        self._gateway = LLMGateway(db)
 
     async def detect_active_topic(
         self,
@@ -159,36 +153,16 @@ Instructions:
 
 Current discussion topic:"""
 
-            api_key = await self._get_openai_key(user_email)
-            if not api_key:
-                # Fallback to Gemini if OpenAI isn't configured
-                gemini_key = await self._get_gemini_key(user_email)
-                if not gemini_key:
-                    return None
-                try:
-                    from ..gemini_client import generate_content_text_async
-                except (ImportError, ValueError):
-                    from services.gemini_client import generate_content_text_async
-
-                result = (
-                    await generate_content_text_async(
-                        api_key=gemini_key,
-                        model=GEMINI_DEFAULT_MODEL,
-                        contents=prompt,
-                        config={"temperature": 0.0, "max_output_tokens": 50},
-                    )
-                ).strip()
-            else:
-                from openai import AsyncOpenAI
-
-                client = AsyncOpenAI(api_key=api_key)
-                response = await client.chat.completions.create(
-                    model="gpt-4o-mini",
+            result = (
+                await self._gateway.generate(
+                    task="topic",
+                    prompt=prompt,
+                    user_email=user_email,
                     temperature=0.0,
                     max_tokens=50,
-                    messages=[{"role": "user", "content": prompt}],
+                    model_overrides={"openai": "gpt-4o-mini"},
                 )
-                result = (response.choices[0].message.content or "").strip()
+            ).strip()
 
             if not result or result.upper() == "NONE" or len(result) > 100:
                 logger.info("Active topic detection: no clear topic detected")
@@ -321,39 +295,16 @@ Output ONLY the exact category name.
 
 Category:"""
 
-            api_key = await self._get_openai_key(user_email)
-            if not api_key:
-                # Fallback to Gemini
-                gemini_key = await self._get_gemini_key(user_email)
-                if not gemini_key:
-                    return QueryScope.MEETING_ONLY
-                try:
-                    from ..gemini_client import generate_content_text_async
-                except (ImportError, ValueError):
-                    from services.gemini_client import generate_content_text_async
-
-                result = (
-                    await generate_content_text_async(
-                        api_key=gemini_key,
-                        model=GEMINI_DEFAULT_MODEL,
-                        contents=classifier_prompt,
-                        config={"temperature": 0.0, "max_output_tokens": 10},
-                    )
-                ).strip()
-            else:
-                try:
-                    from openai import AsyncOpenAI
-                except ImportError:
-                    return QueryScope.MEETING_ONLY
-
-                client = AsyncOpenAI(api_key=api_key)
-                response = await client.chat.completions.create(
-                    model="gpt-4o-mini",
+            result = (
+                await self._gateway.generate(
+                    task="classify",
+                    prompt=classifier_prompt,
+                    user_email=user_email,
                     temperature=0.0,
                     max_tokens=10,
-                    messages=[{"role": "user", "content": classifier_prompt}],
+                    model_overrides={"openai": "gpt-4o-mini"},
                 )
-                result = (response.choices[0].message.content or "").strip()
+            ).strip()
 
             if "EXTERNAL_WEB" in result.upper():
                 logger.info(f"LLM routing to EXTERNAL_WEB for question: {question}")
