@@ -30,9 +30,9 @@
 
 | Component | Provider | Price | Per 1-hour bot session |
 |---|---|---|---|
-| Bot recording fee | Recall.ai | ~$0.25/hr | **$0.25** |
-| Real-time transcription | Deepgram Streaming (via Recall) | ~$0.0043/min | **$0.26** |
-| **Total bot cost** | | | **~$0.51/hr** |
+| Bot recording fee | Recall.ai | ~$0.50–$1.00/hr pay-as-you-go (volume discounts apply) — **verify on Recall dashboard** | **~$0.50–$1.00** |
+| Real-time transcription | Deepgram Streaming (via Recall) | ~$0.0043/min (Recall's native option is $0.15/hr) | **~$0.15–$0.26** |
+| **Total bot cost** | | | **~$0.65–$1.26/hr** |
 
 **How it works**: Recall.ai sends a virtual bot into the meeting room. The bot records and streams audio. Deepgram transcribes in real time and Recall pushes webhook events to our backend.
 
@@ -54,15 +54,18 @@ Triggered once after recording stops or import pipeline completes.
 
 | Provider | Model | Input tokens | Output tokens | Audio cost | Total per meeting |
 |---|---|---|---|---|---|
-| **OpenAI** *(current)* | gpt-5.4 | ~20K @ ~$15/1M* | ~3K @ ~$60/1M* | ~compressed opus inline b64, ~$0.05 est | **~$0.63** |
-| **Gemini** *(alternative)* | gemini-3.5-flash | ~20K @ ~$0.15/1M* | ~3K @ ~$0.60/1M* | 3600s audio @ ~$0.001/s = $3.60 | **~$3.61** |
+| **OpenAI + audio** *(current)* | gpt-5.4 (if audio-capable) | ~20K @ ~$15/1M* | ~3K @ ~$60/1M* | audio tokens billed at a premium: ~$1.50–$2.50/hr* | **~$2.00–$3.00** |
+| **Gemini + audio** *(alternative)* | gemini-3.5-flash | ~20K @ ~$0.15/1M* | ~3K @ ~$0.60/1M* | 3600s audio @ ~$0.001/s = $3.60 | **~$3.61** |
 | **Gemini (transcript-only)** | gemini-3.5-flash | ~20K @ ~$0.15/1M* | ~3K @ ~$0.60/1M* | none | **~$0.005** |
 | **OpenAI (transcript-only)** | gpt-5.4 | ~20K @ ~$15/1M* | ~3K @ ~$60/1M* | none | **~$0.48** |
 
 \* *gpt-5.4 pricing not yet public — using GPT-4o Turbo ($15/$60 per 1M) as conservative baseline.*  
-\* *gemini-3.5-flash pricing estimated from Gemini 2.0 Flash public rates.*
+\* *gemini-3.5-flash pricing estimated from Gemini 2.0 Flash public rates.*  
+\* *OpenAI audio input is billed in audio tokens at a significant premium over text (on gpt-4o-audio-preview, audio input runs roughly $1.50–$2.50 per meeting-hour). This is NOT cheap — verify before relying on it.*
 
-**Recommendation**: OpenAI with audio is a good cost/quality balance at ~$0.63. Gemini with audio gives the best Hindi quality but audio cost alone is $3.60/meeting.
+**⚠️ Important caveat — audio with OpenAI**: Only OpenAI's audio-capable models (e.g. `gpt-4o-audio-preview`, `gpt-audio` family) accept audio input on the chat completions API. If `NOTES_SUMMARY_MODEL` is a text-only model, the backend automatically falls back to transcript-only (logged as `fallback_reason` in notes metadata) — no error is surfaced to the user. Check the notes metadata `audio_used` flag to confirm whether audio actually reached the model.
+
+**Recommendation**: If audio grounding matters (Hindi-heavy meetings), Gemini Flash + audio at ~$3.61 or an OpenAI audio model at ~$2–3 are comparable. If transcript quality is already good (ElevenLabs), transcript-only OpenAI at ~$0.48 is the best value.
 
 ---
 
@@ -72,8 +75,8 @@ The AI Host generates insight chips ("Key Insight", "Action Item", "Decision") e
 
 | Call frequency | Input size | Output size |
 |---|---|---|
-| Every ~30s of speech | ~1,500–3,000 tokens (rolling transcript window) | ~200–500 tokens (JSON) |
-| **Calls per 1-hour meeting** | ~80–120 calls | |
+| Every 25s of speech (`AI_PARTICIPANT_ANALYSIS_INTERVAL_SECONDS=25`) | ~1,500–3,000 tokens (rolling transcript window) | ~200–500 tokens (JSON) |
+| **Calls per 1-hour meeting** | up to ~144 calls (fewer in practice — calls skip during silence / short windows) | |
 
 | Provider | Model | Cost per call | Cost per 1-hour meeting |
 |---|---|---|---|
@@ -118,34 +121,36 @@ User-triggered, similar cost profile to Ask AI.
 | Line item | Cost |
 |---|---|
 | ElevenLabs transcription | $0.40 |
-| Notes generation (OpenAI + audio) | $0.63 |
-| Live AI insights (120 calls × gpt-5.4) | $4.00 |
+| Notes generation (OpenAI, transcript-only*) | $0.48 |
+| Live AI insights (~120 calls × gpt-5.4) | $4.00 |
 | Ask AI (5 questions × $0.15) | $0.75 |
 | Catch Up (1 request) | $0.20 |
-| **Total per meeting** | **~$5.98** |
+| **Total per meeting** | **~$5.83** (add ~$1.50–2.50 if audio reaches an audio-capable OpenAI model) |
+
+\* *gpt-5.4 likely falls back to transcript-only for notes unless it accepts audio input — see §2 caveat.*
 
 ### Scenario B: Online meeting (Zoom bot), 1 hour, current config
 
 | Line item | Cost |
 |---|---|
-| Recall.ai bot fee | $0.25 |
+| Recall.ai bot fee (verify) | $0.50–$1.00 |
 | Deepgram transcription | $0.26 |
-| Notes generation (OpenAI + audio) | $0.63 |
+| Notes generation (OpenAI, transcript-only) | $0.48 |
 | Live AI insights | $4.00 |
 | Ask AI (5 questions) | $0.75 |
 | Catch Up | $0.20 |
-| **Total per meeting** | **~$6.09** |
+| **Total per meeting** | **~$6.19–$6.69** |
 
 ### Scenario C: In-room meeting, 1 hour, optimised config (Gemini Flash for insights)
 
 | Line item | Cost |
 |---|---|
 | ElevenLabs transcription | $0.40 |
-| Notes generation (OpenAI + audio) | $0.63 |
-| Live AI insights (120 calls × gemini-3.5-flash) | $0.05 |
+| Notes generation (OpenAI, transcript-only) | $0.48 |
+| Live AI insights (~120 calls × gemini-3.5-flash) | $0.05 |
 | Ask AI (5 questions × OpenAI) | $0.75 |
 | Catch Up (1 request) | $0.20 |
-| **Total per meeting** | **~$2.03** |
+| **Total per meeting** | **~$1.88** |
 
 ---
 
@@ -154,7 +159,7 @@ User-triggered, similar cost profile to Ask AI.
 | Parameter | Value |
 |---|---|
 | Weekly free credits | **10,000 credits** |
-| Live recording charge | **1 credit / audio chunk** (~0.3 credits/sec → **~1,080 credits/hour**) |
+| Live recording charge | **1 credit / ~3s audio chunk** (`CREDIT_COST_PER_CHUNK=1` → **~1,200 credits/hour**) |
 | Notes generation | Not charged separately (covered by recording credits) |
 | Ask AI / Chat | Not charged separately (currently free) |
 
