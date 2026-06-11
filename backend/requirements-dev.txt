@@ -28,9 +28,6 @@ mypy>=1.10.0
 # Mutation testing
 mutmut>=2.5.0
 
-# LLM eval (golden set scoring)
-deepeval>=1.0.0; python_version >= "3.10"
-
 # Misc helpers used across the suite
 freezegun>=1.5.0
 faker>=24.0.0
