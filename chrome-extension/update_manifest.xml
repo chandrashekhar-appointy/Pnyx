@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Google Workspace force-install update manifest for the Pnyx extension.
+
+  Replace BEFORE uploading:
+    - codebase: the HTTPS URL where you uploaded chrome-extension.crx
+    - version:  must equal the "version" in manifest.json for this release
+
+  The appid below is the fixed Extension ID (derived from the manifest "key").
+-->
+<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+  <app appid="gekbhloihkdompdhahaiomdgnpkhbfei">
+    <updatecheck
+      codebase="https://REPLACE-WITH-YOUR-HOST/pnyx/chrome-extension.crx"
+      version="1.0.0" />
+  </app>
+</gupdate>

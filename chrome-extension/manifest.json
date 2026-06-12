@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "description": "One-click in-room meeting recording. Notifies you before meetings start so you never forget to record.",
 
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtvxbVSBh4g70K9AWO+PeJ7QnbrdNfyH8hKVen5XHOF29sQXVk3MFxtsmot2p7VrE1n6D3b0S7COohFKJbLaSgH+dOMgfXyFYFjmQNdJbQOxAhvdqXNqoIgVgoSZDJ24bWt9D5BRQBoW+aSZ8qTqiyeCQbO7MH3XiwQz8WlZLpZbS2V74//lk2hSe93yYYRFmLOyv7FNjlM8vSpRUj1HN8fJvESHrKqI2eJ6UeyWpXW+pUKehB/7s1J9eifmFp2hnOidxjnX0XXqTBw+9ZPpIrkwREk7E/6GAkO28mFkb6otHxk1Q3oi7bOTHhnD3URwNflRjuy3xqdyldyT7jjJePQIDAQAB",
+
   "permissions": [
     "identity",
     "alarms",
@@ -14,7 +16,7 @@
 
   "host_permissions": [
     "https://www.googleapis.com/*",
-    "http://localhost:5167/*"
+    "https://pnyx-dev-206432.bifrost.saastack.site/*"
   ],
 
   "oauth2": {

@@ -10,9 +10,10 @@
 
 const PNYX_ORIGIN = 'https://frontend-dev-350906.bifrost.saastack.site';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-// Backend base URL. Local dev = http://localhost:5167. Must also be listed in
-// manifest host_permissions. '' = backend features off (graceful no-op).
-const BACKEND_ORIGIN = 'http://localhost:5167';
+// Backend base URL (production). Must also be in manifest host_permissions.
+// For local testing, change to http://localhost:5167 and add it to
+// host_permissions. '' = backend features off (graceful no-op).
+const BACKEND_ORIGIN = 'https://pnyx-dev-206432.bifrost.saastack.site';
 
 function backendEnabled() {
   return typeof BACKEND_ORIGIN === 'string' && BACKEND_ORIGIN.length > 0;
