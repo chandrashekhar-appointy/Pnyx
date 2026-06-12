@@ -22,7 +22,7 @@
 
 const PNYX_ORIGIN = 'https://frontend-dev-350906.bifrost.saastack.site';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const CHECK_INTERVAL_MINUTES = 5;
+const CHECK_INTERVAL_MINUTES = 1;
 
 // OPTIONAL backend channel — leave '' to keep the extension fully self-contained.
 // To enable cross-device suppression + recent meetings, this requires the
@@ -98,8 +98,9 @@ async function fetchTodaysEvents() {
   let token;
   try {
     token = await getAuthToken(false);
-  } catch {
-    return []; // Not authenticated yet — popup will prompt the user to connect
+  } catch (e) {
+    console.warn('[Pnyx] no auth token (connect calendar in the popup):', e?.message);
+    return [];
   }
 
   const now = new Date();
@@ -118,14 +119,21 @@ async function fetchTodaysEvents() {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (resp.status === 401) {
-      // Token expired — clear it so the next interactive call refreshes it
+      console.warn('[Pnyx] calendar 401 — clearing cached token');
       chrome.identity.removeCachedAuthToken({ token });
       return [];
     }
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      console.warn('[Pnyx] calendar fetch failed:', resp.status);
+      return [];
+    }
     const data = await resp.json();
-    return (data.items || []).filter(shouldProcess);
-  } catch {
+    const raw = data.items || [];
+    const eligible = raw.filter(shouldProcess);
+    console.log(`[Pnyx] calendar: ${raw.length} events today, ${eligible.length} eligible (timed, with guests, not declined/free)`);
+    return eligible;
+  } catch (e) {
+    console.warn('[Pnyx] calendar fetch error:', e?.message);
     return [];
   }
 }
@@ -226,6 +234,7 @@ async function fireNotification(eventId, event, type) {
 // ─── Main event processing loop ───────────────────────────────────────────────
 
 async function processEvents() {
+  console.log(`[Pnyx] check @ ${new Date().toLocaleTimeString()}`);
   await pruneOldEvents();
 
   const [events, states] = await Promise.all([
@@ -234,9 +243,7 @@ async function processEvents() {
   ]);
 
   const now = Date.now();
-  // Compute once per cycle — used to suppress nagging when the user is clearly
-  // already in the Pnyx app (covers "started recording manually").
-  const pnyxTabOpen = await isPnyxTabOpen();
+  const MIN = 60 * 1000;
 
   for (const event of events) {
     const id = event.id;
@@ -246,6 +253,8 @@ async function processEvents() {
     const msAfterStart  = now - startMs;
     const online = isOnline(event);
     const state  = states[id]?.state || S.PENDING;
+    const title  = event.summary || 'Meeting';
+    const mins   = Math.round(msBeforeStart / MIN);
 
     // Initialise storage entry on first encounter
     if (!states[id]) {
@@ -254,15 +263,15 @@ async function processEvents() {
         eventStart: Math.floor(startMs / 1000),
         eventEnd:   Math.floor(endMs   / 1000),
         isOnline:   online,
-        title:      event.summary || 'Meeting',
+        title,
       });
     }
 
     // Terminal states — nothing more to do
     if ([S.DISMISSED, S.EXPIRED, S.NOTES_READY].includes(state)) continue;
 
-    // Optional cross-device "already recording" detection (no-op until backend
-    // channel is enabled). The tab heuristic below covers the single-device case.
+    // Optional cross-device "already recording" detection (no-op until the
+    // backend channel is enabled).
     if (state !== S.STARTED) {
       const activeMeeting = await findActivePnyxMeetingViaBackend();
       if (activeMeeting) {
@@ -271,63 +280,44 @@ async function processEvents() {
       }
     }
 
-    // Notes ready — fires once after meeting ends, only if recording was started
-    if (state === S.STARTED && now > endMs + 2 * 60 * 1000) {
+    // Notes ready — fires once after the meeting ends, only if recording started
+    if (state === S.STARTED && now > endMs + 2 * MIN) {
       await fireNotification(id, event, 'NOTES_READY');
       await setEventState(id, { state: S.NOTES_READY });
       continue;
     }
-
     if (state === S.STARTED) continue;
 
     // Online meetings: the Pnyx bot handles recording, so never nag in-room.
-    // (Phase 3 will refine this to nudge only when the bot is genuinely absent.)
-    if (online) continue;
-
-    // If the user already has Pnyx open during the meeting window, they're on
-    // it — suppress all in-room nags (reliable, backend-free).
-    if (pnyxTabOpen && msBeforeStart <= 11 * 60 * 1000 && msAfterStart < 15 * 60 * 1000) {
+    if (online) {
+      console.log(`[Pnyx] "${title}" — online meeting, no in-room reminder`);
       continue;
     }
 
-    // ── In-room notification ladder ──────────────────────────────────────────
-
-    // T-10: between 11 and 9 min before start
-    if (
-      msBeforeStart <= 11 * 60 * 1000 &&
-      msBeforeStart >   9 * 60 * 1000 &&
-      state === S.PENDING
-    ) {
-      await fireNotification(id, event, 'T10');
-      await setEventState(id, { state: S.REMINDED_T10 });
-      continue;
-    }
-
-    // T+0: within first 2 min of start
-    if (
-      msAfterStart >= 0 &&
-      msAfterStart <= 2 * 60 * 1000 &&
-      [S.PENDING, S.REMINDED_T10].includes(state)
-    ) {
-      await fireNotification(id, event, 'START');
-      await setEventState(id, { state: S.REMINDED_START });
-      continue;
-    }
-
-    // T+5: between 4 and 6 min after start (last chance)
-    if (
-      msAfterStart >= 4 * 60 * 1000 &&
-      msAfterStart <= 6 * 60 * 1000 &&
-      [S.PENDING, S.REMINDED_T10, S.REMINDED_START].includes(state)
-    ) {
-      await fireNotification(id, event, 'FINAL');
-      await setEventState(id, { state: S.REMINDED_FINAL });
-      continue;
-    }
-
-    // Give up silently after T+10
-    if (msAfterStart > 10 * 60 * 1000) {
+    // ── In-room reminder ladder (THRESHOLD-based: fires at next poll after the
+    //    threshold is crossed, so a reminder is never missed) ──────────────────
+    let stage = null;
+    if (msAfterStart > 15 * MIN) {
       await setEventState(id, { state: S.EXPIRED });
+      console.log(`[Pnyx] "${title}" — >15min in, giving up (expired)`);
+      continue;
+    } else if (msAfterStart >= 4 * MIN &&
+               [S.PENDING, S.REMINDED_T10, S.REMINDED_START].includes(state)) {
+      stage = 'FINAL';
+    } else if (msAfterStart >= 0 &&
+               [S.PENDING, S.REMINDED_T10].includes(state)) {
+      stage = 'START';
+    } else if (msBeforeStart <= 10 * MIN && state === S.PENDING) {
+      stage = 'T10';
+    }
+
+    if (stage) {
+      await fireNotification(id, event, stage);
+      const next = { T10: S.REMINDED_T10, START: S.REMINDED_START, FINAL: S.REMINDED_FINAL };
+      await setEventState(id, { state: next[stage] });
+      console.log(`[Pnyx] 🔔 "${title}" — fired ${stage} (starts in ${mins}min, state ${state}→${next[stage]})`);
+    } else {
+      console.log(`[Pnyx] "${title}" — no reminder due (starts in ${mins}min, state ${state})`);
     }
   }
 }
