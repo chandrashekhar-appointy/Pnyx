@@ -12,8 +12,9 @@ The extension now has a permanent identity baked into `manifest.json` via the
 Extension ID:  gekbhloihkdompdhahaiomdgnpkhbfei
 ```
 
-The matching **private signing key** is at `chrome-extension/pnyx-extension-key.pem`.
-It is gitignored — **never commit it, never lose it.** Whoever holds it can ship
+The matching **private signing key** is at the repo root: `pnyx-extension-key.pem`
+(kept OUTSIDE the extension folder so it's never packed into the .crx). It is
+gitignored — **never commit it, never lose it.** Whoever holds it can ship
 updates. Back it up somewhere safe (password manager / secret store).
 
 ## Production endpoints (already wired)
@@ -73,40 +74,51 @@ Each time you change the extension and bump `version` in `manifest.json`:
 3. Private key file: `chrome-extension/pnyx-extension-key.pem`
 4. Produces `chrome-extension.crx`
 
-**Option B — CLI**
+**Option B — CLI (PKCS#8 key required)**
 ```bash
-# From the repo root
+# From the repo root. Key must be PKCS#8 PEM (already converted).
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --pack-extension="$PWD/chrome-extension" \
-  --pack-extension-key="$PWD/chrome-extension/pnyx-extension-key.pem"
+  --pack-extension-key="$PWD/pnyx-extension-key.pem" \
+  --no-message-box
 ```
 
-Verify the packed ID matches `gekbhloihkdompdhahaiomdgnpkhbfei`.
+Verify the packed ID matches `gekbhloihkdompdhahaiomdgnpkhbfei` and the file
+starts with the `Cr24` magic.
 
 ---
 
 ## Hosting + force-install via Google Workspace
 
-Force-install needs the `.crx` and an `update_manifest.xml` reachable over HTTPS
-(e.g. a GCS bucket or any static host).
+Force-install needs the `.crx` and `update_manifest.xml` reachable over public
+HTTPS (Chrome's updater fetches them with no auth).
 
-1. Bump `manifest.json` `version` for every release (e.g. `1.0.0` → `1.0.1`).
-2. Upload `chrome-extension.crx` to your host.
-3. Edit `update_manifest.xml` (in this folder) so `codebase` points at the
-   uploaded `.crx` URL and `version` matches the manifest. Upload it too.
-4. Google Admin console → **Devices → Chrome → Apps & extensions → Users & browsers**
-5. Select the appointy.com org unit → **Add → Add Chrome app or extension by ID**
-6. Extension ID: `gekbhloihkdompdhahaiomdgnpkhbfei`
-   Installation URL (your hosted update XML), e.g.
-   `https://your-host/pnyx/update_manifest.xml`
-7. Set policy to **Force install**.
+> ⚠️ The production GCS bucket `bifrost-pnyx-storage-b50ae8c5` CANNOT host these:
+> it has Public Access Prevention enforced and UBLA locked. Use a public host.
 
-Chrome on every signed-in @appointy.com browser will install it within minutes
-and keep it updated whenever you bump the version + re-upload.
+**Recommended free host — a public GitHub repo** (CDN-backed raw URLs):
 
-> Simpler alternative: publish to the **Chrome Web Store as Unlisted/Private**,
-> then force-install by the store ID instead of self-hosting the XML. Skips the
-> hosting + update-manifest steps but adds a one-time $5 dev account and review.
+1. A prepared, ready-to-push folder lives at the repo root: `extension-dist/`
+   (contains `pnyx-extension.crx`, `update_manifest.xml`, `push.sh`).
+2. Create an **empty PUBLIC** GitHub repo named `pnyx-extension-dist`.
+3. From `extension-dist/`, run `bash push.sh <github-owner>`.
+4. The force-install update URL is then:
+   `https://raw.githubusercontent.com/<owner>/pnyx-extension-dist/main/update_manifest.xml`
+
+**Then in Google Admin console:**
+5. **Devices → Chrome → Apps & extensions → Users & browsers**
+6. Select the appointy.com org unit → **Add → Add Chrome app or extension by ID**
+7. Extension ID: `gekbhloihkdompdhahaiomdgnpkhbfei`
+   Installation URL: the raw `update_manifest.xml` URL from step 4
+8. Set policy to **Force install**.
+
+**Releasing an update:** bump `version` in `manifest.json`, re-pack, replace
+`pnyx-extension.crx` + the `version` in `extension-dist/update_manifest.xml`,
+then `git commit -am … && git push` in the dist repo.
+
+> Alternative: **Chrome Web Store Unlisted** — no hosting, auto-updates, private
+> link. One-time $5 dev account + review. Note: the store assigns its own
+> Extension ID, so you'd re-point the OAuth client's Application ID to it once.
 
 ---
 
