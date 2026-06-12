@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Pnyx Meeting Co-Pilot",
+  "version": "1.0.0",
+  "description": "One-click in-room meeting recording. Notifies you before meetings start so you never forget to record.",
+
+  "permissions": [
+    "identity",
+    "alarms",
+    "notifications",
+    "storage",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "https://frontend-dev-350906.bifrost.saastack.site/*",
+    "https://www.googleapis.com/*"
+  ],
+
+  "oauth2": {
+    "client_id": "REPLACE_WITH_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.readonly"
+    ]
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

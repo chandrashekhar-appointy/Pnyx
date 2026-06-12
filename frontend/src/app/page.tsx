@@ -1711,9 +1711,22 @@ function HomeContent() {
             if (urlMeetingTitle) {
               setMeetingTitle(urlMeetingTitle);
             }
+            // When launched from the Chrome extension, pre-wire the calendar event
+            // so the meeting record is linked to the calendar event ID.
+            const calendarEventId = urlParams.get('calendar_event_id');
+            if (calendarEventId && urlMeetingTitle) {
+              setSelectedCalendarEvent({
+                event_id: calendarEventId,
+                meeting_title: urlMeetingTitle,
+                attendees: [],
+                start_time: new Date().toISOString(),
+                end_time: new Date().toISOString(),
+              });
+            }
             urlParams.delete('autoStart');
             urlParams.delete('source');
             urlParams.delete('meetingTitle');
+            urlParams.delete('calendar_event_id');
             const nextQuery = urlParams.toString();
             window.history.replaceState(
               {},
