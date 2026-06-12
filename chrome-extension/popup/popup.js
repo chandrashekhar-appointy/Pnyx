@@ -10,10 +10,53 @@
 
 const PNYX_ORIGIN = 'https://frontend-dev-350906.bifrost.saastack.site';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const BACKEND_ORIGIN = ''; // keep in sync with background.js; '' = backend features off
+// Backend base URL. Local dev = http://localhost:5167. Must also be listed in
+// manifest host_permissions. '' = backend features off (graceful no-op).
+const BACKEND_ORIGIN = 'http://localhost:5167';
 
 function backendEnabled() {
   return typeof BACKEND_ORIGIN === 'string' && BACKEND_ORIGIN.length > 0;
+}
+
+// ─── Meeting-URL matching (calendar event ↔ active bot session) ───────────────
+
+function normalizeMeetingUrl(url) {
+  if (!url) return '';
+  return String(url)
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('?')[0]
+    .replace(/\/+$/, '');
+}
+
+function eventMeetingUrl(event) {
+  if (event.hangoutLink) return event.hangoutLink;
+  const ep = (event.conferenceData?.entryPoints || []).find(e => e.uri);
+  if (ep) return ep.uri;
+  const text = `${event.location || ''} ${event.description || ''}`;
+  const m = text.match(/https?:\/\/[^\s<>"]+/);
+  return m ? m[0] : '';
+}
+
+function urlsMatch(a, b) {
+  const na = normalizeMeetingUrl(a);
+  const nb = normalizeMeetingUrl(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Classify an online event against active bot sessions:
+ *   'recording' → bot is in the call → suppress the manual Start
+ *   'pending'   → bot dispatched (requesting/joining) but not in yet → fallback OK
+ *   'absent'    → no bot for this meeting → fallback OK
+ */
+function classifyBot(event, botSessions) {
+  const url = eventMeetingUrl(event);
+  const match = (botSessions || []).find(s => urlsMatch(url, s.meeting_url));
+  if (!match) return 'absent';
+  return match.status === 'recording' ? 'recording' : 'pending';
 }
 
 // ─── View helpers ─────────────────────────────────────────────────────────────
@@ -109,7 +152,7 @@ async function loadCalendarEvents(token) {
 
 // ─── Render calendar events ───────────────────────────────────────────────────
 
-function renderEvents(events, eventStates) {
+function renderEvents(events, eventStates, botSessions) {
   const container = document.getElementById('eventsList');
   container.innerHTML = '';
 
@@ -135,6 +178,10 @@ function renderEvents(events, eventStates) {
     const isStarted = state === 'STARTED';
     const isDone    = state === 'NOTES_READY' || now > endMs;
 
+    // For online meetings, ask the backend whether the Pnyx bot is actually in
+    // the call. Only 'recording' counts as "the bot has it handled".
+    const botClass = online ? classifyBot(event, botSessions) : 'absent';
+
     const row = document.createElement('div');
     row.className = 'event-row';
 
@@ -154,9 +201,15 @@ function renderEvents(events, eventStates) {
 
     const metaEl = document.createElement('div');
     metaEl.className = 'event-meta';
-    metaEl.textContent = online
-      ? 'Online · record here only if the bot didn’t join'
-      : (event.location || 'In-room');
+    if (!online) {
+      metaEl.textContent = event.location || 'In-room';
+    } else if (botClass === 'recording') {
+      metaEl.textContent = 'Online · Pnyx bot is recording';
+    } else if (botClass === 'pending') {
+      metaEl.textContent = 'Online · bot is joining…';
+    } else {
+      metaEl.textContent = 'Online · start here only if the bot didn’t join';
+    }
 
     info.appendChild(timeEl);
     info.appendChild(titleEl);
@@ -170,11 +223,15 @@ function renderEvents(events, eventStates) {
       badge.className = 'badge-done';
       badge.textContent = '● Recording';
       actions.appendChild(badge);
+    } else if (online && botClass === 'recording') {
+      // Bot is genuinely in the call — no manual Start, no false "Bot" claim.
+      const badge = document.createElement('span');
+      badge.className = 'badge-bot';
+      badge.textContent = '● Bot';
+      actions.appendChild(badge);
     } else if (!isDone) {
-      // Both in-room and online get a Start button. For online meetings this is
-      // a manual fallback — the bot normally records, but the extension can't
-      // verify the bot was accepted (needs the backend channel, Phase 4), so we
-      // never falsely claim a bot is present.
+      // In-room, or online where the bot is absent/pending → manual Start.
+      // Online uses a muted style since the bot is the primary path.
       const btn = document.createElement('button');
       btn.className = online ? 'btn-start btn-start-muted' : 'btn-start';
       btn.textContent = isLive ? '🎙 Start' : '🎙 Record';
@@ -202,13 +259,36 @@ function startRecording(eventId, title) {
   window.close();
 }
 
-// ─── Recent meetings (optional, backend-gated) ────────────────────────────────
+// ─── Backend calls (authenticated with the Google access token) ───────────────
 
-async function loadRecentMeetings() {
-  // Requires an authenticated backend channel; disabled by default.
+async function backendFetch(path, token) {
+  const resp = await fetch(`${BACKEND_ORIGIN}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) throw new Error(`backend ${resp.status}`);
+  return resp.json();
+}
+
+async function loadActiveBotSessions(token) {
+  if (!backendEnabled()) return [];
+  try {
+    const data = await backendFetch('/api/meetings/active-bot-sessions', token);
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.warn('[Pnyx] active-bot-sessions failed:', e?.message);
+    return []; // graceful: fall back to the manual-fallback Start button
+  }
+}
+
+async function loadRecentMeetings(token) {
   if (!backendEnabled()) return null;
-  // Stub until the backend-auth spike is done (see CHROME_EXTENSION_PLAN.md).
-  return null;
+  try {
+    const data = await backendFetch('/get-meetings', token);
+    return Array.isArray(data) ? data : null;
+  } catch (e) {
+    console.warn('[Pnyx] get-meetings failed:', e?.message);
+    return null;
+  }
 }
 
 function renderRecentMeetings(meetings) {
@@ -239,7 +319,10 @@ function renderRecentMeetings(meetings) {
 
     const date = document.createElement('div');
     date.className = 'recent-date';
-    date.textContent = formatRelative(m.created_at || m.start_time);
+    // /get-meetings returns {id, title} only — no date. Show it when present.
+    date.textContent = (m.created_at || m.start_time)
+      ? formatRelative(m.created_at || m.start_time)
+      : '';
 
     const arrow = document.createElement('div');
     arrow.className = 'recent-arrow';
@@ -314,15 +397,17 @@ async function init() {
     return;
   }
 
-  const [{ eventStates = {} }, recentMeetings] = await Promise.all([
+  const hasOnline = events.some(isOnline);
+  const [{ eventStates = {} }, botSessions, recentMeetings] = await Promise.all([
     chrome.storage.local.get('eventStates'),
-    loadRecentMeetings(),
+    hasOnline ? loadActiveBotSessions(token) : Promise.resolve([]),
+    loadRecentMeetings(token),
   ]);
 
   hide('loadingView');
   show('mainView');
 
-  renderEvents(events, eventStates);
+  renderEvents(events, eventStates, botSessions);
   renderRecentMeetings(recentMeetings);
 
   // Trigger a background re-check so states reflect the latest the moment the
