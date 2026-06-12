@@ -43,7 +43,27 @@ The extension will:
 
 Clicking **Skip** on any notification stops all further reminders for that meeting.
 
-Online meetings (Google Meet / Zoom / Teams) are suppressed when the Pnyx bot is already recording.
+Online meetings (Google Meet / Zoom / Teams) get **no** in-room reminders — the
+Pnyx bot is meant to join those. (A future version can nudge you only when the
+bot is genuinely absent; that needs the backend channel below.)
+
+If a Pnyx tab is already open during the meeting window, reminders are suppressed
+— you're clearly already in the app.
+
+## Deploying to multiple office machines
+
+For an unpacked extension, Chrome derives the Extension ID from the install path,
+so each machine would get a different ID — and the OAuth client is bound to one
+ID. For a stable ID across machines, either pack the extension into a `.crx` or
+add a shared `"key"` to `manifest.json`. Do this before rolling out beyond your
+own laptop. For a first test on one machine, no action needed.
+
+## Optional: backend channel (cross-device suppression + recent meetings)
+
+These are **off by default** — the extension is fully functional without them.
+The Pnyx backend authenticates a Google Bearer token (separate origin from the
+frontend), so enabling this needs a short spike + a small backend change. See
+`pnyx-docs/features/CHROME_EXTENSION_PLAN.md` → Phase 4.
 
 ## Replacing icons
 

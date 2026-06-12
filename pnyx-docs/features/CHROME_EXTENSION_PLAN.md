@@ -18,15 +18,40 @@ A Chrome extension that:
 
 ---
 
-## Auth Architecture (no re-authentication needed)
+## Auth Architecture (CORRECTED after codebase audit)
 
-| Need | How |
-|---|---|
-| Google Calendar access | `chrome.identity.getAuthToken()` — uses Chrome's signed-in Google account, one "Allow" prompt ever |
-| Pnyx API calls (from popup) | Session cookie auto-included by browser (user already logged into the site) |
-| Opening Pnyx to start recording | Just opens a URL — existing session cookie handles auth |
+> ⚠️ The first draft of this plan assumed the extension could call the Pnyx
+> backend with an auto-included session cookie. **That is false.** The backend
+> (`app/api/deps.py` → `verify_google_token`) authenticates a Google **ID token**
+> (JWT, `aud` = the web OAuth client ID) sent as `Authorization: Bearer`. It does
+> NOT use cookies, and the frontend has no `/api/*` proxy to the backend. So a
+> browser extension cannot trivially call the backend.
 
-**Zero separate login required.** If user isn't logged in, the site redirects to Google OAuth (one click since they're already signed into Chrome) and returns to the meeting page.
+**The design decision: decouple.** The extension is fully self-contained and
+needs NO backend connection for its core value.
+
+| Need | How | Backend auth? |
+|---|---|---|
+| Google Calendar access | `chrome.identity.getAuthToken()` — Chrome-managed token, one "Allow" prompt ever, auto-refresh | No |
+| Fire reminders | `chrome.alarms` + `chrome.notifications` (all local) | No |
+| One-click "Start Recording" | Opens a frontend URL (`/?autoStart=true&...`); the **frontend's** existing NextAuth session authenticates everything | No |
+| "Already recording" suppression | Heuristic: a Pnyx tab open during the meeting window = user is on it, don't nag | No |
+| Cross-device suppression / recent meetings | **Optional, disabled by default.** Needs an authenticated backend channel (see Phase 3 spike) | Yes |
+
+**Zero separate login for the core flow.** If the user isn't logged into Pnyx
+when "Start Recording" opens the site, the site redirects to Google OAuth (one
+click since they're already signed into Chrome) and returns to the meeting page.
+
+### Why NOT `launchWebAuthFlow` for the backend channel
+
+The "get an ID token with `aud` = web client via implicit flow" trick was
+rejected: Google has been deprecating the implicit (`response_type=id_token`)
+flow, and silent hourly refresh in a background service worker is fragile. The
+robust path (when we build it) is: reuse the **already-working** `getAuthToken`
+access token + a small backend change to validate opaque access tokens via
+Google's `tokeninfo`/`userinfo` endpoint (check `aud` against an allowlist,
+extract email) as a fallback in `verify_google_token`. This is gated on a
+20-minute spike against the deployed backend and is its own workstream.
 
 ---
 
@@ -216,34 +241,44 @@ https://frontend-dev-350906.bifrost.saastack.site/?autoStart=true
 
 ## Build Phases
 
-### Phase 1 — Extension scaffold + full notification logic ✅
+### Phase 1 — Extension scaffold + notification logic ✅ DONE
 - [x] Plan doc
-- [x] `manifest.json`
+- [x] `manifest.json` (MV3, Calendar scope, minimal host permissions)
 - [x] `background.js` — complete state machine, calendar fetch, alarms, notifications
 - [x] `popup/` — today's meetings UI with Start buttons
 - [x] Frontend: pick up `?calendar_event_id=` from URL and set on meeting context
 
-### Phase 2 — Google Cloud setup + sideload (manual, 30 min)
-- [ ] Load extension → get Extension ID
-- [ ] Create OAuth client in Google Cloud Console
-- [ ] Update `manifest.json` with real client_id
-- [ ] Generate icon PNGs (replace placeholders)
-- [ ] Test in office: calendar connect → notification → one-click start
+### Phase 2 — Decouple from backend + harden ✅ DONE
+- [x] Removed broken `/api/meetings` cookie calls (backend uses Bearer ID token, separate origin)
+- [x] "Already recording" suppression via Pnyx-tab heuristic (backend-free, reliable)
+- [x] Notes-ready notification fires locally at meeting end (links to app)
+- [x] Recent-meetings section degrades gracefully (hidden until backend channel exists)
+- [x] Popup ↔ background state sync via `chrome.runtime.sendMessage`
+- [x] `getAuthToken` 401 → token refresh handling
+- [x] Placeholder icons generated
 
-### Phase 3 — Recall bot suppression
-- [ ] `background.js`: call `/api/meetings?active=true` to detect active bot sessions
-- [ ] Suppress notifications when bot is confirmed in-meeting
-- [ ] "Add Pnyx Bot" notification for online meetings where bot didn't join
+### Phase 3 — (MANUAL, ~30 min) Google Cloud + sideload + office test
+- [ ] Load unpacked extension → copy the Extension ID
+- [ ] Create a **Chrome App** OAuth client in Google Cloud Console (same project as Pnyx)
+- [ ] Paste its client ID into `manifest.json` (replace the placeholder) → reload
+- [ ] Connect calendar → verify a test meeting fires the T-10 notification → click Start
+- [ ] (Optional) Replace placeholder icons with Pnyx brand icons
 
-### Phase 4 — Notes ready notification
-- [ ] Store `calendar_event_id` on meeting record in backend
-- [ ] Background: detect meeting end by event end time + API poll
-- [ ] Fire "Notes ready" notification with direct link to meeting details
+### Phase 4 — (OPTIONAL, future) Authenticated backend channel
+Gated on a 20-min spike: can the deployed backend accept a token the extension
+can obtain? Unlocks cross-device suppression + recent-meetings + bot-presence refinement.
+- [ ] Spike: `getAuthToken` access token → does deployed backend accept it?
+- [ ] Backend: add access-token validation fallback in `verify_google_token` (Google `tokeninfo`, `aud` allowlist)
+- [ ] Set `BACKEND_ORIGIN` in `background.js` + `popup.js`; add it to `host_permissions`
+- [ ] Implement `findActivePnyxMeetingViaBackend` (call `/meetings/active-bot-sessions`)
+- [ ] Implement `loadRecentMeetings` (call `/get-meetings`)
+- [ ] "Add Pnyx Bot" notification for online meetings where the bot is absent
 
 ### Phase 5 — Office rollout
-- [ ] Sideload on team laptops (developer mode, load unpacked)
-- [ ] QR code with sideload instructions for self-service installs
-- [ ] Monitor notification click-through rate via PostHog
+- [ ] Multi-machine install: pack a `.crx` or add a shared `key` to manifest so the
+      Extension ID (and thus the OAuth client binding) is stable across machines
+- [ ] Sideload on team laptops / share install instructions
+- [ ] Monitor notification → start conversion (the `source=extension` URL param feeds PostHog)
 
 ---
 
@@ -252,8 +287,7 @@ https://frontend-dev-350906.bifrost.saastack.site/?autoStart=true
 | Phase | Effort | Status |
 |---|---|---|
 | Phase 1: Scaffold + logic | 8h | ✅ Done |
-| Phase 2: Google Cloud + sideload | 30min manual | Pending |
-| Phase 3: Recall bot suppression | 3h | Pending |
-| Phase 4: Notes ready | 2h | Pending |
-| Phase 5: Office rollout | 1h | Pending |
-| **Total** | **~14h dev + 30min manual** | |
+| Phase 2: Decouple + harden | 3h | ✅ Done |
+| Phase 3: Google Cloud + sideload | ~30 min manual | ⏳ Needs you |
+| Phase 4: Backend channel (optional) | spike + ~4h | Deferred |
+| Phase 5: Office rollout | ~1h | Pending |

@@ -1,17 +1,38 @@
 /**
  * Pnyx Chrome Extension — Background Service Worker
  *
- * Responsibilities:
- *  1. Poll Google Calendar every 10 min for today's events
- *  2. Run the notification state machine per event
- *  3. Fire smart notifications (max 3 per meeting, never after Skip)
- *  4. Suppress notifications when Pnyx is already recording
- *  5. Handle all notification button clicks
+ * ARCHITECTURE (important):
+ *   This extension is INTENTIONALLY self-contained. It needs NO connection to
+ *   the Pnyx backend to deliver its core value:
+ *     1. Read Google Calendar  → via chrome.identity (Calendar API directly)
+ *     2. Fire smart reminders  → via chrome.alarms + chrome.notifications
+ *     3. One-click recording    → opens a frontend URL; the frontend's existing
+ *                                 logged-in session handles all auth. The
+ *                                 extension never calls the backend.
+ *
+ *   "Already recording" suppression uses a reliable, backend-free heuristic:
+ *   if a Pnyx tab is open during the meeting window, the user is clearly in the
+ *   app already, so we don't nag. Cross-device suppression and a "recent
+ *   meetings" list would require an authenticated backend channel — that is a
+ *   SEPARATE, opt-in workstream (see BACKEND_ORIGIN below) and is disabled by
+ *   default so the extension works out of the box.
  */
+
+// ─── Config ───────────────────────────────────────────────────────────────────
 
 const PNYX_ORIGIN = 'https://frontend-dev-350906.bifrost.saastack.site';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const CHECK_INTERVAL_MINUTES = 10;
+const CHECK_INTERVAL_MINUTES = 5;
+
+// OPTIONAL backend channel — leave '' to keep the extension fully self-contained.
+// To enable cross-device suppression + recent meetings, this requires the
+// backend-auth spike described in CHROME_EXTENSION_PLAN.md (Phase 3). Until then,
+// all backend-dependent features degrade gracefully to no-ops.
+const BACKEND_ORIGIN = '';
+
+function backendEnabled() {
+  return typeof BACKEND_ORIGIN === 'string' && BACKEND_ORIGIN.length > 0;
+}
 
 // ─── State constants ──────────────────────────────────────────────────────────
 
@@ -78,7 +99,7 @@ async function fetchTodaysEvents() {
   try {
     token = await getAuthToken(false);
   } catch {
-    return []; // Not authenticated yet — popup will prompt
+    return []; // Not authenticated yet — popup will prompt the user to connect
   }
 
   const now = new Date();
@@ -97,7 +118,7 @@ async function fetchTodaysEvents() {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (resp.status === 401) {
-      // Token expired — clear it so next call triggers interactive flow
+      // Token expired — clear it so the next interactive call refreshes it
       chrome.identity.removeCachedAuthToken({ token });
       return [];
     }
@@ -110,11 +131,11 @@ async function fetchTodaysEvents() {
 }
 
 function shouldProcess(event) {
-  if (!event.start?.dateTime) return false; // all-day
-  if (event.transparency === 'transparent') return false; // Free/busy = free
+  if (!event.start?.dateTime) return false; // all-day event
+  if (event.transparency === 'transparent') return false; // marked Free
   const self = (event.attendees || []).find(a => a.self);
   if (self?.responseStatus === 'declined') return false;
-  // Skip solo blocks (no other attendees)
+  // Skip solo blocks (focus time, reminders) — no other attendees
   const others = (event.attendees || []).filter(a => !a.self);
   if (others.length === 0) return false;
   return true;
@@ -131,26 +152,7 @@ function isOnline(event) {
   );
 }
 
-// ─── Pnyx activity detection ──────────────────────────────────────────────────
-
-async function findActivePnyxMeeting(eventStartMs) {
-  try {
-    const resp = await fetch(`${PNYX_ORIGIN}/api/meetings?active=true&limit=5`, {
-      credentials: 'include',
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const meetings = Array.isArray(data) ? data : (data.meetings || []);
-    const lo = eventStartMs - 15 * 60 * 1000;
-    const hi = eventStartMs + 15 * 60 * 1000;
-    return meetings.find(m => {
-      const t = new Date(m.created_at || m.start_time).getTime();
-      return t >= lo && t <= hi;
-    }) || null;
-  } catch {
-    return null;
-  }
-}
+// ─── Suppression heuristics (backend-free) ────────────────────────────────────
 
 async function isPnyxTabOpen() {
   try {
@@ -159,6 +161,19 @@ async function isPnyxTabOpen() {
   } catch {
     return false;
   }
+}
+
+/**
+ * OPTIONAL: detect an active Pnyx meeting on the backend (cross-device).
+ * No-op unless BACKEND_ORIGIN is configured AND the backend-auth spike is done.
+ * Today this always returns null, so the extension relies on the tab heuristic.
+ */
+async function findActivePnyxMeetingViaBackend() {
+  if (!backendEnabled()) return null;
+  // Intentionally a stub until the authenticated backend channel exists.
+  // When implemented: GET `${BACKEND_ORIGIN}/meetings/active-bot-sessions`
+  // with an Authorization: Bearer <google token> header.
+  return null;
 }
 
 // ─── Notification helpers ─────────────────────────────────────────────────────
@@ -182,16 +197,10 @@ const NOTIF_CONFIGS = {
     buttons: [{ title: 'Start now' }, { title: "Don't remind me" }],
     requireInteraction: false,
   }),
-  BOT_MISSING: (title) => ({
-    title: `${title} · Online meeting`,
-    message: 'Pnyx bot is not in this meeting',
-    buttons: [{ title: 'Add Pnyx Bot' }, { title: 'Skip' }],
-    requireInteraction: false,
-  }),
   NOTES_READY: (title) => ({
-    title: `✓ ${title} — Notes ready`,
-    message: 'AI notes, transcript and action items waiting',
-    buttons: [{ title: 'View Notes' }],
+    title: `✓ ${title} — Meeting ended`,
+    message: 'Open Pnyx to view notes, transcript and action items',
+    buttons: [{ title: 'View in Pnyx' }],
     requireInteraction: false,
   }),
 };
@@ -225,6 +234,9 @@ async function processEvents() {
   ]);
 
   const now = Date.now();
+  // Compute once per cycle — used to suppress nagging when the user is clearly
+  // already in the Pnyx app (covers "started recording manually").
+  const pnyxTabOpen = await isPnyxTabOpen();
 
   for (const event of events) {
     const id = event.id;
@@ -249,16 +261,17 @@ async function processEvents() {
     // Terminal states — nothing more to do
     if ([S.DISMISSED, S.EXPIRED, S.NOTES_READY].includes(state)) continue;
 
-    // Detect if Pnyx already recording for this event
+    // Optional cross-device "already recording" detection (no-op until backend
+    // channel is enabled). The tab heuristic below covers the single-device case.
     if (state !== S.STARTED) {
-      const activeMeeting = await findActivePnyxMeeting(startMs);
+      const activeMeeting = await findActivePnyxMeetingViaBackend();
       if (activeMeeting) {
         await setEventState(id, { state: S.STARTED, meetingId: activeMeeting.id });
         continue;
       }
     }
 
-    // Notes ready — fires once after meeting ends (only if recording was started)
+    // Notes ready — fires once after meeting ends, only if recording was started
     if (state === S.STARTED && now > endMs + 2 * 60 * 1000) {
       await fireNotification(id, event, 'NOTES_READY');
       await setEventState(id, { state: S.NOTES_READY });
@@ -267,22 +280,26 @@ async function processEvents() {
 
     if (state === S.STARTED) continue;
 
-    // Online meetings: suppress unless bot check reveals it's missing
-    // Phase 3 will add the Recall bot API check here
+    // Online meetings: the Pnyx bot handles recording, so never nag in-room.
+    // (Phase 3 will refine this to nudge only when the bot is genuinely absent.)
     if (online) continue;
+
+    // If the user already has Pnyx open during the meeting window, they're on
+    // it — suppress all in-room nags (reliable, backend-free).
+    if (pnyxTabOpen && msBeforeStart <= 11 * 60 * 1000 && msAfterStart < 15 * 60 * 1000) {
+      continue;
+    }
 
     // ── In-room notification ladder ──────────────────────────────────────────
 
-    // T-10: between 11 min and 9 min before start
+    // T-10: between 11 and 9 min before start
     if (
       msBeforeStart <= 11 * 60 * 1000 &&
       msBeforeStart >   9 * 60 * 1000 &&
       state === S.PENDING
     ) {
-      if (!(await isPnyxTabOpen())) {
-        await fireNotification(id, event, 'T10');
-        await setEventState(id, { state: S.REMINDED_T10 });
-      }
+      await fireNotification(id, event, 'T10');
+      await setEventState(id, { state: S.REMINDED_T10 });
       continue;
     }
 
@@ -315,6 +332,18 @@ async function processEvents() {
   }
 }
 
+// ─── URL builder ──────────────────────────────────────────────────────────────
+
+function buildStartUrl(calendarEventId, title) {
+  const params = new URLSearchParams({
+    autoStart: 'true',
+    source: 'extension',
+    meetingTitle: title || '',
+    calendar_event_id: calendarEventId || '',
+  });
+  return `${PNYX_ORIGIN}/?${params}`;
+}
+
 // ─── Notification click handlers ──────────────────────────────────────────────
 
 chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) => {
@@ -328,28 +357,22 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
   if (type === 'NOTES_READY') {
     const states = await getEventStates();
     const meetingId = states[eventId]?.meetingId;
-    const url = meetingId
-      ? `${PNYX_ORIGIN}/meeting-details?id=${meetingId}`
-      : PNYX_ORIGIN;
-    chrome.tabs.create({ url });
+    chrome.tabs.create({
+      url: meetingId ? `${PNYX_ORIGIN}/meeting-details?id=${meetingId}` : PNYX_ORIGIN,
+    });
     return;
   }
 
   if (buttonIndex === 0) {
-    // Primary action: start recording (or add bot)
-    if (type === 'BOT_MISSING') {
-      chrome.tabs.create({ url: PNYX_ORIGIN });
-    } else {
-      const url = buildStartUrl(eventId, eventTitle);
-      chrome.tabs.create({ url });
-    }
+    // Primary action: start recording
+    chrome.tabs.create({ url: buildStartUrl(eventId, eventTitle) });
     await setEventState(eventId, { state: S.STARTED });
   } else {
     // Secondary action
     if (type === 'T10') {
-      // "Remind at start time" — state stays REMINDED_T10, will fire START
+      // "Remind at start time" — keep REMINDED_T10 so the START nag still fires
     } else {
-      // "Skip" / "Don't remind me" — hard dismiss
+      // "Skip" / "Don't remind me" — hard dismiss, no more notifications
       await setEventState(eventId, { state: S.DISMISSED });
     }
   }
@@ -376,15 +399,18 @@ chrome.notifications.onClicked.addListener(async (notifId) => {
   }
 });
 
-function buildStartUrl(calendarEventId, title) {
-  const params = new URLSearchParams({
-    autoStart: 'true',
-    source: 'extension',
-    meetingTitle: title || '',
-    calendar_event_id: calendarEventId || '',
-  });
-  return `${PNYX_ORIGIN}/?${params}`;
-}
+// ─── Messages from the popup (e.g. user clicked Start in the popup) ────────────
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'markStarted' && msg.eventId) {
+    setEventState(msg.eventId, { state: S.STARTED }).then(() => sendResponse({ ok: true }));
+    return true; // async response
+  }
+  if (msg?.type === 'runCheck') {
+    processEvents().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+});
 
 // ─── Alarm + lifecycle ────────────────────────────────────────────────────────
 
@@ -399,6 +425,13 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Also run on service worker wake-up (covers cases where alarm fires
-// while the worker was sleeping — Chrome restarts it automatically)
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create('pnyx_check', {
+    delayInMinutes: 0,
+    periodInMinutes: CHECK_INTERVAL_MINUTES,
+  });
+});
+
+// Run immediately on service-worker wake-up (Chrome restarts the worker when an
+// alarm fires while it was asleep).
 processEvents();

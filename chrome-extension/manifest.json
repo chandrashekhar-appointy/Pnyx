@@ -13,13 +13,14 @@
   ],
 
   "host_permissions": [
-    "https://frontend-dev-350906.bifrost.saastack.site/*",
     "https://www.googleapis.com/*"
   ],
 
   "oauth2": {
     "client_id": "REPLACE_WITH_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
     "scopes": [
+      "openid",
+      "email",
       "https://www.googleapis.com/auth/calendar.readonly"
     ]
   },

@@ -1,19 +1,30 @@
 /**
- * Pnyx popup — shows today's calendar events + recent meetings.
- * Communicates with background.js via chrome.storage for event states.
+ * Pnyx popup — shows today's Google Calendar events with one-click Start.
+ *
+ * The popup is self-contained: it reads Google Calendar directly and opens
+ * frontend URLs to start recording. It does NOT call the Pnyx backend.
+ *
+ * "Recent meetings" requires an authenticated backend channel and is therefore
+ * hidden unless BACKEND_ORIGIN is configured (see background.js / the plan doc).
  */
 
 const PNYX_ORIGIN = 'https://frontend-dev-350906.bifrost.saastack.site';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
+const BACKEND_ORIGIN = ''; // keep in sync with background.js; '' = backend features off
+
+function backendEnabled() {
+  return typeof BACKEND_ORIGIN === 'string' && BACKEND_ORIGIN.length > 0;
+}
 
 // ─── View helpers ─────────────────────────────────────────────────────────────
 
-function show(id)  { document.getElementById(id).classList.remove('hidden'); }
-function hide(id)  { document.getElementById(id).classList.add('hidden'); }
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
 
 function formatTime(iso) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return new Date(iso).toLocaleTimeString('en-IN', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
 }
 
 function formatRelative(iso) {
@@ -39,7 +50,7 @@ function isOnline(event) {
   );
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
+// ─── Auth (Google Calendar only) ──────────────────────────────────────────────
 
 function getToken(interactive) {
   return new Promise((resolve, reject) => {
@@ -50,11 +61,9 @@ function getToken(interactive) {
   });
 }
 
-// ─── Calendar events ──────────────────────────────────────────────────────────
-
 async function loadCalendarEvents(token) {
   const now = new Date();
-  // Show events from 1 hour ago through end of day (so in-progress meetings show)
+  // From 1h ago through end of day, so in-progress meetings still appear.
   const timeMin = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
   const timeMax = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
 
@@ -65,6 +74,10 @@ async function loadCalendarEvents(token) {
   const resp = await fetch(`${CALENDAR_API}/calendars/primary/events?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (resp.status === 401) {
+    chrome.identity.removeCachedAuthToken({ token });
+    throw new Error('token expired');
+  }
   if (!resp.ok) return [];
   const data = await resp.json();
 
@@ -75,21 +88,6 @@ async function loadCalendarEvents(token) {
     if (self?.responseStatus === 'declined') return false;
     return true;
   });
-}
-
-// ─── Pnyx recent meetings ─────────────────────────────────────────────────────
-
-async function loadRecentMeetings() {
-  try {
-    const resp = await fetch(`${PNYX_ORIGIN}/api/meetings?limit=5`, {
-      credentials: 'include',
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    return Array.isArray(data) ? data : (data.meetings || []);
-  } catch {
-    return [];
-  }
 }
 
 // ─── Render calendar events ───────────────────────────────────────────────────
@@ -111,26 +109,23 @@ function renderEvents(events, eventStates) {
     const online  = isOnline(event);
     const state   = eventStates[event.id]?.state;
     const title   = event.summary || 'Meeting';
-    const time    = formatTime(event.start.dateTime);
 
-    const isLive  = now >= startMs && now <= endMs;
+    const isLive    = now >= startMs && now <= endMs;
     const isStarted = state === 'STARTED';
-    const isDone  = state === 'NOTES_READY' || now > endMs;
+    const isDone    = state === 'NOTES_READY' || now > endMs;
 
     const row = document.createElement('div');
     row.className = 'event-row';
 
-    // Dot
     const dot = document.createElement('div');
     dot.className = `event-dot${isLive ? ' live' : isDone ? ' done' : ''}`;
 
-    // Info
     const info = document.createElement('div');
     info.className = 'event-info';
 
     const timeEl = document.createElement('div');
     timeEl.className = 'event-time';
-    timeEl.textContent = time;
+    timeEl.textContent = formatTime(event.start.dateTime);
 
     const titleEl = document.createElement('div');
     titleEl.className = 'event-title';
@@ -138,37 +133,16 @@ function renderEvents(events, eventStates) {
 
     const metaEl = document.createElement('div');
     metaEl.className = 'event-meta';
-    if (online) {
-      metaEl.textContent = 'Online meeting';
-    } else if (event.location) {
-      metaEl.textContent = event.location;
-    } else {
-      metaEl.textContent = 'In-room';
-    }
+    metaEl.textContent = online ? 'Online meeting' : (event.location || 'In-room');
 
     info.appendChild(timeEl);
     info.appendChild(titleEl);
     info.appendChild(metaEl);
 
-    // Action
     const actions = document.createElement('div');
     actions.className = 'event-actions';
 
-    if (state === 'NOTES_READY') {
-      const badge = document.createElement('span');
-      badge.className = 'badge-done';
-      badge.textContent = 'Notes ready';
-      badge.style.cursor = 'pointer';
-      badge.addEventListener('click', () => {
-        const meetingId = eventStates[event.id]?.meetingId;
-        const url = meetingId
-          ? `${PNYX_ORIGIN}/meeting-details?id=${meetingId}`
-          : PNYX_ORIGIN;
-        chrome.tabs.create({ url });
-        window.close();
-      });
-      actions.appendChild(badge);
-    } else if (isStarted) {
+    if (isStarted) {
       const badge = document.createElement('span');
       badge.className = 'badge-done';
       badge.textContent = '● Recording';
@@ -182,16 +156,7 @@ function renderEvents(events, eventStates) {
       const btn = document.createElement('button');
       btn.className = 'btn-start';
       btn.textContent = isLive ? '🎙 Start' : '🎙 Record';
-      btn.addEventListener('click', () => {
-        const params = new URLSearchParams({
-          autoStart: 'true',
-          source: 'extension',
-          meetingTitle: title,
-          calendar_event_id: event.id,
-        });
-        chrome.tabs.create({ url: `${PNYX_ORIGIN}/?${params}` });
-        window.close();
-      });
+      btn.addEventListener('click', () => startRecording(event.id, title));
       actions.appendChild(btn);
     }
 
@@ -202,17 +167,41 @@ function renderEvents(events, eventStates) {
   });
 }
 
-// ─── Render recent Pnyx meetings ──────────────────────────────────────────────
+function startRecording(eventId, title) {
+  const params = new URLSearchParams({
+    autoStart: 'true',
+    source: 'extension',
+    meetingTitle: title,
+    calendar_event_id: eventId,
+  });
+  // Tell the background worker this event is now being recorded so it stops nagging.
+  chrome.runtime.sendMessage({ type: 'markStarted', eventId });
+  chrome.tabs.create({ url: `${PNYX_ORIGIN}/?${params}` });
+  window.close();
+}
+
+// ─── Recent meetings (optional, backend-gated) ────────────────────────────────
+
+async function loadRecentMeetings() {
+  // Requires an authenticated backend channel; disabled by default.
+  if (!backendEnabled()) return null;
+  // Stub until the backend-auth spike is done (see CHROME_EXTENSION_PLAN.md).
+  return null;
+}
 
 function renderRecentMeetings(meetings) {
-  const container = document.getElementById('recentList');
-  container.innerHTML = '';
+  const section = document.getElementById('recentSection');
+  const divider = document.getElementById('recentDivider');
 
-  if (!meetings.length) {
-    container.innerHTML = '<div class="no-events">No recent meetings</div>';
+  // Hide the whole section gracefully when there's no backend data.
+  if (!meetings || !meetings.length) {
+    section.classList.add('hidden');
+    if (divider) divider.classList.add('hidden');
     return;
   }
 
+  const container = document.getElementById('recentList');
+  container.innerHTML = '';
   meetings.slice(0, 4).forEach(m => {
     const row = document.createElement('div');
     row.className = 'recent-row';
@@ -254,7 +243,7 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
     await getToken(true);
     init();
   } catch {
-    // User cancelled
+    // User cancelled the consent dialog — stay on the connect screen.
   }
 });
 
@@ -272,10 +261,19 @@ async function init() {
     return;
   }
 
-  const [events, recentMeetings, { eventStates = {} }] = await Promise.all([
-    loadCalendarEvents(token),
-    loadRecentMeetings(),
+  let events = [];
+  try {
+    events = await loadCalendarEvents(token);
+  } catch {
+    // Token expired between getToken and the fetch — prompt reconnect.
+    hide('loadingView');
+    show('connectView');
+    return;
+  }
+
+  const [{ eventStates = {} }, recentMeetings] = await Promise.all([
     chrome.storage.local.get('eventStates'),
+    loadRecentMeetings(),
   ]);
 
   hide('loadingView');
@@ -283,6 +281,10 @@ async function init() {
 
   renderEvents(events, eventStates);
   renderRecentMeetings(recentMeetings);
+
+  // Trigger a background re-check so states reflect the latest the moment the
+  // user opens the popup.
+  chrome.runtime.sendMessage({ type: 'runCheck' });
 }
 
 init();
