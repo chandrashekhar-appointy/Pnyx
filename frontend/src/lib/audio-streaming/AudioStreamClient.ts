@@ -77,7 +77,7 @@ export class AudioStreamClient {
 
   // Robustness state
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 5;
+  private maxReconnectAttempts: number = 12;
   private audioQueue: ArrayBuffer[] = []; // Changed to ArrayBuffer for combined data
   private isReconnecting: boolean = false;
   private intentionalClose: boolean = false;
@@ -235,7 +235,7 @@ export class AudioStreamClient {
        if (this.reconnectAttempts < this.maxReconnectAttempts) {
          this.isReconnecting = true;
          this.reconnectAttempts++;
-         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 5000);
+         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
          console.warn(`[AudioStream] Connection failed. Retrying in ${delay}ms (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
          
          await new Promise(r => setTimeout(r, delay));

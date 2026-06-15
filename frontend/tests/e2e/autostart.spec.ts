@@ -31,17 +31,21 @@ test.describe("Calendar autostart flow", () => {
         await page.goto("/?autoStart=true&meetingTitle=Sync", {
             waitUntil: "domcontentloaded",
         });
-        // We don't strictly enforce that the WS connects, but the UI must
-        // either show a Stop control OR a "Starting" state within a few
-        // seconds — proving it didn't wait for a manual click.
+        // The UI must leave the idle "Start Pnyx" state — either it shows a
+        // Stop/End control, a "Starting…" indicator, or the Start button
+        // becomes disabled/loading. We don't require WS to succeed since that
+        // needs a live backend.
         await expect
             .poll(
                 async () => {
                     const stop = page.getByRole("button", { name: /stop|end|finish/i }).first();
                     const starting = page.locator("text=/Starting|Preparing/i");
+                    const startBtn = page.getByRole("button", { name: /start pnyx/i }).first();
+                    const startDisabled = await startBtn.getAttribute("disabled").catch(() => null);
                     return (
                         (await stop.isVisible().catch(() => false)) ||
-                        (await starting.isVisible().catch(() => false))
+                        (await starting.isVisible().catch(() => false)) ||
+                        startDisabled !== null
                     );
                 },
                 { timeout: 20_000 },

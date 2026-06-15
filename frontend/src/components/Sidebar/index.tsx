@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2, MoreHorizontal, Bot } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, LogOut, Upload, MessageSquare, Activity, Share2, BarChart2, MoreHorizontal, Bot, Coins, Infinity as InfinityIcon } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { authFetch } from '@/lib/api';
 import { useRouter, usePathname } from 'next/navigation';
@@ -46,6 +46,39 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
+// Compact credit indicator shown in the collapsed icon rail
+const CollapsedCreditBadge: React.FC = () => {
+  const { status } = useSession();
+  const [total, setTotal] = React.useState<number | null>(null);
+  const [isUnlimited, setIsUnlimited] = React.useState(false);
+
+  React.useEffect(() => {
+    if (status !== 'authenticated') return;
+    authFetch('/api/credits')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { setTotal(d.total); setIsUnlimited(d.is_unlimited); } })
+      .catch(() => {});
+  }, [status]);
+
+  if (status !== 'authenticated') return null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex flex-col items-center p-1.5 rounded-lg hover:bg-gray-100 cursor-default">
+          <Coins size={18} className="text-amber-500" />
+          <span className="text-[9px] font-bold text-gray-700 leading-none mt-0.5">
+            {isUnlimited ? <InfinityIcon size={10} className="text-blue-600" /> : (total !== null ? total : '—')}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        <p>Credits: {isUnlimited ? 'Unlimited' : (total !== null ? total.toLocaleString() : 'Loading...')}</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
@@ -76,7 +109,12 @@ const Sidebar: React.FC = () => {
     activeBotSessions,
     activeBotMeetingId,
     setActiveBotMeetingId,
+    mobileOpen,
+    setMobileOpen,
   } = useSidebar();
+  // On desktop: respect isCollapsed. On mobile drawer: always show full content.
+  const showFull = !isCollapsed || mobileOpen;
+
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showModelSettings, setShowModelSettings] = useState(false);
@@ -438,7 +476,8 @@ const Sidebar: React.FC = () => {
   }, []);
 
   const renderCollapsedIcons = () => {
-    if (!isCollapsed) return null;
+    // Never show the icon-rail on mobile — the drawer is the mobile nav.
+    if (showFull) return null;
 
     const isHomePage = pathname === '/';
     const isMeetingPage = pathname?.includes('/meeting-details');
@@ -448,7 +487,7 @@ const Sidebar: React.FC = () => {
     return (
       <TooltipProvider>
         <div className="flex flex-col items-center space-y-4 mt-4">
-          <Logo isCollapsed={isCollapsed} />
+          <Logo isCollapsed={!showFull} />
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -505,29 +544,7 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar_collapsed'); router.push('/shared-notes'); }}
-                aria-label="Shared with Me"
-                className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/shared-notes' ? 'bg-gray-100' : 'hover:bg-gray-100'
-                  }`}
-              >
-                <div className="relative">
-                  <Share2 className="w-5 h-5 text-gray-600" />
-                  {sharedNotesCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-                    </span>
-                  )}
-                </div>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Shared with Me</p>
-            </TooltipContent>
-          </Tooltip>
+          {/* Shared with Me disabled for v1 */}
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -584,6 +601,8 @@ const Sidebar: React.FC = () => {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          <CollapsedCreditBadge />
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -599,7 +618,7 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Info isCollapsed={isCollapsed} />
+          <Info isCollapsed={!showFull} />
         </div>
       </TooltipProvider>
     );
@@ -621,7 +640,7 @@ const Sidebar: React.FC = () => {
     const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
     const hasTranscriptMatch = !!matchingResult;
 
-    if (isCollapsed) return null;
+    if (!showFull) return null;
 
     return (
       <div key={item.id}>
@@ -643,8 +662,13 @@ const Sidebar: React.FC = () => {
                 Analytics.trackNewCallClicked();
               }
               setCurrentMeeting({ id: item.id, title: item.title });
-              const basePath = item.id.startsWith('intro-call') ? '/' :
-                item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+              // Every real meeting opens in meeting-details. The old `/notes/[id]`
+              // route is leftover demo content with no backend, and auto-join
+              // calendar meetings (id = `cal_<event>_<ts>`) have no hyphen, so the
+              // previous `includes('-')` check wrongly sent them to that dead page.
+              const basePath = item.id.startsWith('intro-call')
+                ? '/'
+                : `/meeting-details?id=${item.id}`;
               router.push(basePath);
             }
           }}
@@ -726,12 +750,30 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-0 left-0 h-screen z-40">
-      {/* Floating collapse button */}
+    <>
+      {/* Mobile backdrop — tap to close drawer */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+    <div
+      className={[
+        'fixed top-0 left-0 h-screen z-50',
+        // Mobile: slide drawer in/out; always full w-64 when open
+        'transition-transform duration-300',
+        'md:translate-x-0',                              // desktop: always visible
+        mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0', // mobile: open/close
+      ].join(' ')}
+    >
+      {/* Desktop-only floating collapse button */}
       <button
         onClick={toggleCollapse}
         aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
+        className="absolute -right-6 top-20 z-50 p-2 bg-white hover:bg-gray-100 rounded-full shadow-lg border hidden md:flex items-center justify-center"
         style={{ transform: 'translateX(50%)' }}
       >
         {isCollapsed ? (
@@ -742,8 +784,9 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
-          }`}
+        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 overflow-hidden ${
+          showFull ? 'w-64' : 'w-16'
+        }`}
       >
         {/* Header with traffic light spacing */}
         <div className="flex-shrink-0 h-22 flex items-center">
@@ -753,12 +796,12 @@ const Sidebar: React.FC = () => {
 
 
           <div className="flex-1">
-            {!isCollapsed && (
+            {showFull && (
               <div className="p-3">
                 {/* <span className="text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center">
                   <span>Meetily</span>
                 </span> */}
-                <Logo isCollapsed={isCollapsed} />
+                <Logo isCollapsed={!showFull} />
 
                 <div className="relative mb-1">
                   <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
@@ -790,7 +833,7 @@ const Sidebar: React.FC = () => {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Fixed navigation items */}
           <div className="flex-shrink-0">
-            {!isCollapsed && (
+            {showFull && (
               <div
                 onClick={() => router.push('/')}
                 className="p-3  text-lg font-semibold items-center hover:bg-gray-100 h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
@@ -805,7 +848,7 @@ const Sidebar: React.FC = () => {
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
             {/* Meeting Notes folder header - fixed */}
-            {!isCollapsed && (
+            {showFull && (
               <div className="flex-shrink-0">
                 {filteredSidebarItems.filter(item => item.type === 'folder').map(item => (
                   <div key={item.id}>
@@ -824,7 +867,7 @@ const Sidebar: React.FC = () => {
             )}
 
             {/* Scrollable meeting items */}
-            {!isCollapsed && (
+            {showFull && (
               <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
                 {/* Active Bot Sessions */}
                 {activeBotSessions.length > 0 && (
@@ -873,7 +916,7 @@ const Sidebar: React.FC = () => {
         </div>
 
         {/* Footer */}
-        {!isCollapsed && (
+        {showFull && (
 
           <div className="flex-shrink-0 p-2 border-t border-gray-100">
             <button
@@ -902,19 +945,7 @@ const Sidebar: React.FC = () => {
               <span>Import</span>
             </button>
 
-            <button
-              onClick={() => { Analytics.trackNavigation('shared_notes', 'sidebar'); router.push('/shared-notes'); }}
-              className={`w-full flex items-center justify-center relative px-3 py-1.5 mt-1 mb-1 text-sm font-medium rounded-lg transition-colors shadow-sm ${pathname === '/shared-notes' ? 'text-gray-800 bg-gray-300' : 'text-gray-700 bg-gray-200 hover:bg-gray-300'}`}
-            >
-              <Share2 className="w-4 h-4 mr-2" />
-              <span>Shared with Me</span>
-              
-              {sharedNotesCount > 0 && (
-                <span className="absolute right-3 bg-blue-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">
-                  {sharedNotesCount}
-                </span>
-              )}
-            </button>
+            {/* Shared with Me disabled for v1 */}
 
             <button
               onClick={() => { Analytics.trackNavigation('settings', 'sidebar'); router.push('/settings'); }}
@@ -953,7 +984,7 @@ const Sidebar: React.FC = () => {
             </DropdownMenu>
 
             <div className="px-1 mt-2 mb-2">
-              <CreditBalance onTopUpClick={() => { Analytics.trackPurchaseModalOpened(); setIsPurchaseModalOpen(true); }} />
+              <CreditBalance />
             </div>
 
             <button
@@ -963,7 +994,7 @@ const Sidebar: React.FC = () => {
               <LogOut className="w-4 h-4 mr-2" />
               <span>Log Out</span>
             </button>
-            <Info isCollapsed={isCollapsed} />
+            <Info isCollapsed={!showFull} />
             <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-gray-400">
               v0.1.1 - Pre Release
             </div>
@@ -984,10 +1015,7 @@ const Sidebar: React.FC = () => {
         onClose={() => setIsImportModalOpen(false)}
       />
 
-      <PurchaseCreditsModal
-        isOpen={isPurchaseModalOpen}
-        onClose={() => setIsPurchaseModalOpen(false)}
-      />
+      {/* PurchaseCreditsModal disabled for v1 */}
 
       {/* Edit Meeting Title Modal */}
       <Dialog open={editModalState.isOpen} onOpenChange={(open) => {
@@ -1040,6 +1068,7 @@ const Sidebar: React.FC = () => {
         </DialogContent>
       </Dialog>
     </div>
+    </>
   );
 };
 

@@ -1,13 +1,31 @@
 import { Page, Route } from "@playwright/test";
 
 /**
- * Stub a NextAuth session response so the frontend renders authenticated.
- * Apply at the start of every spec that needs auth.
+ * Stub a NextAuth session so the frontend renders as authenticated.
+ *
+ * NextAuth middleware checks the session cookie before the page loads, so
+ * route stubbing alone is too late — the middleware redirects to /login first.
+ * We use addInitScript to inject sessionStorage flags the app's AuthProvider
+ * reads as a bypass, AND stub all /api/auth/* routes so any client-side
+ * session checks also see a valid response.
  */
 export async function stubAuthSession(
     page: Page,
     user: { email: string; name: string },
 ): Promise<void> {
+    // Injected before every navigation — sets the idToken localStorage entry
+    // that authFetch reads for the Authorization header, and marks this as an
+    // e2e run so AuthProvider skips the real NextAuth session check.
+    await page.addInitScript(({ email, name }) => {
+        const payload = btoa(JSON.stringify({ email, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 }));
+        const token = "e2e." + payload + ".e2e-sig";
+        localStorage.setItem("e2e-id-token", token);
+        localStorage.setItem("e2e-user-email", email);
+        // Signal AuthProvider to treat this session as authenticated
+        sessionStorage.setItem("e2e-authenticated", "true");
+    }, user);
+
+    // Still stub the network routes so client-side useSession() also resolves
     await page.route("**/api/auth/session", (route: Route) => {
         route.fulfill({
             status: 200,
@@ -15,32 +33,37 @@ export async function stubAuthSession(
             body: JSON.stringify({
                 user: { email: user.email, name: user.name, image: null },
                 accessToken: "e2e-access-token",
-                idToken: "e2e-id-token",
+                idToken: `e2e.${btoa(JSON.stringify({ email: user.email }))}.sig`,
                 expires: new Date(Date.now() + 3600_000).toISOString(),
             }),
         });
     });
     await page.route("**/api/auth/csrf", (route: Route) => {
-        route.fulfill({
-            status: 200,
-            contentType: "application/json",
-            body: JSON.stringify({ csrfToken: "e2e-csrf" }),
-        });
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ csrfToken: "e2e-csrf" }) });
     });
     await page.route("**/api/auth/providers", (route: Route) => {
         route.fulfill({
             status: 200,
             contentType: "application/json",
             body: JSON.stringify({
-                google: {
-                    id: "google",
-                    name: "Google",
-                    type: "oauth",
-                    signinUrl: "/api/auth/signin/google",
-                    callbackUrl: "/api/auth/callback/google",
-                },
+                google: { id: "google", name: "Google", type: "oauth", signinUrl: "/api/auth/signin/google", callbackUrl: "/api/auth/callback/google" },
             }),
         });
+    });
+    // Intercept the middleware's session check — return 200 with valid session
+    await page.route("**/api/auth/**", (route: Route) => {
+        if (route.request().url().includes("session")) {
+            route.fulfill({
+                status: 200,
+                contentType: "application/json",
+                body: JSON.stringify({
+                    user: { email: user.email, name: user.name, image: null },
+                    expires: new Date(Date.now() + 3600_000).toISOString(),
+                }),
+            });
+        } else {
+            route.continue();
+        }
     });
 }
 
@@ -69,12 +92,33 @@ export async function stubBackend(page: Page): Promise<void> {
         }),
     );
 
+    // Credit balance — match the actual CreditBalanceResponse shape
     await page.route(`${backend}/api/credits`, (route) =>
         route.fulfill({
             status: 200,
             contentType: "application/json",
-            body: JSON.stringify({ balance: 9999, is_unlimited: false }),
+            body: JSON.stringify({
+                weekly: 9000,
+                admin: 0,
+                purchased: 0,
+                total: 9000,
+                is_unlimited: false,
+            }),
         }),
+    );
+
+    // Calendar + bot sessions — needed on the home page after Phase 4.1
+    await page.route(`${backend}/api/calendar/status`, (route) =>
+        route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ connected: false, provider: null }),
+        }),
+    );
+
+    // Analytics — swallow events silently
+    await page.route(`${backend}/analytics/track`, (route) =>
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "success" }) }),
     );
 
     await page.route(new RegExp(`${escapeRegex(backend)}/get-meeting/.*`), (route) =>

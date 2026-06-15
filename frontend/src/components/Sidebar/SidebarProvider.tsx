@@ -71,9 +71,16 @@ interface SidebarContextType {
   activeBotSessions: ActiveBotSession[];
   activeBotMeetingId: string | null;
   setActiveBotMeetingId: (id: string | null) => void;
+  // Mobile drawer
+  mobileOpen: boolean;
+  setMobileOpen: (open: boolean) => void;
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
+
+// v1: Share Notes is disabled (backend /api/sharing router not mounted).
+// Flip to true when the sharing feature is restored.
+const SHARE_NOTES_ENABLED = false;
 
 export const useSidebar = () => {
   const context = useContext(SidebarContext);
@@ -92,12 +99,13 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [isRecording, setIsRecording] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [serverAddress, setServerAddress] = useState('');
+  const [serverAddress, setServerAddress] = useState(apiUrl); // initialize immediately so consumers don't stall waiting for the effect
   const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
   const [activeSummaryPolls, setActiveSummaryPolls] = useState<Map<string, NodeJS.Timeout>>(new Map());
   const [sharedNotesCount, setSharedNotesCount] = useState(0);
   const [activeBotSessions, setActiveBotSessions] = useState<ActiveBotSession[]>([]);
   const [activeBotMeetingId, setActiveBotMeetingId] = useState<string | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const { status } = useSession(); // Access Auth Session Check
   const { isRecording: persistentIsRecording } = usePersistentRecordingSession();
 
@@ -167,6 +175,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   }, [formatMeetingDisplayTitle, serverAddress, status]);
 
   const fetchSharedNotesCount = React.useCallback(async () => {
+    // v1: Share Notes is disabled (the /api/sharing router is not mounted), so
+    // skip the fetch entirely instead of polling a 404. Re-enable with sharing.
+    if (!SHARE_NOTES_ENABLED) {
+      setSharedNotesCount(0);
+      return;
+    }
     if (status === 'authenticated' && serverAddress) {
       try {
         const response = await authFetch('/api/sharing/shared-with-me');
@@ -424,6 +438,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       activeBotSessions,
       activeBotMeetingId,
       setActiveBotMeetingId,
+      mobileOpen,
+      setMobileOpen,
     }}>
       {children}
     </SidebarContext.Provider>

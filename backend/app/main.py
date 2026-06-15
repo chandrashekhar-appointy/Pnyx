@@ -23,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 calendar_scheduler = None
 audio_reconciler = None
+bot_reconciler = None
 
 # Initialize Sentry early (no-op if SENTRY_DSN unset)
 _SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -48,14 +49,15 @@ try:
         transcripts,
         chat,
         audio,
-        diarization,
+        # diarization,  # v1: disabled — not on core journey, re-enable in v2
         settings,
         calendar,
         admin,
+        analytics,
         feedback,
-        sharing,
+        # sharing,  # v1: Share Notes disabled — re-enable to restore sharing
         credits,
-        payments,
+        # payments,  # v1: disabled — Razorpay not configured, re-enable when billing is needed
         bot,
         health_deep,
     )
@@ -65,14 +67,15 @@ except ImportError:
         transcripts,
         chat,
         audio,
-        diarization,
+        # diarization,  # v1: disabled — not on core journey, re-enable in v2
         settings,
         calendar,
         admin,
+        analytics,
         feedback,
-        sharing,
+        # sharing,  # v1: Share Notes disabled — re-enable to restore sharing
         credits,
-        payments,
+        # payments,  # v1: disabled — Razorpay not configured, re-enable when billing is needed
         bot,
         health_deep,
     )
@@ -150,14 +153,15 @@ app.include_router(meetings.router, tags=["Meetings"])
 app.include_router(transcripts.router, tags=["Transcripts"])
 app.include_router(chat.router, tags=["Chat"])
 app.include_router(audio.router, tags=["Audio"])
-app.include_router(diarization.router, tags=["Diarization"])
+# app.include_router(diarization.router, tags=["Diarization"])  # v1: disabled
 app.include_router(settings.router, tags=["Settings"])
 app.include_router(calendar.router, tags=["Calendar"])
 app.include_router(admin.router, tags=["Admin"])
+app.include_router(analytics.router, tags=["Analytics"])
 app.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
-app.include_router(sharing.router)
+# app.include_router(sharing.router)  # v1: Share Notes disabled (kept dormant)
 app.include_router(credits.router)
-app.include_router(payments.router)
+# app.include_router(payments.router)  # v1: disabled
 app.include_router(bot.router)
 app.include_router(health_deep.router)
 
@@ -206,7 +210,22 @@ async def startup_event():
         except Exception as e:  # noqa: BLE001
             logger.error("[Storage] Bucket startup probe failed: %s", e)
 
-    global calendar_scheduler, audio_reconciler
+    global calendar_scheduler, audio_reconciler, bot_reconciler
+
+    # Recall.ai bot watchdog — recovers bots stuck due to missed webhooks so
+    # they never sit in a meeting indefinitely.
+    if os.getenv("RECALL_BOT_RECONCILER_ENABLED", "true").lower() == "true":
+        try:
+            try:
+                from app.services.recall.bot_reconciler import BotReconciler
+            except ImportError:
+                from services.recall.bot_reconciler import BotReconciler
+            bot_reconciler = BotReconciler()
+            bot_reconciler.start()
+            logger.info("[BotReconciler] Bot watchdog initialized")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[BotReconciler] Could not start: %s", e)
+
     try:
         from app.services.calendar.reminder_scheduler import CalendarReminderScheduler
     except ImportError:
@@ -229,16 +248,46 @@ async def startup_event():
         audio_reconciler.start()
         logger.info("[AudioReconciler] Session reconciler initialized")
 
+    # Reset any summary_processes rows that were left in a non-terminal state by a
+    # previous crash or server restart.  PENDING / finalizing_audio rows older than
+    # 15 minutes can never complete now — surface them as failures so the UI stops
+    # showing "Generating notes..." indefinitely.
+    try:
+        from app.db.manager import DatabaseManager
+    except ImportError:
+        from db.manager import DatabaseManager
+
+    try:
+        async with DatabaseManager()._get_connection() as conn:
+            updated = await conn.execute(
+                """
+                UPDATE summary_processes
+                SET status      = 'failed',
+                    error       = 'Server restarted while notes were being generated. Please regenerate.',
+                    end_time    = CURRENT_TIMESTAMP,
+                    updated_at  = CURRENT_TIMESTAMP
+                WHERE status IN ('PENDING', 'finalizing_audio')
+                  AND start_time < NOW() - INTERVAL '15 minutes'
+                """,
+            )
+        if updated and updated != "UPDATE 0":
+            logger.warning("[Startup] Reset stale summary_processes rows: %s", updated)
+    except Exception as e:
+        logger.warning("[Startup] Could not reset stale summary_processes: %s", e)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global calendar_scheduler, audio_reconciler
+    global calendar_scheduler, audio_reconciler, bot_reconciler
     if calendar_scheduler:
         await calendar_scheduler.stop()
         calendar_scheduler = None
     if audio_reconciler:
         await audio_reconciler.stop()
         audio_reconciler = None
+    if bot_reconciler:
+        await bot_reconciler.stop()
+        bot_reconciler = None
 
     # Close database pool
     try:
@@ -254,15 +303,23 @@ async def health_check():
 
 
 # --- Local audio serving (signed URL) ---------------------------------------
-# Used when STORAGE_TYPE=local — the recording-url endpoint mints a HMAC-signed
-# token and the URL points here. GCP deployments use native signed URLs and
-# never hit this route.
+# Auth-free audio serving via HMAC-signed tokens.
+# Used for BOTH local and GCP storage:
+#   - Local: file is read from disk directly.
+#   - GCP: when a native GCP signed URL cannot be generated (e.g. Cloud Run
+#     workload identity), the recording-url endpoint mints a token here and
+#     this handler downloads the bytes from GCS and streams them to the browser.
+#   The <audio src="..."> element cannot send Authorization headers, so any
+#   fallback URL must be auth-free.
 try:
     from app.services.audio.signed_urls import verify_signed_token
+    from app.services.storage import StorageService as _StorageService
 except ImportError:
     from services.audio.signed_urls import verify_signed_token
+    from services.storage import StorageService as _StorageService
 
 _RECORDINGS_BASE = Path(os.getenv("LOCAL_RECORDINGS_DIR", "./data/recordings")).resolve()
+_STORAGE_TYPE = os.getenv("STORAGE_TYPE", "local").lower()
 
 
 @app.get("/audio/signed/{token}")
@@ -272,21 +329,38 @@ async def serve_signed_audio(token: str, download: Optional[str] = None):
         raise HTTPException(status_code=403, detail="Invalid or expired token")
     _meeting_id, rel_path = decoded
 
-    # Resolve and confirm the file is inside the recordings root (no traversal).
+    headers: dict = {}
+    if download:
+        # RFC 6266 — escape filename for safety
+        headers["Content-Disposition"] = f'attachment; filename="{quote(download)}"'
+
+    # --- Try local disk first (works for both local and GCP with local fallback) ---
     target = (_RECORDINGS_BASE / rel_path).resolve()
     try:
         target.relative_to(_RECORDINGS_BASE)
     except ValueError:
         raise HTTPException(status_code=403, detail="Path outside recordings root")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="Recording not found")
 
-    headers = {}
-    if download:
-        # RFC 6266 — escape filename for safety
-        headers["Content-Disposition"] = f'attachment; filename="{quote(download)}"'
+    if target.is_file():
+        return FileResponse(target, headers=headers)
 
-    return FileResponse(target, headers=headers)
+    # --- GCP fallback: download from cloud storage and stream ---
+    if _STORAGE_TYPE == "gcp":
+        from fastapi.responses import Response as _Response
+        try:
+            audio_bytes = await _StorageService.download_bytes(rel_path)
+        except Exception as e:
+            logger.warning("[serve_signed_audio] GCP download failed for %s: %s", rel_path, e)
+            raise HTTPException(status_code=404, detail="Recording not found")
+        if not audio_bytes:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        # Infer MIME type from extension
+        ext = rel_path.rsplit(".", 1)[-1].lower()
+        mime_map = {"wav": "audio/wav", "opus": "audio/ogg", "m4a": "audio/mp4", "mp3": "audio/mpeg"}
+        mime = mime_map.get(ext, "audio/octet-stream")
+        return _Response(content=audio_bytes, media_type=mime, headers=headers)
+
+    raise HTTPException(status_code=404, detail="Recording not found")
 
 
 if __name__ == "__main__":

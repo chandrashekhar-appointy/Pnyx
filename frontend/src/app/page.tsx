@@ -493,11 +493,11 @@ function HomeContent() {
     isMeetingActive, 
     setIsMeetingActive, 
     setIsRecording: setSidebarIsRecording, 
-    serverAddress, 
-    isCollapsed: sidebarCollapsed, 
-    refetchMeetings, 
+    serverAddress,
+    isCollapsed: sidebarCollapsed,
+    refetchMeetings,
     activeBotMeetingId,
-    setActiveBotMeetingId
+    setActiveBotMeetingId,
   } = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
@@ -1711,9 +1711,22 @@ function HomeContent() {
             if (urlMeetingTitle) {
               setMeetingTitle(urlMeetingTitle);
             }
+            // When launched from the Chrome extension, pre-wire the calendar event
+            // so the meeting record is linked to the calendar event ID.
+            const calendarEventId = urlParams.get('calendar_event_id');
+            if (calendarEventId && urlMeetingTitle) {
+              setSelectedCalendarEvent({
+                event_id: calendarEventId,
+                meeting_title: urlMeetingTitle,
+                attendees: [],
+                start_time: new Date().toISOString(),
+                end_time: new Date().toISOString(),
+              });
+            }
             urlParams.delete('autoStart');
             urlParams.delete('source');
             urlParams.delete('meetingTitle');
+            urlParams.delete('calendar_event_id');
             const nextQuery = urlParams.toString();
             window.history.replaceState(
               {},
@@ -2660,7 +2673,7 @@ function HomeContent() {
                   <div className="w-full flex flex-col gap-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[420px]" title={meetingTitle}>
+                        <h1 className="text-xl font-semibold text-gray-900 truncate max-w-[180px] sm:max-w-[300px] md:max-w-[420px]" title={meetingTitle}>
                           {meetingTitle}
                         </h1>
                         {isRecording && (
@@ -2853,7 +2866,7 @@ function HomeContent() {
                       <Sparkles className="h-8 w-8" />
                     </div>
                     <h2 className="mt-8 text-3xl font-semibold tracking-tight text-slate-900">Pnyx is ready when you are</h2>
-                    <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-slate-600">
+                    <p className="mx-auto mt-4 max-w-full sm:max-w-xl text-sm leading-6 text-slate-600">
                       Start Pnyx to capture live transcript, decisions, action items, and meeting notes in real time.
                     </p>
                     <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs font-medium text-slate-500">
@@ -2879,7 +2892,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex-1">
@@ -2911,7 +2924,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
@@ -2954,7 +2967,7 @@ function HomeContent() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -10, scale: 0.95 }}
                           transition={{ duration: 0.3 }}
-                          className="insight-chip w-full max-w-xl px-5 py-4"
+                          className="insight-chip w-full max-w-full sm:max-w-xl px-3 py-3 sm:px-5 sm:py-4"
                         >
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5">{getHostEventIcon(item.event_type)}</div>
@@ -2990,7 +3003,7 @@ function HomeContent() {
 
                     {/* ───── Always-Visible Pinned Decisions ───── */}
                     {activeDecisions.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-3">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           Decisions ({activeDecisions.length})
@@ -3013,7 +3026,7 @@ function HomeContent() {
 
                     {/* ───── Always-Visible Pinned Insights ───── */}
                     {activePinnedInsights.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-3">
                           <Sparkles className="h-3.5 w-3.5" />
                           AI Participant Insights ({activePinnedInsights.length})
@@ -3036,7 +3049,7 @@ function HomeContent() {
 
                     {/* ───── Open Discussions (visible when active) ───── */}
                     {activeDiscussions.length > 0 && (
-                      <div className="w-full max-w-xl">
+                      <div className="w-full max-w-full sm:max-w-xl">
                         <h4 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700 mb-3">
                           <MessageCircle className="h-3.5 w-3.5" />
                           Open Discussions ({activeDiscussions.length})
@@ -3333,10 +3346,9 @@ function HomeContent() {
         {(!isProcessingStop && !isSavingTranscript && (!pendingRecoveryId || isRecording)) && (
           <div className="fixed bottom-12 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="w-2/3 max-w-[750px] flex flex-col items-center gap-2">
                 {/* {isRecording && streamingHealth && ( */}
@@ -3455,10 +3467,9 @@ function HomeContent() {
         {pendingRecoveryId && !isSavingTranscript && !isRecording && (
           <div className="fixed bottom-12 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="bg-amber-50 border border-amber-200 rounded-full shadow-lg px-6 py-3 flex items-center gap-4">
                 <div className="flex flex-col">
@@ -3587,10 +3598,9 @@ function HomeContent() {
         {isSavingTranscript && (
           <div className="fixed bottom-4 left-0 right-0 z-10">
             <div
-              className="flex justify-center pl-8 transition-[margin] duration-300"
-              style={{
-                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-              }}
+              className={`flex justify-center transition-[margin] duration-300 ${
+                sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
+              }`}
             >
               <div className="w-2/3 max-w-[750px] flex justify-center">
                 <div className="bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">

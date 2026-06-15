@@ -36,6 +36,7 @@ try:
     from ...services.audio.manager import StreamingTranscriptionManager
     from ...services.audio.groq_client import GroqTranscriptionClient
     from ...services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
+    from ...services.audio.transcription_fallback import TranscriptionFallbackClient
     from ...services.audio.recorder import (
         get_or_create_recorder,
         stop_recorder,
@@ -56,6 +57,7 @@ except (ImportError, ValueError):
     from services.audio.manager import StreamingTranscriptionManager
     from services.audio.groq_client import GroqTranscriptionClient
     from services.audio.elevenlabs_client import ElevenLabsTranscriptionClient
+    from services.audio.transcription_fallback import TranscriptionFallbackClient
     from services.audio.recorder import (
         get_or_create_recorder,
         stop_recorder,
@@ -1174,12 +1176,50 @@ async def websocket_streaming_audio(
                     return
 
                 elevenlabs_mode = os.getenv("ELEVENLABS_MODE", "batch").lower().strip()
-                transcription_client = ElevenLabsTranscriptionClient(
+                el_client = ElevenLabsTranscriptionClient(
                     api_key=elevenlabs_api_key, mode=elevenlabs_mode
                 )
-                logger.info(
-                    f"[Streaming] Using ElevenLabs Scribe v2 (mode={elevenlabs_mode})"
-                )
+
+                # Resolve a Groq key so ElevenLabs can transparently fall back to
+                # Groq if it 401s (exhausted key) / rate-limits / times out
+                # mid-meeting. If no Groq key is available we keep bare EL
+                # (previous behavior).
+                fb_groq_key = (
+                    (await db.get_api_key("groq", user_email=user_email))
+                    if user_email
+                    else ""
+                ) or os.getenv("GROQ_API_KEY", "")
+                fb_groq_key = (fb_groq_key or "").strip()
+
+                if fb_groq_key:
+                    async def _notify_transcription_fallback(primary, used, reason):
+                        try:
+                            await websocket.send_json(
+                                {
+                                    "type": "transcription_fallback",
+                                    "primary": primary,
+                                    "active": used,
+                                    "message": f"{primary} transcription unavailable — switched to {used}.",
+                                }
+                            )
+                        except Exception:
+                            pass
+
+                    transcription_client = TranscriptionFallbackClient(
+                        primary=el_client,
+                        fallback=GroqTranscriptionClient(fb_groq_key),
+                        on_fallback=_notify_transcription_fallback,
+                    )
+                    logger.info(
+                        f"[Streaming] Using ElevenLabs Scribe v2 (mode={elevenlabs_mode}) "
+                        "with Groq fallback"
+                    )
+                else:
+                    transcription_client = el_client
+                    logger.info(
+                        f"[Streaming] Using ElevenLabs Scribe v2 (mode={elevenlabs_mode}) "
+                        "(no Groq key — fallback disabled)"
+                    )
             else:
                 # Default: Groq Whisper
                 groq_api_key = (
@@ -2758,9 +2798,20 @@ async def get_meeting_recording_url(
                 "filename": download_filename,
             }
 
-        # Fallback: return a proxy URL served by this backend
+        # Signed URL generation failed (common on Cloud Run without a service-account
+        # key). Fall back to the auth-free HMAC-signed token endpoint so the
+        # browser's <audio src="..."> element can play without needing to send
+        # an Authorization header (which it cannot do).
+        try:
+            from ...services.audio.signed_urls import mint_signed_token
+        except (ImportError, ValueError):
+            from services.audio.signed_urls import mint_signed_token
+
+        token = mint_signed_token(meeting_id, selected_path, ttl_seconds=3600)
+        from urllib.parse import quote as _quote
+        proxy_url = f"/audio/signed/{token}?download={_quote(download_filename)}"
         return {
-            "url": f"/meetings/{meeting_id}/recording-stream",
+            "url": proxy_url,
             "expiration": 3600,
             "format": selected_format,
             "mime_type": selected_mime,

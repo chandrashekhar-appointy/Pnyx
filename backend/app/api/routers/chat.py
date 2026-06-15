@@ -190,9 +190,11 @@ async def chat_meeting(
                 )
 
         if not full_text and not request.allowed_meeting_ids and not request.history:
-            logger.info(
-                "No context, history, or linked meetings. Proceeding with empty context."
-            )
+            # No transcript and no conversation history — the LLM has nothing to
+            # reason over.  Return a clear message instead of a hallucinated answer.
+            async def _no_context():
+                yield "The meeting transcript is empty or hasn't started yet. Ask me again once there's some transcript to work with."
+            return StreamingResponse(_no_context(), media_type="text/plain")
 
         stream_generator = await chat_service.chat_about_meeting(
             context=full_text,
@@ -397,7 +399,7 @@ Quick Catch-Up Summary:"""
                             yield chunk_text
                     except Exception as gemini_err:
                         logger.error(f"Gemini catch-up streaming error: {gemini_err}. Falling back to OpenAI...", exc_info=True)
-                        yield f"\n*(Gemini error, falling back to OpenAI...)*\n\n"
+                        yield "\n*(Gemini error, falling back to OpenAI...)*\n\n"
                         try:
                             openai_key = os.getenv("OPENAI_API_KEY")
                             if not openai_key:

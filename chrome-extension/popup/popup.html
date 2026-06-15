@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pnyx</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="../icons/48.png" alt="Pnyx" class="logo-icon" />
+      <span class="logo-text">Pnyx</span>
+    </div>
+    <a href="#" id="openApp" class="open-link" title="Open Pnyx">↗</a>
+  </header>
+
+  <!-- Not connected to calendar -->
+  <div id="connectView" class="hidden">
+    <div class="empty-state">
+      <p class="empty-icon">📅</p>
+      <p class="empty-title">Connect your calendar</p>
+      <p class="empty-desc">Pnyx will remind you before in-room meetings so you never forget to record.</p>
+      <button id="connectBtn" class="btn-primary">Connect Google Calendar</button>
+      <p id="connectError" class="connect-error hidden"></p>
+    </div>
+  </div>
+
+  <!-- Main view -->
+  <div id="mainView" class="hidden">
+    <section id="todaySection">
+      <div class="section-label">TODAY</div>
+      <div id="eventsList"></div>
+    </section>
+
+    <div class="divider" id="recentDivider"></div>
+
+    <section id="recentSection">
+      <div class="section-label">RECENT MEETINGS</div>
+      <div id="recentList"></div>
+    </section>
+  </div>
+
+  <!-- Loading -->
+  <div id="loadingView">
+    <div class="loading-spinner"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

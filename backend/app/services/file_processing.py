@@ -115,11 +115,23 @@ class FileProcessor:
             if transcription_provider == "elevenlabs":
                 if self.elevenlabs_client is None:
                     self.elevenlabs_client = ElevenLabsTranscriptionClient(mode="batch")
-                transcription_result = await self.elevenlabs_client.transcribe_full_audio(
+                # Wrap with Groq fallback so an EL outage (401/429/timeout) on the
+                # batch path still produces a transcript instead of failing.
+                from .audio.transcription_fallback import TranscriptionFallbackClient
+
+                fallback_client = TranscriptionFallbackClient(
+                    primary=self.elevenlabs_client,
+                    fallback=self.groq_client,
+                )
+                transcription_result = await fallback_client.transcribe_full_audio(
                     pcm_data
                 )
-                model_name = "scribe_v2"
-                model_family = "elevenlabs-scribe"
+                if fallback_client.fell_back:
+                    model_name = "whisper-large-v3"
+                    model_family = "groq-whisper"
+                else:
+                    model_name = "scribe_v2"
+                    model_family = "elevenlabs-scribe"
             else:
                 transcription_result = await self.groq_client.transcribe_full_audio(
                     pcm_data

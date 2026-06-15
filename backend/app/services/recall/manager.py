@@ -11,6 +11,7 @@ Responsibilities:
 
 import hashlib
 import hmac
+import asyncio
 import json
 import logging
 import os
@@ -64,6 +65,11 @@ class RecallManager:
         self.client = recall_client or RecallClient()
         self.webhook_secret = os.getenv("RECALL_WEBHOOK_SECRET", "")
         self.ai_engines = {}
+        # Per-meeting accumulator of finalized transcript segments + a lock so
+        # concurrent transcript webhooks don't clobber each other. The bot
+        # delivers one segment per webhook; we must store the GROWING full list.
+        self.bot_segments: Dict[str, list] = {}
+        self.bot_segment_locks: Dict[str, "asyncio.Lock"] = {}
 
         redis_url = (
             os.getenv("REDIS_URL")
@@ -153,18 +159,22 @@ class RecallManager:
                 "quota": quota,
             }
 
-        # 2. Check for existing bot session (strictly one-time join)
+        # 2. Block only if a bot is CURRENTLY active for this meeting. If the
+        # previous bot already finished (completed/fatal), allow a new one — a
+        # meeting can be re-joined (e.g. recurring meeting, or re-invite after
+        # the bot left). meeting_bots permits multiple rows per meeting.
+        ACTIVE_STATUSES = {"requesting", "joining", "recording"}
         existing = await self.db.get_bot_session_by_meeting(meeting_id)
-        if existing:
+        if existing and existing.get("status") in ACTIVE_STATUSES:
             logger.info(
-                "[RecallManager] Bot session already exists for meeting %s (status=%s). Skipping duplicate spawn.",
-                meeting_id,
-                existing["status"],
+                "[RecallManager] An active bot (status=%s) already exists for "
+                "meeting %s. Skipping duplicate spawn.",
+                existing["status"], meeting_id,
             )
             return {
                 "success": False,
                 "error": "bot_already_exists",
-                "message": "A bot session already exists for this meeting.",
+                "message": "A bot is already active in this meeting.",
                 "bot": existing,
             }
 
@@ -194,6 +204,22 @@ class RecallManager:
             }
 
         # 4. Persist to DB
+        # Ensure the meeting row exists first so the meeting_bots foreign key is
+        # satisfied. The invite may target a meeting_id that was generated
+        # client-side or whose /create call failed — save_meeting is a no-op if
+        # the row already exists, so this never clobbers a real meeting.
+        try:
+            await self.db.save_meeting(
+                meeting_id=meeting_id,
+                title=bot_name or "Bot Meeting",
+                owner_id=user_email,
+            )
+        except Exception as e:
+            logger.warning(
+                "[RecallManager] Could not ensure meeting %s exists before bot "
+                "session insert: %s", meeting_id, e,
+            )
+
         await self.db.create_bot_session(
             meeting_id=meeting_id,
             recall_bot_id=str(recall_bot_id),
@@ -299,7 +325,12 @@ class RecallManager:
         return False
 
     async def process_webhook(
-        self, payload: Dict[str, Any], raw_body: bytes, signature: str, headers: Dict[str, str] = None
+        self,
+        payload: Dict[str, Any],
+        raw_body: bytes,
+        signature: str,
+        headers: Dict[str, str] = None,
+        pre_verified: bool = False,
     ) -> Dict[str, Any]:
         """
         Process an incoming Recall.ai webhook event.
@@ -307,9 +338,13 @@ class RecallManager:
         Handles:
           - Transcript data events → store + broadcast
           - Bot status change events → update status + finalize on completion
+
+        `pre_verified=True` is passed by the router when the request carried a
+        valid `?token=` (the realtime transcript path), so we skip the Svix
+        signature check that only applies to dashboard status webhooks.
         """
-        # Verify signature
-        if not self.verify_signature(raw_body, signature, headers):
+        # Verify signature (unless the router already authenticated via token)
+        if not pre_verified and not self.verify_signature(raw_body, signature, headers):
             logger.error(
                 "[RecallManager] Webhook signature verification failed! "
                 "The RECALL_WEBHOOK_SECRET in your .env file does not match "
@@ -343,24 +378,65 @@ class RecallManager:
             logger.debug("[RecallManager] Unhandled webhook event: %s", event_type)
             return {"status": "ignored", "event": event_type}
 
+    @staticmethod
+    def _ts(value: Any) -> Optional[float]:
+        """Normalize a Recall timestamp which may be {'relative': N} or a number."""
+        if isinstance(value, dict):
+            value = value.get("relative", value.get("absolute"))
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     async def _handle_transcript_event(
         self, data: Dict[str, Any], event_type: str
     ) -> Dict[str, Any]:
-        """Process a transcript webhook event."""
-        bot_id = data.get("bot_id") or data.get("bot", {}).get("id", "")
-        transcript_data = data.get("transcript", data)
+        """
+        Process a transcript webhook event.
 
-        words = transcript_data.get("words", [])
+        Current Recall realtime format (transcript.data / transcript.partial_data):
+            data = {
+              "data": { "words": [{text, start_timestamp:{relative}, ...}],
+                        "participant": {name, ...} },
+              "bot":  { "id": ... }
+            }
+        We also keep a fallback for the older flat shape.
+        """
+        # Bot id can live at data.bot.id (new) or data.bot_id (legacy)
+        bot_id = (
+            (data.get("bot") or {}).get("id")
+            or data.get("bot_id")
+            or ""
+        )
+
+        # New shape nests the payload under data.data; older shape was flat.
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+
+        words = inner.get("words", []) or []
         text = " ".join(w.get("text", "") for w in words).strip()
         if not text:
-            # Some events have text directly
-            text = (transcript_data.get("text") or "").strip()
+            text = (inner.get("text") or "").strip()
 
-        speaker = transcript_data.get("speaker") or transcript_data.get("speaker_name") or "Unknown"
-        is_final = transcript_data.get("is_final", event_type == "transcript.data")
-        data.get("sequence_id") or data.get("segment_id") or 0
-        start_time = transcript_data.get("start_time") or transcript_data.get("start_ts")
-        end_time = transcript_data.get("end_time") or transcript_data.get("end_ts")
+        participant = inner.get("participant") or {}
+        speaker = (
+            participant.get("name")
+            or inner.get("speaker")
+            or inner.get("speaker_name")
+            or "Unknown"
+        )
+
+        # partial_data = interim, data = finalized utterance
+        is_final = event_type == "transcript.data"
+
+        start_time = None
+        end_time = None
+        if words:
+            start_time = self._ts(words[0].get("start_timestamp") or words[0].get("start_time"))
+            end_time = self._ts(words[-1].get("end_timestamp") or words[-1].get("end_time"))
+        if start_time is None:
+            start_time = self._ts(inner.get("start_timestamp") or inner.get("start_time"))
+        if end_time is None:
+            end_time = self._ts(inner.get("end_timestamp") or inner.get("end_time"))
 
         if not text:
             return {"status": "skipped", "reason": "empty_text"}
@@ -373,18 +449,32 @@ class RecallManager:
 
         meeting_id = bot_session["meeting_id"]
 
-        # Idempotent insert: recall_bot_id + segment_index
+        # Accumulate finalized segments into the FULL transcript. The bot sends
+        # one segment per webhook; we keep the growing list and rewrite the
+        # single authoritative transcript so the whole conversation is preserved
+        # (previously only the last segment survived).
         if is_final:
+            lock = self.bot_segment_locks.setdefault(meeting_id, asyncio.Lock())
             try:
-                await self.db.save_meeting_transcript(
-                    meeting_id=meeting_id,
-                    transcript=text,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    audio_start_time=float(start_time) if start_time else None,
-                    audio_end_time=float(end_time) if end_time else None,
-                    source="recall_bot",
-                    speaker=str(speaker),
-                )
+                async with lock:
+                    segs = self.bot_segments.get(meeting_id)
+                    if segs is None:
+                        # First segment this process has seen for the meeting —
+                        # hydrate from DB so a restart mid-meeting doesn't lose
+                        # earlier segments.
+                        segs = await self.db.get_authoritative_transcript_content(meeting_id)
+                        self.bot_segments[meeting_id] = segs
+
+                    segs.append({
+                        "text": text,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start": float(start_time) if start_time else None,
+                        "end": float(end_time) if end_time else None,
+                        "speaker": str(speaker),
+                        "speaker_confidence": None,
+                        "source": "live",
+                    })
+                    await self.db.upsert_live_transcript(meeting_id, segs, source="live")
             except Exception as e:
                 logger.error("[RecallManager] Failed to save transcript: %s", e)
 
@@ -569,9 +659,10 @@ class RecallManager:
             )
             return 0
 
-        stored_count = 0
+        # Build the FULL segment list, then write it as one authoritative
+        # transcript (not one churning version per segment).
+        full_segments = []
         for seg in segments:
-            # Extract text from words array or direct text field
             words = seg.get("words", [])
             if words:
                 text = " ".join(w.get("text", "") for w in words).strip()
@@ -587,28 +678,39 @@ class RecallManager:
                 or (seg.get("participant", {}) or {}).get("name")
                 or "Unknown"
             )
+            # Current API nests timestamps in words[].start_timestamp.relative;
+            # fall back to flat fields for older shapes.
             start_time = seg.get("start_time") or seg.get("start_ts")
             end_time = seg.get("end_time") or seg.get("end_ts")
+            if start_time is None and words:
+                start_time = self._ts(words[0].get("start_timestamp"))
+            if end_time is None and words:
+                end_time = self._ts(words[-1].get("end_timestamp"))
 
-            try:
-                await self.db.save_meeting_transcript(
-                    meeting_id=meeting_id,
-                    transcript=text,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    audio_start_time=float(start_time) if start_time else None,
-                    audio_end_time=float(end_time) if end_time else None,
-                    source="recall_bot",
-                    speaker=str(speaker),
-                )
-                stored_count += 1
-            except Exception as e:
-                logger.error("[RecallManager] Failed to store transcript segment: %s", e)
+            full_segments.append({
+                "text": text,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "start": float(start_time) if start_time else None,
+                "end": float(end_time) if end_time else None,
+                "speaker": str(speaker),
+                "speaker_confidence": None,
+                "source": "live",
+            })
+
+        if not full_segments:
+            return 0
+
+        try:
+            await self.db.upsert_live_transcript(meeting_id, full_segments, source="live")
+        except Exception as e:
+            logger.error("[RecallManager] Failed to store fetched transcript: %s", e)
+            return 0
 
         logger.info(
             "[RecallManager] Fetched and stored %d transcript segments from Recall API for meeting %s",
-            stored_count, meeting_id,
+            len(full_segments), meeting_id,
         )
-        return stored_count
+        return len(full_segments)
 
     async def _finalize_bot(self, recall_bot_id: str, status: str = "completed"):
         """
@@ -659,34 +761,40 @@ class RecallManager:
 
         # --- Completed bots: always try to produce notes ---
         if status == "completed":
-            # Check if real-time transcription already captured segments
-            has_segments = False
-            try:
-                has_segments = await self.db.has_transcript_segments(meeting_id)
-            except Exception as e:
-                logger.error("[RecallManager] Failed to check transcript for %s: %s", meeting_id, e)
+            # ALWAYS pull Recall's COMPLETE post-meeting transcript and let it
+            # replace the realtime accumulation. Realtime can miss the tail
+            # (the realtime stream closes at call end, so words finalized just
+            # after are never webhooked to us). The post-meeting transcript is
+            # authoritative and complete — when it's ready it overwrites the
+            # partial realtime version. If it isn't ready yet this returns 0 and
+            # the realtime segments stand; a later finalize / the notes task
+            # retry will fill it in.
+            stored = await self._fetch_and_store_recall_transcript(
+                recall_bot_id, meeting_id
+            )
+            if stored > 0:
+                # DB now holds the complete transcript; drop the in-memory
+                # accumulator so nothing re-appends a stale partial list.
+                self.bot_segments.pop(meeting_id, None)
 
-            # If no real-time transcripts, fetch from Recall's post-meeting API
+            has_segments = stored > 0
             if not has_segments:
-                logger.info(
-                    "[RecallManager] No real-time transcripts for meeting %s. "
-                    "Fetching post-meeting transcript from Recall API...",
-                    meeting_id,
-                )
-                stored = await self._fetch_and_store_recall_transcript(
-                    recall_bot_id, meeting_id
-                )
-                has_segments = stored > 0
+                try:
+                    has_segments = await self.db.has_transcript_segments(meeting_id)
+                except Exception as e:
+                    logger.error("[RecallManager] Failed to check transcript for %s: %s", meeting_id, e)
 
-            # If we still have no transcript at all, keep the meeting but log it
-            if not has_segments:
-                logger.warning(
-                    "[RecallManager] Meeting %s completed but no transcript available "
-                    "(real-time or post-meeting). Keeping meeting record.",
-                    meeting_id,
-                )
-
-            # Always trigger notes generation for completed meetings
+            # IMPORTANT: do NOT delete the meeting here just because it looks
+            # empty. With realtime streaming, Recall flushes the final
+            # transcript.data webhooks a few seconds AFTER call_ended/done — so
+            # at this instant has_segments can be False even though transcript
+            # is moments away. Deleting here is what made bot meetings vanish.
+            #
+            # Instead we always schedule notes generation with a short delay so
+            # the trailing transcripts land first. The notes task retries while
+            # the transcript is still empty and deletes the meeting only if it
+            # never materializes (genuinely silent meeting).
+            notes_delay = int(os.getenv("RECALL_NOTES_DELAY_SECONDS", "30"))
             try:
                 try:
                     from celery_app import celery_app
@@ -700,6 +808,7 @@ class RecallManager:
                         "user_email": bot["user_email"],
                         "source": "recall_bot",
                     },
+                    countdown=notes_delay,
                 )
                 logger.info(
                     "[RecallManager] Notes generation triggered for meeting %s",
@@ -709,6 +818,104 @@ class RecallManager:
                 logger.warning(
                     "[RecallManager] Failed to trigger notes generation: %s", e
                 )
+
+    # ------------------------------------------------------------------
+    # Watchdog — recover bots stuck because a webhook was missed
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _latest_recall_code(bot_data: Dict[str, Any]) -> str:
+        """Extract the most recent status code from a Recall bot object."""
+        changes = bot_data.get("status_changes") or []
+        if changes and isinstance(changes, list):
+            return (changes[-1] or {}).get("code", "") or ""
+        # Some responses expose a flat status
+        status = bot_data.get("status")
+        if isinstance(status, dict):
+            return status.get("code", "") or ""
+        return str(status or "")
+
+    async def reconcile_stuck_bots(self, stuck_after_minutes: int = 15) -> Dict[str, Any]:
+        """
+        Find bot sessions our DB still thinks are active but which have been
+        alive longer than `stuck_after_minutes`, then ask Recall what really
+        happened. This is the safety net for missed webhooks — the exact cause
+        of "the bot sat in the meeting for 24 hours."
+
+        For each stuck bot:
+          - If Recall says it's already terminal → finalize locally.
+          - If Recall says it's still waiting/joining (never recorded) past the
+            hard cap → force it to leave, then finalize.
+          - If Recall has no record of it (404) → finalize as completed.
+        """
+        try:
+            stuck = await self.db.get_active_bot_sessions_older_than_minutes(
+                stuck_after_minutes
+            )
+        except Exception as e:
+            logger.error("[RecallManager] Watchdog query failed: %s", e)
+            return {"checked": 0, "reconciled": 0}
+
+        if not stuck:
+            return {"checked": 0, "reconciled": 0}
+
+        reconciled = 0
+
+        for bot in stuck:
+            recall_bot_id = bot["recall_bot_id"]
+            db_status = bot["status"]
+            try:
+                remote = await self.client.get_bot_status(recall_bot_id)
+                recall_code = self._latest_recall_code(remote)
+                internal = _RECALL_STATUS_MAP.get(recall_code, "")
+
+                logger.info(
+                    "[RecallManager] Watchdog: bot=%s db=%s recall=%s→%s",
+                    recall_bot_id, db_status, recall_code, internal or "?",
+                )
+
+                # Recall reports a terminal state we never recorded locally.
+                if internal in ("completed", "fatal"):
+                    await self._finalize_bot(recall_bot_id, status=internal)
+                    reconciled += 1
+                    continue
+
+                # Still non-terminal on Recall's side but never started recording
+                # and past the hard cap → force it out.
+                if db_status in ("requesting", "joining"):
+                    logger.warning(
+                        "[RecallManager] Watchdog: forcing leave of bot %s stuck in %s",
+                        recall_bot_id, db_status,
+                    )
+                    try:
+                        await self.client.remove_bot(recall_bot_id)
+                    except Exception as e:
+                        logger.error("[RecallManager] Watchdog leave failed: %s", e)
+                    await self._finalize_bot(recall_bot_id, status="completed")
+                    reconciled += 1
+
+            except Exception as e:
+                msg = str(e)
+                # 404 → Recall has no such bot; treat as gone so we stop tracking.
+                if "404" in msg or "not found" in msg.lower():
+                    logger.warning(
+                        "[RecallManager] Watchdog: bot %s unknown to Recall (404). Finalizing.",
+                        recall_bot_id,
+                    )
+                    await self._finalize_bot(recall_bot_id, status="completed")
+                    reconciled += 1
+                else:
+                    logger.error(
+                        "[RecallManager] Watchdog: failed to reconcile bot %s: %s",
+                        recall_bot_id, e,
+                    )
+
+        if reconciled:
+            logger.info(
+                "[RecallManager] Watchdog reconciled %d/%d stuck bot(s)",
+                reconciled, len(stuck),
+            )
+        return {"checked": len(stuck), "reconciled": reconciled}
 
     # ------------------------------------------------------------------
     # Status query

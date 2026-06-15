@@ -2,10 +2,8 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
-import { Coins, Loader2, PlusCircle, Infinity } from 'lucide-react';
+import { Coins, Loader2, Infinity } from 'lucide-react';
 import { authFetch } from '@/lib/api';
-import { toast } from 'sonner';
-import Analytics from '@/lib/analytics';
 
 interface CreditBalanceData {
   weekly: number;
@@ -16,11 +14,10 @@ interface CreditBalanceData {
 }
 
 interface CreditBalanceProps {
-  onTopUpClick: () => void;
   className?: string;
 }
 
-export const CreditBalance: React.FC<CreditBalanceProps> = ({ onTopUpClick, className = '' }) => {
+export const CreditBalance: React.FC<CreditBalanceProps> = ({ className = '' }) => {
   const { status } = useSession();
   const [balance, setBalance] = useState<CreditBalanceData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -99,16 +96,6 @@ export const CreditBalance: React.FC<CreditBalanceProps> = ({ onTopUpClick, clas
           )}
         </div>
         
-        <button
-          onClick={() => {
-            Analytics.trackCreditTopUpClicked(balance?.total);
-            onTopUpClick();
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors shadow-sm"
-        >
-          <PlusCircle size={14} />
-          <span>Top up</span>
-        </button>
       </div>
     </div>
   );

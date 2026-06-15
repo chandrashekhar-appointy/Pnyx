@@ -112,11 +112,24 @@ async def _generate_meeting_notes_async(
                         f"Transcript not ready for bot meeting {meeting_id}"
                     )
                 else:
+                    # Retries exhausted and still nothing. For a bot meeting this
+                    # means no one ever spoke (or transcription never produced
+                    # anything), so the meeting is genuinely empty — delete it so
+                    # it doesn't linger as a hollow entry in the notes list.
                     logger.warning(
-                        f"[Task:GenerateNotes] Max retries reached for {meeting_id}. Skipping."
+                        f"[Task:GenerateNotes] Max retries reached for {meeting_id}. "
+                        f"Deleting empty bot meeting."
                     )
+                    if source == "recall_bot":
+                        try:
+                            await db.delete_meeting(meeting_id)
+                        except Exception as del_err:
+                            logger.error(
+                                f"[Task:GenerateNotes] Failed to delete empty meeting "
+                                f"{meeting_id}: {del_err}"
+                            )
                     return {
-                        "status": "skipped",
+                        "status": "deleted_empty",
                         "reason": "empty_transcript_after_retries",
                     }
 

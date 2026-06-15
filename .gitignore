@@ -118,3 +118,13 @@ backend/file_info.json
 .codex/
 .entire/
 .gemini/
+
+# Chrome extension signing key (NEVER commit)
+chrome-extension/pnyx-extension-key.pem
+*.pem
+
+# Extension build artifacts
+chrome-extension.crx
+pnyx-extension.crx
+pnyx-extension.zip
+extension-dist/

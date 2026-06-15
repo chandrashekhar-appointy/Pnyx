@@ -79,6 +79,7 @@ async def _check_gcp_bucket() -> Dict[str, Any]:
         return {"status": "down", "error": str(e)[:200]}
 
 
+
 async def _check_groq() -> Dict[str, Any]:
     key = os.getenv("GROQ_API_KEY")
     if not key:
@@ -99,25 +100,40 @@ async def _check_groq() -> Dict[str, Any]:
 
 
 async def _check_elevenlabs() -> Dict[str, Any]:
+    """
+    Checks ElevenLabs using /v1/models (fast, works with restricted API keys).
+    The subscription/user endpoints require full-access keys; our key is scoped
+    to speech-to-text only, which is correct for security.
+    """
     key = os.getenv("ELEVENLABS_API_KEY")
     if not key:
         return {"status": "skipped", "reason": "ELEVENLABS_API_KEY not set"}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                "https://api.elevenlabs.io/v1/user/subscription",
+                "https://api.elevenlabs.io/v1/models",
                 headers={"xi-api-key": key},
             )
-        if resp.status_code == 200:
-            return {"status": "ok"}
         if resp.status_code == 401:
-            return {"status": "auth_failed"}
-        return {"status": "degraded", "http_status": resp.status_code}
+            return {"status": "auth_failed", "error": "API key rejected — rotate ELEVENLABS_API_KEY"}
+        if resp.status_code != 200:
+            return {"status": "degraded", "http_status": resp.status_code}
+
+        # Confirm scribe_v2 model is available
+        models = resp.json()
+        model_ids = [m.get("model_id") for m in models if isinstance(m, dict)]
+        scribe_available = "scribe_v2" in model_ids
+
+        return {
+            "status": "ok",
+            "scribe_v2_available": scribe_available,
+            "note": "restricted key — quota not visible, but STT is functional",
+        }
     except Exception as e:
         return {"status": "down", "error": str(e)[:200]}
 
 
-CRITICAL_COMPONENTS = {"database"}
+CRITICAL_COMPONENTS = {"database", "elevenlabs"}
 
 
 @router.get("/deep")
@@ -131,10 +147,10 @@ async def health_deep(response: Response) -> Dict[str, Any]:
         return_exceptions=False,
     )
     components = {
-        "database": components_results[0],
-        "redis": components_results[1],
+        "database":   components_results[0],
+        "redis":      components_results[1],
         "gcp_bucket": components_results[2],
-        "groq": components_results[3],
+        "groq":       components_results[3],
         "elevenlabs": components_results[4],
     }
 

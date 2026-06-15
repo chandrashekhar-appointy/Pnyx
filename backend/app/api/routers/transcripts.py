@@ -27,9 +27,9 @@ try:
     from ...services.summarization import SummarizationService
     from ...services.chat import ChatService
     from ...services.gemini_client import (
-        generate_content_text_async,
         generate_content_with_file_sync,
     )
+    from ...services.llm_gateway import LLMGateway
     from ...services.storage import StorageService
     from ...services.calendar.google_oauth import GoogleCalendarOAuthService
     from ...services.calendar.reminder_email import CalendarReminderEmailService
@@ -50,9 +50,9 @@ except (ImportError, ValueError):
     from services.summarization import SummarizationService
     from services.chat import ChatService
     from services.gemini_client import (
-        generate_content_text_async,
         generate_content_with_file_sync,
     )
+    from services.llm_gateway import LLMGateway
     from services.storage import StorageService
     from services.calendar.google_oauth import GoogleCalendarOAuthService
     from services.calendar.reminder_email import CalendarReminderEmailService
@@ -66,6 +66,8 @@ except (ImportError, ValueError):
 db = DatabaseManager()
 rbac = RBAC(db)
 processor = SummarizationService()
+# Central LLM gateway for text generation with provider fallback (Gemini->OpenAI).
+_llm_gateway = LLMGateway(db)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -372,15 +374,6 @@ async def _translate_summary_to_english(
     if not _summary_contains_devanagari(summary):
         return summary
 
-    api_key = await _get_gemini_notes_api_key(user_email)
-    if not api_key:
-        return summary
-    translate_model = (
-        model_name
-        if str(model_name or "").strip().lower().startswith("gemini")
-        else GEMINI_DEFAULT_MODEL
-    )
-
     prompt = (
         "Translate the following meeting summary JSON into English.\n"
         "Rules:\n"
@@ -391,11 +384,12 @@ async def _translate_summary_to_english(
         f"JSON:\n{json.dumps(summary, ensure_ascii=False)}"
     )
     try:
-        response_text = await generate_content_text_async(
-            api_key=api_key,
-            model=translate_model,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
+        # Gateway falls back Gemini->OpenAI if the primary provider is down.
+        response_text = await _llm_gateway.generate(
+            task="notes",
+            prompt=prompt,
+            user_email=user_email,
+            json_mode=True,
         )
         translated = json.loads(_extract_json_object(response_text))
         return translated if isinstance(translated, dict) else summary
@@ -889,10 +883,6 @@ async def generate_notes_with_gemini_background(
         if transcript_chars == 0 or transcript_chars > short_transcript_threshold:
             return None
 
-        api_key = await _get_gemini_notes_api_key(user_email)
-        if not api_key:
-            return None
-
         direct_prompt = (
             f"{template_prompt}\n\n"
             "Additional rules for short or partial transcripts:\n"
@@ -905,11 +895,12 @@ async def generate_notes_with_gemini_background(
         )
 
         try:
-            response_text = await generate_content_text_async(
-                api_key=api_key,
-                model=GEMINI_DEFAULT_MODEL,
-                contents=direct_prompt,
-                config={"response_mime_type": "application/json"},
+            # Gateway falls back Gemini->OpenAI on provider failure.
+            response_text = await _llm_gateway.generate(
+                task="notes",
+                prompt=direct_prompt,
+                user_email=user_email,
+                json_mode=True,
             )
             candidate_json = _extract_json_object(response_text)
             parsed = json.loads(candidate_json)
@@ -1125,6 +1116,90 @@ async def generate_notes_with_gemini_background(
             except Exception:
                 pass
 
+    async def _generate_openai_multimodal_json(
+        transcript_text: str,
+        prompt_text: str,
+        model_name_local: str,
+        user_email_local: str,
+        mime_type: str,
+        audio_bytes: bytes,
+    ) -> Optional[str]:
+        """Send audio + transcript to OpenAI models that support audio input."""
+        import base64
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            api_key = await db.get_api_key("openai", user_email=user_email_local)
+        if not api_key:
+            logger.warning("OpenAI API key missing for multimodal notes generation")
+            return None
+
+        # OpenAI accepts: wav, mp3, ogg, opus, flac, m4a, webm
+        fmt = "opus" if mime_type in ("audio/ogg", "audio/opus") else "wav"
+
+        # Guard against files that are too large for inline base64 (~20MB limit)
+        max_bytes = int(os.getenv("NOTES_AUDIO_OPENAI_MAX_MB", "20")) * 1024 * 1024
+        if len(audio_bytes) > max_bytes:
+            logger.warning(
+                "Audio too large for OpenAI multimodal (%dMB > %dMB limit), skipping",
+                len(audio_bytes) // (1024 * 1024),
+                max_bytes // (1024 * 1024),
+            )
+            return None
+
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        transcript_limit = int(os.getenv("NOTES_AUDIO_TRANSCRIPT_CHAR_LIMIT", "120000"))
+        compact_transcript = transcript_text[:transcript_limit]
+
+        multimodal_prompt = (
+            f"{prompt_text}\n\n"
+            "Additional instructions:\n"
+            "1) The audio recording is the primary source — use it to capture decisions, "
+            "tone, and commitments that may not be fully reflected in the transcript.\n"
+            "2) The transcript assists with names, dates, and spelling but may have gaps.\n"
+            "3) Never invent facts not supported by audio or transcript.\n"
+            "4) Return valid JSON only, matching the required template shape.\n"
+            "5) Every output field must be in English only.\n\n"
+            f"Transcript (for reference):\n{compact_transcript}"
+        )
+
+        from app.services.llm_gateway import _model_uses_completion_tokens
+        from openai import AsyncOpenAI, BadRequestError
+
+        client = AsyncOpenAI(api_key=api_key)
+        kwargs: dict = {
+            "model": model_name_local,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": audio_b64, "format": fmt},
+                        },
+                        {"type": "text", "text": multimodal_prompt},
+                    ],
+                }
+            ],
+        }
+        if _model_uses_completion_tokens(model_name_local):
+            kwargs["max_completion_tokens"] = 4000
+        else:
+            kwargs["max_tokens"] = 4000
+
+        try:
+            resp = await client.chat.completions.create(**kwargs)
+            return resp.choices[0].message.content or ""
+        except BadRequestError as e:
+            logger.warning(
+                "OpenAI rejected audio input for model %s (%s) — falling back to transcript-only",
+                model_name_local, e,
+            )
+            return None
+        except Exception as e:
+            logger.warning("OpenAI multimodal notes failed for %s: %s", model_name_local, e)
+            return None
+
     try:
         # 1. Create process
         process_id = await db.create_process(meeting_id)
@@ -1152,7 +1227,7 @@ async def generate_notes_with_gemini_background(
         notes_audio_enabled = (
             os.getenv("NOTES_AUDIO_ENABLED", "true").lower() == "true"
         )
-        allow_audio = bool(use_audio_context) and notes_audio_enabled and notes_provider == "gemini"
+        allow_audio = bool(use_audio_context) and notes_audio_enabled and notes_provider in ("gemini", "openai")
         effective_audio_mode = audio_mode or os.getenv(
             "NOTES_AUDIO_DEFAULT_MODE", "compressed"
         )
@@ -1193,6 +1268,15 @@ async def generate_notes_with_gemini_background(
                         )
                         return None
 
+                    if notes_provider == "openai":
+                        return await _generate_openai_multimodal_json(
+                            transcript_text=full_transcript_text,
+                            prompt_text=template_prompt,
+                            model_name_local=model_name,
+                            user_email_local=user_email,
+                            mime_type=audio_mime,
+                            audio_bytes=audio_bytes,
+                        )
                     return await _generate_multimodal_json(
                         transcript_text=full_transcript_text,
                         prompt_text=template_prompt,
@@ -1228,7 +1312,7 @@ async def generate_notes_with_gemini_background(
                 logger.warning("Multimodal notes path failed for %s: %s", meeting_id, e)
                 metadata["fallback_reason"] = "multimodal_exception"
 
-        # 3. Transcript-only fallback
+        # 3. Transcript-only fallback (works for all providers)
         if not all_json_data and notes_provider == "gemini":
             fast_path_json = await _generate_short_transcript_notes_json()
             if fast_path_json:
